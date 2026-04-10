@@ -1,0 +1,109 @@
+//
+//  ProxyManager.swift
+//  proxymate
+//
+//  Applies / clears system-wide HTTP(S) proxy settings via `networksetup`.
+//  Uses AppleScript "with administrator privileges" so macOS prompts the user
+//  for admin credentials when needed. Runs off the main thread so the UI
+//  doesn't freeze while the auth dialog is on screen.
+//
+
+import Foundation
+
+enum ProxyManagerError: LocalizedError {
+    case scriptFailed(String)
+    var errorDescription: String? {
+        switch self {
+        case .scriptFailed(let m): return m
+        }
+    }
+}
+
+enum ProxyManager {
+
+    nonisolated static func enable(proxy: ProxyConfig) async throws {
+        let httpsBlock = proxy.applyToHTTPS ? """
+              networksetup -setsecurewebproxy "$svc" \(proxy.host) \(proxy.port)
+              networksetup -setsecurewebproxystate "$svc" on
+        """ : ""
+
+        let shell = """
+        networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
+          networksetup -setwebproxy "$svc" \(proxy.host) \(proxy.port)
+          networksetup -setwebproxystate "$svc" on
+        \(httpsBlock)
+        done
+        """
+        try await runWithAdmin(shell)
+    }
+
+    nonisolated static func disable() async throws {
+        let shell = """
+        networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
+          networksetup -setwebproxystate "$svc" off
+          networksetup -setsecurewebproxystate "$svc" off
+        done
+        """
+        try await runWithAdmin(shell)
+    }
+
+    /// Reads the current HTTP proxy state from the first enabled network service.
+    /// Returns nil if no proxy is set. Doesn't require admin.
+    nonisolated static func currentProxy() async -> (host: String, port: Int)? {
+        await Task.detached(priority: .utility) { () -> (String, Int)? in
+            let p = Process()
+            p.launchPath = "/bin/sh"
+            p.arguments = ["-c", "networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | head -n 1"]
+            let out = Pipe()
+            p.standardOutput = out
+            p.standardError = Pipe()
+            do { try p.run() } catch { return nil }
+            p.waitUntilExit()
+            guard let svc = String(data: out.fileHandleForReading.readDataToEndOfFile(),
+                                   encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !svc.isEmpty else { return nil }
+
+            let q = Process()
+            q.launchPath = "/usr/sbin/networksetup"
+            q.arguments = ["-getwebproxy", svc]
+            let qout = Pipe()
+            q.standardOutput = qout
+            q.standardError = Pipe()
+            do { try q.run() } catch { return nil }
+            q.waitUntilExit()
+            let raw = String(data: qout.fileHandleForReading.readDataToEndOfFile(),
+                             encoding: .utf8) ?? ""
+            var enabled = false
+            var host = ""
+            var port = 0
+            for line in raw.split(separator: "\n") {
+                let s = line.trimmingCharacters(in: .whitespaces)
+                if s.hasPrefix("Enabled:") { enabled = s.contains("Yes") }
+                else if s.hasPrefix("Server:") { host = String(s.dropFirst("Server:".count)).trimmingCharacters(in: .whitespaces) }
+                else if s.hasPrefix("Port:") { port = Int(s.dropFirst("Port:".count).trimmingCharacters(in: .whitespaces)) ?? 0 }
+            }
+            return enabled && !host.isEmpty ? (host, port) : nil
+        }.value
+    }
+
+    private nonisolated static func runWithAdmin(_ shell: String) async throws {
+        // Escape for embedding inside an AppleScript string literal:
+        // backslashes first, then double quotes.
+        let escaped = shell
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let appleScript = "do shell script \"\(escaped)\" with administrator privileges"
+
+        try await Task.detached(priority: .userInitiated) {
+            var errorInfo: NSDictionary?
+            let script = NSAppleScript(source: appleScript)
+            _ = script?.executeAndReturnError(&errorInfo)
+            if let errorInfo {
+                let msg = (errorInfo[NSAppleScript.errorMessage] as? String)
+                    ?? "AppleScript execution failed"
+                throw ProxyManagerError.scriptFailed(msg)
+            }
+        }.value
+    }
+}
