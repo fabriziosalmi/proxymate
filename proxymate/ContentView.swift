@@ -18,6 +18,7 @@ struct ContentView: View {
         case logs    = "Logs"
         case stats   = "Stats"
         case rules   = "Rules"
+        case cache   = "Cache"
         case privacy = "Privacy"
         var id: String { rawValue }
         var systemImage: String {
@@ -26,6 +27,7 @@ struct ContentView: View {
             case .logs:    return "list.bullet.rectangle"
             case .stats:   return "chart.bar"
             case .rules:   return "shield.lefthalf.filled"
+            case .cache:   return "internaldrive"
             case .privacy: return "eye.slash"
             }
         }
@@ -109,6 +111,7 @@ struct ContentView: View {
         case .logs:    LogsView()
         case .stats:   StatsView()
         case .rules:   RulesView()
+        case .cache:   CacheView()
         case .privacy: PrivacyView()
         }
     }
@@ -404,6 +407,15 @@ struct StatsView: View {
                     StatCard(title: "Privacy",
                              value: "\(state.stats.privacyActions)",
                              color: .purple)
+                    StatCard(title: "MITM",
+                             value: "\(state.stats.mitmIntercepted)",
+                             color: .indigo)
+                }
+                HStack(spacing: 10) {
+                    let total = state.stats.cacheHits + state.stats.cacheMisses
+                    StatCard(title: "Cache Hit Rate",
+                             value: total > 0 ? "\(state.stats.cacheHits * 100 / max(total, 1))%" : "—",
+                             color: .teal)
                     StatCard(title: "Log Entries",
                              value: "\(state.logs.count)",
                              color: .secondary)
@@ -767,6 +779,117 @@ struct ExfiltrationPackRow: View {
     }
 }
 
+// MARK: - Cache tab
+
+struct CacheView: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                privacySection("HTTP Response Cache") {
+                    Toggle("Enable L1 RAM Cache", isOn: cacheBinding(\.enabled))
+                        .font(.caption).toggleStyle(.switch).controlSize(.small)
+                }
+
+                if state.cacheSettings.enabled {
+                    privacySection("Limits") {
+                        HStack {
+                            Text("Max size").font(.caption)
+                            Spacer()
+                            Picker("", selection: cacheBinding(\.maxSizeMB)) {
+                                Text("32 MB").tag(32)
+                                Text("64 MB").tag(64)
+                                Text("128 MB").tag(128)
+                                Text("256 MB").tag(256)
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 100)
+                        }
+                        HStack {
+                            Text("Max entries").font(.caption)
+                            Spacer()
+                            Picker("", selection: cacheBinding(\.maxEntries)) {
+                                Text("5,000").tag(5_000)
+                                Text("10,000").tag(10_000)
+                                Text("50,000").tag(50_000)
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 100)
+                        }
+                        HStack {
+                            Text("Default TTL").font(.caption)
+                            Spacer()
+                            Picker("", selection: cacheBinding(\.defaultTTL)) {
+                                Text("60s").tag(60)
+                                Text("5m").tag(300)
+                                Text("30m").tag(1800)
+                                Text("1h").tag(3600)
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 100)
+                        }
+                    }
+
+                    privacySection("Behavior") {
+                        Toggle("Honor Cache-Control: no-store", isOn: cacheBinding(\.honorNoStore))
+                            .font(.caption).toggleStyle(.switch).controlSize(.small)
+                        Toggle("Strip tracking params from cache key (utm_*, fbclid)",
+                               isOn: cacheBinding(\.stripTrackingParams))
+                            .font(.caption).toggleStyle(.switch).controlSize(.small)
+                    }
+
+                    let cacheStats = CacheManager.shared.stats
+                    privacySection("Statistics") {
+                        HStack(spacing: 16) {
+                            VStack(alignment: .leading) {
+                                Text("Hits").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(cacheStats.hits)").font(.caption.weight(.bold)).foregroundStyle(.teal)
+                            }
+                            VStack(alignment: .leading) {
+                                Text("Misses").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(cacheStats.misses)").font(.caption.weight(.bold))
+                            }
+                            VStack(alignment: .leading) {
+                                Text("Size").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: String(format: "%.1f MB", cacheStats.currentSizeMB)).font(.caption.weight(.bold))
+                            }
+                            VStack(alignment: .leading) {
+                                Text("Entries").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(cacheStats.currentEntries)").font(.caption.weight(.bold))
+                            }
+                        }
+                    }
+
+                    Button("Purge Cache") { state.purgeCache() }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    private func cacheBinding<T>(_ keyPath: WritableKeyPath<CacheSettings, T>) -> Binding<T> {
+        Binding(
+            get: { state.cacheSettings[keyPath: keyPath] },
+            set: { newVal in
+                var s = state.cacheSettings
+                s[keyPath: keyPath] = newVal
+                state.updateCache(s)
+            }
+        )
+    }
+
+    private func privacySection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+            content()
+        }
+    }
+}
+
 // MARK: - Privacy tab
 
 struct PrivacyView: View {
@@ -832,6 +955,35 @@ struct PrivacyView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+
+                // MITM section
+                privacySection("TLS Interception (MITM)") {
+                    if state.mitmSettings.caInstalled {
+                        HStack {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundStyle(.green)
+                            Text("Root CA installed").font(.caption)
+                            Spacer()
+                            Button("Trust") { state.trustMITMCA() }
+                                .buttonStyle(.bordered).controlSize(.mini)
+                            Button("Remove") { state.removeMITMCA() }
+                                .buttonStyle(.bordered).controlSize(.mini)
+                                .foregroundStyle(.red)
+                        }
+                        Toggle("Enable MITM", isOn: mitmBinding(\.enabled))
+                            .font(.caption).toggleStyle(.switch).controlSize(.small)
+
+                        if state.mitmSettings.enabled {
+                            Text("HTTPS body inspection is active for non-excluded hosts. Banking, Apple, and Google services are excluded by default.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("Generate a root CA to enable HTTPS body inspection. This allows WAF content rules and exfiltration scanning to work on encrypted traffic.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Button("Generate Root CA") { state.generateMITMCA() }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
             }
             .padding(12)
         }
@@ -846,6 +998,17 @@ struct PrivacyView: View {
                 var p = state.privacy
                 p[keyPath: keyPath] = newVal
                 state.updatePrivacy(p)
+            }
+        )
+    }
+
+    private func mitmBinding<T>(_ keyPath: WritableKeyPath<MITMSettings, T>) -> Binding<T> {
+        Binding(
+            get: { state.mitmSettings[keyPath: keyPath] },
+            set: { newVal in
+                var s = state.mitmSettings
+                s[keyPath: keyPath] = newVal
+                state.updateMITM(s)
             }
         )
     }

@@ -30,6 +30,9 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         case blacklisted(host: String, sourceName: String, category: String)
         case exfiltration(host: String, patternName: String, severity: String, preview: String)
         case privacyStripped(host: String, actions: [String])
+        case cacheHit(host: String, url: String)
+        case cacheMiss(host: String, url: String)
+        case mitmIntercepted(host: String)
         case log(LogEntry.Level, String)
     }
 
@@ -51,6 +54,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     private var rulesSnapshot: [WAFRule] = []
     private var privacySnapshot = PrivacySettings()
     private var blacklistSourcesSnapshot: [BlacklistSource] = []
+    private var mitmSnapshot = MITMSettings()
     private var upstream: Upstream?
     private var startCompletion: (@Sendable (Result<UInt16, Error>) -> Void)?
 
@@ -62,6 +66,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                rules: [WAFRule],
                privacy: PrivacySettings,
                blacklistSources: [BlacklistSource],
+               mitm: MITMSettings = MITMSettings(),
                completion: @escaping @Sendable (Result<UInt16, Error>) -> Void) {
         queue.async { [weak self] in
             guard let self else { return }
@@ -73,6 +78,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             self.rulesSnapshot = rules
             self.privacySnapshot = privacy
             self.blacklistSourcesSnapshot = blacklistSources
+            self.mitmSnapshot = mitm
             self.startCompletion = completion
             do {
                 let params = NWParameters.tcp
@@ -117,6 +123,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     func updateBlacklistSources(_ sources: [BlacklistSource]) {
         queue.async { [weak self] in self?.blacklistSourcesSnapshot = sources }
+    }
+
+    func updateMITM(_ settings: MITMSettings) {
+        queue.async { [weak self] in self?.mitmSnapshot = settings }
     }
 
     private func handleListenerState(_ state: NWListener.State, listener: NWListener) {
@@ -238,6 +248,22 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         }
 
         onEvent?(.allowed(host: host, method: method))
+
+        // Cache check (plain HTTP GET only)
+        if method.uppercased() == "GET" && method.uppercased() != "CONNECT" {
+            let headerStr = String(data: finalHeaderData, encoding: .utf8) ?? headerString
+            if let cached = CacheManager.shared.lookup(method: method, url: target, requestHeaders: headerStr) {
+                onEvent?(.cacheHit(host: host, url: target))
+                let response = "\(cached.statusLine)\r\n\(cached.responseHeaders)\r\n\r\n"
+                var responseData = Data(response.utf8)
+                responseData.append(cached.body)
+                client.send(content: responseData, completion: .contentProcessed { _ in
+                    client.cancel()
+                })
+                return
+            }
+            onEvent?(.cacheMiss(host: host, url: target))
+        }
 
         guard let up = upstream else {
             sendErrorResponse(client: client, status: "502 Bad Gateway", body: "No upstream configured.")

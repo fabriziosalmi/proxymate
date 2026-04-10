@@ -14,6 +14,8 @@ final class AppState: ObservableObject {
     @Published var proxies: [ProxyConfig] = []
     @Published var rules: [WAFRule] = []
     @Published var privacy = PrivacySettings()
+    @Published var cacheSettings = CacheSettings()
+    @Published var mitmSettings = MITMSettings()
     @Published var blacklistSources: [BlacklistSource] = []
     @Published var exfiltrationPacks: [ExfiltrationPack] = []
     @Published var selectedProxyID: ProxyConfig.ID?
@@ -29,6 +31,9 @@ final class AppState: ObservableObject {
         var blacklistBlocked: Int = 0
         var exfiltrationBlocked: Int = 0
         var privacyActions: Int = 0
+        var cacheHits: Int = 0
+        var cacheMisses: Int = 0
+        var mitmIntercepted: Int = 0
         var enabledSince: Date?
     }
 
@@ -38,6 +43,8 @@ final class AppState: ObservableObject {
     private let rulesKey       = "proxymate.rules.v1"
     private let selectedKey    = "proxymate.selected.v1"
     private let privacyKey     = "proxymate.privacy.v1"
+    private let cacheKey       = "proxymate.cache.v1"
+    private let mitmKey        = "proxymate.mitm.v1"
     private let blacklistKey   = "proxymate.blacklists.v1"
     private let exfilPacksKey  = "proxymate.exfiltration.v1"
 
@@ -62,6 +69,12 @@ final class AppState: ObservableObject {
             exfiltrationPacks = ExfiltrationPack.builtIn
         }
         log(.info, "Proxymate ready")
+
+        // Configure cache
+        CacheManager.shared.configure(cacheSettings)
+
+        // Check MITM CA status
+        mitmSettings.caInstalled = TLSManager.shared.isCAInstalled
 
         // Load cached blacklists from disk
         BlacklistManager.shared.loadCachedSources(blacklistSources)
@@ -127,7 +140,8 @@ final class AppState: ObservableObject {
                 upstream: .init(host: proxy.host, port: upstreamPort),
                 rules: rules,
                 privacy: privacy,
-                blacklistSources: blacklistSources
+                blacklistSources: blacklistSources,
+                mitm: mitmSettings
             )
         } catch {
             log(.error, "Local proxy start failed: \(error.localizedDescription)"); return
@@ -166,10 +180,11 @@ final class AppState: ObservableObject {
     private func startLocalProxy(upstream: LocalProxy.Upstream,
                                  rules: [WAFRule],
                                  privacy: PrivacySettings,
-                                 blacklistSources: [BlacklistSource]) async throws -> UInt16 {
+                                 blacklistSources: [BlacklistSource],
+                                 mitm: MITMSettings) async throws -> UInt16 {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UInt16, Error>) in
             localProxy.start(upstream: upstream, rules: rules, privacy: privacy,
-                             blacklistSources: blacklistSources) { result in
+                             blacklistSources: blacklistSources, mitm: mitm) { result in
                 cont.resume(with: result)
             }
         }
@@ -198,6 +213,14 @@ final class AppState: ObservableObject {
         case .privacyStripped(let host, let actions):
             stats.privacyActions += 1
             log(.info, "Privacy [\(actions.joined(separator: ", "))] \(host)", host: host)
+        case .cacheHit(let host, _):
+            stats.cacheHits += 1
+            log(.info, "CACHE HIT \(host)", host: host)
+        case .cacheMiss(_, _):
+            stats.cacheMisses += 1
+        case .mitmIntercepted(let host):
+            stats.mitmIntercepted += 1
+            log(.info, "MITM \(host)", host: host)
         case .log(let level, let message):
             log(level, message)
         }
@@ -208,6 +231,49 @@ final class AppState: ObservableObject {
     func updatePrivacy(_ p: PrivacySettings) {
         privacy = p; save()
         if isEnabled { localProxy.updatePrivacy(privacy) }
+    }
+
+    // MARK: - Cache
+
+    func updateCache(_ s: CacheSettings) {
+        cacheSettings = s; save()
+        CacheManager.shared.configure(s)
+    }
+
+    func purgeCache() {
+        CacheManager.shared.purgeAll()
+        log(.info, "Cache purged")
+    }
+
+    // MARK: - MITM
+
+    func updateMITM(_ s: MITMSettings) {
+        mitmSettings = s; save()
+        if isEnabled { localProxy.updateMITM(s) }
+    }
+
+    func generateMITMCA() {
+        do {
+            _ = try TLSManager.shared.generateCA()
+            mitmSettings.caInstalled = true
+            save()
+            log(.info, "Root CA generated and stored in Keychain")
+        } catch {
+            log(.error, "CA generation failed: \(error.localizedDescription)")
+        }
+    }
+
+    func removeMITMCA() {
+        TLSManager.shared.removeCA()
+        mitmSettings.caInstalled = false
+        mitmSettings.enabled = false
+        save()
+        if isEnabled { localProxy.updateMITM(mitmSettings) }
+        log(.info, "Root CA removed from Keychain")
+    }
+
+    func trustMITMCA() {
+        TLSManager.shared.promptUserToTrust()
     }
 
     // MARK: - Blacklists
@@ -339,6 +405,8 @@ final class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(proxies) { d.set(data, forKey: proxiesKey) }
         if let data = try? JSONEncoder().encode(rules)   { d.set(data, forKey: rulesKey) }
         if let data = try? JSONEncoder().encode(privacy) { d.set(data, forKey: privacyKey) }
+        if let data = try? JSONEncoder().encode(cacheSettings) { d.set(data, forKey: cacheKey) }
+        if let data = try? JSONEncoder().encode(mitmSettings) { d.set(data, forKey: mitmKey) }
         if let data = try? JSONEncoder().encode(blacklistSources) { d.set(data, forKey: blacklistKey) }
         if let data = try? JSONEncoder().encode(exfiltrationPacks) { d.set(data, forKey: exfilPacksKey) }
         if let id = selectedProxyID { d.set(id.uuidString, forKey: selectedKey) }
@@ -357,6 +425,14 @@ final class AppState: ObservableObject {
         if let data = d.data(forKey: privacyKey),
            let p = try? JSONDecoder().decode(PrivacySettings.self, from: data) {
             privacy = p
+        }
+        if let data = d.data(forKey: cacheKey),
+           let c = try? JSONDecoder().decode(CacheSettings.self, from: data) {
+            cacheSettings = c
+        }
+        if let data = d.data(forKey: mitmKey),
+           let m = try? JSONDecoder().decode(MITMSettings.self, from: data) {
+            mitmSettings = m
         }
         if let data = d.data(forKey: blacklistKey),
            let arr = try? JSONDecoder().decode([BlacklistSource].self, from: data) {
