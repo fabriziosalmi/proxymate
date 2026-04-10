@@ -27,6 +27,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         case stopped
         case allowed(host: String, method: String)
         case blocked(host: String, ruleName: String)
+        case blacklisted(host: String, sourceName: String, category: String)
+        case exfiltration(host: String, patternName: String, severity: String, preview: String)
         case privacyStripped(host: String, actions: [String])
         case log(LogEntry.Level, String)
     }
@@ -48,6 +50,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     private var listener: NWListener?
     private var rulesSnapshot: [WAFRule] = []
     private var privacySnapshot = PrivacySettings()
+    private var blacklistSourcesSnapshot: [BlacklistSource] = []
     private var upstream: Upstream?
     private var startCompletion: (@Sendable (Result<UInt16, Error>) -> Void)?
 
@@ -58,6 +61,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     func start(upstream: Upstream,
                rules: [WAFRule],
                privacy: PrivacySettings,
+               blacklistSources: [BlacklistSource],
                completion: @escaping @Sendable (Result<UInt16, Error>) -> Void) {
         queue.async { [weak self] in
             guard let self else { return }
@@ -68,6 +72,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             self.upstream = upstream
             self.rulesSnapshot = rules
             self.privacySnapshot = privacy
+            self.blacklistSourcesSnapshot = blacklistSources
             self.startCompletion = completion
             do {
                 let params = NWParameters.tcp
@@ -108,6 +113,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     func updatePrivacy(_ privacy: PrivacySettings) {
         queue.async { [weak self] in self?.privacySnapshot = privacy }
+    }
+
+    func updateBlacklistSources(_ sources: [BlacklistSource]) {
+        queue.async { [weak self] in self?.blacklistSourcesSnapshot = sources }
     }
 
     private func handleListenerState(_ state: NWListener.State, listener: NWListener) {
@@ -197,6 +206,21 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             let label = blocking.name.isEmpty ? blocking.pattern : blocking.name
             onEvent?(.blocked(host: host, ruleName: label))
             sendBlockedResponse(client: client, ruleName: label)
+            return
+        }
+
+        // Blacklist check
+        if let hit = BlacklistManager.shared.lookup(host: host, enabledSources: blacklistSourcesSnapshot) {
+            onEvent?(.blacklisted(host: host, sourceName: hit.sourceName, category: hit.category.rawValue))
+            sendBlockedResponse(client: client, ruleName: "\(hit.sourceName) [\(hit.category.rawValue)]")
+            return
+        }
+
+        // Exfiltration scan (headers + URL only, not body)
+        if let hit = ExfiltrationScanner.shared.scan(headers: headerString, target: target) {
+            onEvent?(.exfiltration(host: host, patternName: hit.patternName,
+                                   severity: hit.severity.rawValue, preview: hit.matchPreview))
+            sendBlockedResponse(client: client, ruleName: "Exfiltration: \(hit.patternName)")
             return
         }
 

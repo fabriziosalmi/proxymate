@@ -372,36 +372,45 @@ struct StatsView: View {
     private static let relative = RelativeDateTimeFormatter()
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                StatCard(title: "Status",
-                         value: state.isEnabled ? "On" : "Off",
-                         color: state.isEnabled ? .green : .secondary)
-                StatCard(title: "Active Since",
-                         value: state.stats.enabledSince
-                            .map { Self.relative.localizedString(for: $0, relativeTo: Date()) }
-                            ?? "—",
-                         color: .secondary)
+        ScrollView {
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    StatCard(title: "Status",
+                             value: state.isEnabled ? "On" : "Off",
+                             color: state.isEnabled ? .green : .secondary)
+                    StatCard(title: "Active Since",
+                             value: state.stats.enabledSince
+                                .map { Self.relative.localizedString(for: $0, relativeTo: Date()) }
+                                ?? "—",
+                             color: .secondary)
+                }
+                HStack(spacing: 10) {
+                    StatCard(title: "Allowed",
+                             value: "\(state.stats.requestsAllowed)",
+                             color: .blue)
+                    StatCard(title: "WAF Blocked",
+                             value: "\(state.stats.requestsBlocked)",
+                             color: .red)
+                }
+                HStack(spacing: 10) {
+                    StatCard(title: "Blacklisted",
+                             value: "\(state.stats.blacklistBlocked)",
+                             color: .orange)
+                    StatCard(title: "Exfiltration",
+                             value: "\(state.stats.exfiltrationBlocked)",
+                             color: .red)
+                }
+                HStack(spacing: 10) {
+                    StatCard(title: "Privacy",
+                             value: "\(state.stats.privacyActions)",
+                             color: .purple)
+                    StatCard(title: "Log Entries",
+                             value: "\(state.logs.count)",
+                             color: .secondary)
+                }
             }
-            HStack(spacing: 10) {
-                StatCard(title: "Allowed",
-                         value: "\(state.stats.requestsAllowed)",
-                         color: .blue)
-                StatCard(title: "Blocked",
-                         value: "\(state.stats.requestsBlocked)",
-                         color: .red)
-            }
-            HStack(spacing: 10) {
-                StatCard(title: "Privacy Actions",
-                         value: "\(state.stats.privacyActions)",
-                         color: .purple)
-                StatCard(title: "Log Entries",
-                         value: "\(state.logs.count)",
-                         color: .secondary)
-            }
-            Spacer()
+            .padding(12)
         }
-        .padding(12)
     }
 }
 
@@ -425,9 +434,41 @@ struct StatCard: View {
     }
 }
 
-// MARK: - Rules tab
+// MARK: - Rules tab (segmented: WAF / Blacklists / Exfiltration)
 
 struct RulesView: View {
+    @EnvironmentObject var state: AppState
+    @State private var section: RulesSection = .waf
+
+    enum RulesSection: String, CaseIterable, Identifiable {
+        case waf          = "WAF"
+        case blacklists   = "Lists"
+        case exfiltration = "Secrets"
+        var id: String { rawValue }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Section", selection: $section) {
+                ForEach(RulesSection.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(8)
+
+            Divider()
+
+            switch section {
+            case .waf:          WAFRulesSection()
+            case .blacklists:   BlacklistsSection()
+            case .exfiltration: ExfiltrationSection()
+            }
+        }
+    }
+}
+
+// MARK: WAF sub-section
+
+struct WAFRulesSection: View {
     @EnvironmentObject var state: AppState
     @State private var showingAdd = false
 
@@ -442,12 +483,10 @@ struct RulesView: View {
                 VStack(spacing: 8) {
                     Spacer()
                     Image(systemName: "shield.lefthalf.filled")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
+                        .font(.title2).foregroundStyle(.secondary)
                     Text("No rules yet").foregroundStyle(.secondary)
                     Button("Load Examples") { state.loadExampleRules() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .buttonStyle(.bordered).controlSize(.small)
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
@@ -458,8 +497,7 @@ struct RulesView: View {
                             Text(group.category.uppercased())
                                 .font(.caption2.weight(.bold))
                                 .foregroundStyle(.secondary)
-                                .padding(.horizontal, 12)
-                                .padding(.top, 6)
+                                .padding(.horizontal, 12).padding(.top, 6)
                             ForEach(group.rules) { rule in
                                 RuleRow(rule: rule)
                                     .contextMenu {
@@ -481,15 +519,12 @@ struct RulesView: View {
             HStack {
                 Button { showingAdd = true } label: {
                     Label("Add", systemImage: "plus")
-                }
-                .buttonStyle(.borderless)
+                }.buttonStyle(.borderless)
                 Button("Examples") { state.loadExampleRules() }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
                 Spacer()
-                Text(verbatim: "\(state.rules.filter(\.enabled).count) / \(state.rules.count) active")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(verbatim: "\(state.rules.filter(\.enabled).count) / \(state.rules.count)")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             .padding(8)
         }
@@ -509,19 +544,14 @@ struct RuleRow: View {
                 Text(rule.name.isEmpty ? rule.pattern : rule.name)
                     .font(.system(.body, design: .rounded).weight(.medium))
                 Text("\(rule.kind.rawValue) • \(rule.pattern)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
             if !rule.enabled {
-                Text("OFF")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
+                Text("OFF").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12).padding(.vertical, 6)
     }
 }
 
@@ -546,19 +576,16 @@ struct AddRuleSheet: View {
             }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Add") {
                     onAdd(WAFRule(name: name, kind: kind, pattern: pattern,
                                   category: category.isEmpty ? "Custom" : category))
                     dismiss()
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(pattern.isEmpty)
+                .keyboardShortcut(.defaultAction).disabled(pattern.isEmpty)
             }
         }
-        .padding(16)
-        .frame(width: 340)
+        .padding(16).frame(width: 340)
     }
 
     private var placeholder: String {
@@ -567,6 +594,176 @@ struct AddRuleSheet: View {
         case .blockDomain:  return "example.com"
         case .blockContent: return "substring"
         }
+    }
+}
+
+// MARK: Blacklists sub-section
+
+struct BlacklistsSection: View {
+    @EnvironmentObject var state: AppState
+    @State private var isRefreshing = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if state.blacklistSources.isEmpty {
+                VStack(spacing: 8) {
+                    Spacer()
+                    Image(systemName: "list.bullet.rectangle")
+                        .font(.title2).foregroundStyle(.secondary)
+                    Text("No blacklists configured").foregroundStyle(.secondary)
+                    Button("Add Built-in Lists") { state.loadBuiltInBlacklists() }
+                        .buttonStyle(.bordered).controlSize(.small)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(state.blacklistSources) { source in
+                            BlacklistRow(source: source)
+                                .contextMenu {
+                                    Button(source.enabled ? "Disable" : "Enable") {
+                                        state.toggleBlacklistSource(source.id)
+                                    }
+                                    Button("Refresh Now") {
+                                        state.refreshBlacklist(source.id)
+                                    }
+                                    Divider()
+                                    Button("Remove", role: .destructive) {
+                                        state.removeBlacklistSource(source.id)
+                                    }
+                                }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            Divider()
+            HStack {
+                Button("Add Built-in") { state.loadBuiltInBlacklists() }
+                    .buttonStyle(.borderless)
+                Spacer()
+                Button {
+                    isRefreshing = true
+                    state.refreshAllBlacklists()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { isRefreshing = false }
+                } label: {
+                    if isRefreshing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Refresh All", systemImage: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(8)
+        }
+    }
+}
+
+struct BlacklistRow: View {
+    let source: BlacklistSource
+    private static let dateFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: source.enabled ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(source.enabled ? categoryColor : .secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(source.name)
+                    .font(.system(.body, design: .rounded).weight(.medium))
+                HStack(spacing: 4) {
+                    Text(source.category.rawValue)
+                    if source.entryCount > 0 {
+                        Text(verbatim: "• \(source.entryCount) entries")
+                    }
+                    if let date = source.lastUpdated {
+                        Text(verbatim: "• \(Self.dateFormatter.localizedString(for: date, relativeTo: Date()))")
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+
+    private var categoryColor: Color {
+        switch source.category {
+        case .torExits: return .purple
+        case .ads: return .orange
+        case .malware: return .red
+        case .cryptoMiner: return .yellow
+        case .custom: return .blue
+        }
+    }
+}
+
+// MARK: Exfiltration sub-section
+
+struct ExfiltrationSection: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("SECRET DETECTION")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+
+                Text("Scans outbound HTTP headers and URLs for leaked credentials, API keys, and tokens. Matching requests are blocked with 403.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+
+                ForEach(state.exfiltrationPacks) { pack in
+                    ExfiltrationPackRow(pack: pack) {
+                        state.toggleExfiltrationPack(pack.id)
+                    }
+                }
+
+                if state.stats.exfiltrationBlocked > 0 {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        Text(verbatim: "\(state.stats.exfiltrationBlocked) exfiltration attempts blocked this session")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                }
+            }
+            .padding(.vertical, 8)
+        }
+    }
+}
+
+struct ExfiltrationPackRow: View {
+    let pack: ExfiltrationPack
+    let onToggle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(pack.name)
+                    .font(.system(.body, design: .rounded).weight(.medium))
+                Text(verbatim: "\(pack.description) (\(pack.patterns.count) patterns)")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer()
+            Toggle("", isOn: Binding(
+                get: { pack.enabled },
+                set: { _ in onToggle() }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .labelsHidden()
+        }
+        .padding(.horizontal, 12).padding(.vertical, 4)
     }
 }
 

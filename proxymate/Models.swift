@@ -104,12 +104,182 @@ nonisolated struct PrivacySettings: Codable, Hashable, Sendable {
         var id: String { rawValue }
     }
 
-    /// Known tracking cookie name prefixes.
     static let trackingCookiePrefixes: [String] = [
-        "_ga", "_gid", "_gat", "_gcl", "__utm",     // Google
-        "_fbp", "_fbc", "fr",                        // Facebook
-        "_pin_unauth",                               // Pinterest
-        "_tt_",                                      // TikTok
-        "_uet",                                      // Bing/Microsoft
+        "_ga", "_gid", "_gat", "_gcl", "__utm",
+        "_fbp", "_fbc", "fr",
+        "_pin_unauth",
+        "_tt_",
+        "_uet",
+    ]
+}
+
+// MARK: - Blacklist Sources
+
+nonisolated struct BlacklistSource: Identifiable, Codable, Hashable, Sendable {
+    var id: UUID = UUID()
+    var name: String
+    var url: String
+    var category: BlacklistCategory
+    var format: ListFormat
+    var enabled: Bool = true
+    var lastUpdated: Date?
+    var entryCount: Int = 0
+
+    enum BlacklistCategory: String, Codable, CaseIterable, Identifiable, Sendable {
+        case torExits    = "TOR Exits"
+        case ads         = "Ads & Tracking"
+        case malware     = "Malware & C2"
+        case cryptoMiner = "Crypto Miners"
+        case custom      = "Custom"
+        var id: String { rawValue }
+    }
+
+    enum ListFormat: String, Codable, CaseIterable, Identifiable, Sendable {
+        case plainDomains = "Plain Domains"       // one domain per line
+        case plainIPs     = "Plain IPs"           // one IP per line
+        case hosts        = "Hosts File"          // 0.0.0.0 domain or 127.0.0.1 domain
+        case adblockPlus  = "Adblock Plus"        // ||domain.com^
+        var id: String { rawValue }
+    }
+
+    static let builtIn: [BlacklistSource] = [
+        .init(name: "TOR Exit Nodes",
+              url: "https://check.torproject.org/torbulkexitlist",
+              category: .torExits,
+              format: .plainIPs),
+        .init(name: "Steven Black Hosts (Ads)",
+              url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+              category: .ads,
+              format: .hosts),
+        .init(name: "NoCoin Filter",
+              url: "https://raw.githubusercontent.com/nicehash/NoCoin/master/hosts.txt",
+              category: .cryptoMiner,
+              format: .hosts),
+        .init(name: "URLhaus Malware Domains",
+              url: "https://urlhaus.abuse.ch/downloads/hostfile/",
+              category: .malware,
+              format: .hosts),
+    ]
+}
+
+// MARK: - Exfiltration Scanner
+
+nonisolated struct ExfiltrationPack: Identifiable, Codable, Hashable, Sendable {
+    let id: String
+    var name: String
+    var description: String
+    var enabled: Bool
+    var patterns: [ExfiltrationPattern]
+}
+
+nonisolated struct ExfiltrationPattern: Identifiable, Codable, Hashable, Sendable {
+    var id: UUID = UUID()
+    var name: String
+    var regex: String
+    var severity: Severity
+
+    enum Severity: String, Codable, Sendable {
+        case critical, high, medium
+    }
+}
+
+extension ExfiltrationPack {
+    static let builtIn: [ExfiltrationPack] = [
+        .init(
+            id: "aws-keys",
+            name: "AWS Access Keys",
+            description: "Detects AWS access key IDs and secret keys in outbound requests",
+            enabled: true,
+            patterns: [
+                .init(name: "AWS Access Key ID",
+                      regex: #"(?:^|[^A-Z0-9])(AKIA[0-9A-Z]{16})(?:[^A-Z0-9]|$)"#,
+                      severity: .critical),
+                .init(name: "AWS Secret Key",
+                      regex: #"(?:aws_secret_access_key|secret_?key)\s*[:=]\s*['\"]?([A-Za-z0-9/+=]{40})"#,
+                      severity: .critical),
+            ]
+        ),
+        .init(
+            id: "github-tokens",
+            name: "GitHub Tokens",
+            description: "Detects GitHub PATs, fine-grained tokens, and OAuth tokens",
+            enabled: true,
+            patterns: [
+                .init(name: "GitHub PAT (classic)",
+                      regex: #"ghp_[A-Za-z0-9]{36}"#,
+                      severity: .critical),
+                .init(name: "GitHub PAT (fine-grained)",
+                      regex: #"github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}"#,
+                      severity: .critical),
+                .init(name: "GitHub OAuth",
+                      regex: #"gho_[A-Za-z0-9]{36}"#,
+                      severity: .high),
+            ]
+        ),
+        .init(
+            id: "stripe-keys",
+            name: "Stripe API Keys",
+            description: "Detects Stripe live and restricted keys",
+            enabled: true,
+            patterns: [
+                .init(name: "Stripe Live Secret",
+                      regex: #"sk_live_[A-Za-z0-9]{24,}"#,
+                      severity: .critical),
+                .init(name: "Stripe Restricted",
+                      regex: #"rk_live_[A-Za-z0-9]{24,}"#,
+                      severity: .critical),
+            ]
+        ),
+        .init(
+            id: "slack-tokens",
+            name: "Slack Tokens",
+            description: "Detects Slack bot, user, and webhook tokens",
+            enabled: true,
+            patterns: [
+                .init(name: "Slack Bot Token",
+                      regex: #"xoxb-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{24}"#,
+                      severity: .critical),
+                .init(name: "Slack User Token",
+                      regex: #"xoxp-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{24,}"#,
+                      severity: .critical),
+                .init(name: "Slack Webhook",
+                      regex: #"hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+"#,
+                      severity: .high),
+            ]
+        ),
+        .init(
+            id: "gcp-keys",
+            name: "Google Cloud / Firebase",
+            description: "Detects GCP service account keys and API keys",
+            enabled: false,
+            patterns: [
+                .init(name: "GCP API Key",
+                      regex: #"AIza[0-9A-Za-z_-]{35}"#,
+                      severity: .high),
+                .init(name: "GCP Service Account",
+                      regex: #"\"type\"\s*:\s*\"service_account\""#,
+                      severity: .critical),
+            ]
+        ),
+        .init(
+            id: "generic-secrets",
+            name: "Generic Secrets",
+            description: "Detects common secret patterns (API keys, passwords in URLs, private keys)",
+            enabled: false,
+            patterns: [
+                .init(name: "Private Key Header",
+                      regex: #"-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"#,
+                      severity: .critical),
+                .init(name: "Password in URL",
+                      regex: #"[a-z]+://[^:]+:[^@]{3,}@[a-z0-9]"#,
+                      severity: .high),
+                .init(name: "Generic API Key Assignment",
+                      regex: #"(?:api[_-]?key|apikey|secret[_-]?key)\s*[:=]\s*['\"]([A-Za-z0-9_\-]{20,})['\"]"#,
+                      severity: .medium),
+                .init(name: "Bearer Token (long)",
+                      regex: #"[Bb]earer\s+[A-Za-z0-9_\-.]{40,}"#,
+                      severity: .medium),
+            ]
+        ),
     ]
 }
