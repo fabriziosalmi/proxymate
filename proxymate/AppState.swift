@@ -13,6 +13,7 @@ final class AppState: ObservableObject {
 
     @Published var proxies: [ProxyConfig] = []
     @Published var rules: [WAFRule] = []
+    @Published var privacy = PrivacySettings()
     @Published var selectedProxyID: ProxyConfig.ID?
     @Published var isEnabled: Bool = false
     @Published var isBusy: Bool = false
@@ -23,6 +24,7 @@ final class AppState: ObservableObject {
     struct Stats {
         var requestsAllowed: Int = 0
         var requestsBlocked: Int = 0
+        var privacyActions: Int = 0
         var enabledSince: Date?
     }
 
@@ -31,6 +33,7 @@ final class AppState: ObservableObject {
     private let proxiesKey  = "proxymate.proxies.v1"
     private let rulesKey    = "proxymate.rules.v1"
     private let selectedKey = "proxymate.selected.v1"
+    private let privacyKey  = "proxymate.privacy.v1"
 
     // MARK: - Local proxy
 
@@ -51,6 +54,18 @@ final class AppState: ObservableObject {
         }
         log(.info, "Proxymate ready")
 
+        // Load persisted logs from disk
+        Task { [weak self] in
+            let persisted = await PersistentLogger.shared.loadPersistedLogs(limit: 200)
+            await MainActor.run {
+                guard let self else { return }
+                // Merge: persisted go behind current in-memory entries
+                let existingIDs = Set(self.logs.map(\.id))
+                let fresh = persisted.filter { !existingIDs.contains($0.id) }
+                self.logs.append(contentsOf: fresh)
+            }
+        }
+
         // Bridge LocalProxy events into MainActor state.
         localProxy.onEvent = { [weak self] event in
             Task { @MainActor [weak self] in
@@ -69,7 +84,6 @@ final class AppState: ObservableObject {
     func select(_ id: ProxyConfig.ID) {
         selectedProxyID = id
         save()
-        // Live-update the upstream if proxy is running.
         if isEnabled, let p = selectedProxy, let port = UInt16(exactly: p.port) {
             localProxy.updateUpstream(.init(host: p.host, port: port))
             log(.info, "Switched upstream to \(p.name)")
@@ -79,11 +93,7 @@ final class AppState: ObservableObject {
     // MARK: - Toggle
 
     func toggle() async {
-        if isEnabled {
-            await disable()
-        } else {
-            await enable()
-        }
+        if isEnabled { await disable() } else { await enable() }
     }
 
     func enable() async {
@@ -99,12 +109,12 @@ final class AppState: ObservableObject {
         isBusy = true
         defer { isBusy = false }
 
-        // 1. Start the local listener.
         let port: UInt16
         do {
             port = try await startLocalProxy(
                 upstream: .init(host: proxy.host, port: upstreamPort),
-                rules: rules
+                rules: rules,
+                privacy: privacy
             )
         } catch {
             log(.error, "Local proxy start failed: \(error.localizedDescription)")
@@ -112,7 +122,6 @@ final class AppState: ObservableObject {
         }
         localPort = port
 
-        // 2. Point the system proxy at our local listener.
         let synthetic = ProxyConfig(
             name: "Proxymate (local)",
             host: "127.0.0.1",
@@ -136,9 +145,7 @@ final class AppState: ObservableObject {
     func disable() async {
         isBusy = true
         defer { isBusy = false }
-        do {
-            try await ProxyManager.disable()
-        } catch {
+        do { try await ProxyManager.disable() } catch {
             log(.error, "System proxy disable failed: \(error.localizedDescription)")
         }
         localProxy.stop()
@@ -149,9 +156,10 @@ final class AppState: ObservableObject {
     }
 
     private func startLocalProxy(upstream: LocalProxy.Upstream,
-                                 rules: [WAFRule]) async throws -> UInt16 {
+                                 rules: [WAFRule],
+                                 privacy: PrivacySettings) async throws -> UInt16 {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UInt16, Error>) in
-            localProxy.start(upstream: upstream, rules: rules) { result in
+            localProxy.start(upstream: upstream, rules: rules, privacy: privacy) { result in
                 cont.resume(with: result)
             }
         }
@@ -167,55 +175,57 @@ final class AppState: ObservableObject {
             log(.info, "Local proxy stopped")
         case .allowed(let host, let method):
             stats.requestsAllowed += 1
-            log(.info, "\(method) \(host)")
+            log(.info, "\(method) \(host)", host: host)
         case .blocked(let host, let ruleName):
             stats.requestsBlocked += 1
-            log(.warn, "BLOCKED \(host) — \(ruleName)")
+            log(.warn, "BLOCKED \(host) — \(ruleName)", host: host)
+        case .privacyStripped(let host, let actions):
+            stats.privacyActions += 1
+            log(.info, "Privacy [\(actions.joined(separator: ", "))] \(host)", host: host)
         case .log(let level, let message):
             log(level, message)
         }
     }
 
+    // MARK: - Privacy
+
+    func updatePrivacy(_ p: PrivacySettings) {
+        privacy = p
+        save()
+        if isEnabled { localProxy.updatePrivacy(privacy) }
+    }
+
     // MARK: - Proxy CRUD
 
-    func addProxy(_ p: ProxyConfig) {
-        proxies.append(p)
-        save()
-    }
+    func addProxy(_ p: ProxyConfig) { proxies.append(p); save() }
 
     func removeProxy(_ id: ProxyConfig.ID) {
         proxies.removeAll { $0.id == id }
-        if selectedProxyID == id {
-            selectedProxyID = proxies.first?.id
-        }
+        if selectedProxyID == id { selectedProxyID = proxies.first?.id }
         save()
     }
 
     func updateProxy(_ p: ProxyConfig) {
         if let i = proxies.firstIndex(where: { $0.id == p.id }) {
-            proxies[i] = p
-            save()
+            proxies[i] = p; save()
         }
     }
 
     // MARK: - Rule CRUD
 
     func addRule(_ r: WAFRule) {
-        rules.append(r)
-        save()
+        rules.append(r); save()
         if isEnabled { localProxy.updateRules(rules) }
     }
 
     func removeRule(_ id: WAFRule.ID) {
-        rules.removeAll { $0.id == id }
-        save()
+        rules.removeAll { $0.id == id }; save()
         if isEnabled { localProxy.updateRules(rules) }
     }
 
     func toggleRule(_ id: WAFRule.ID) {
         if let i = rules.firstIndex(where: { $0.id == id }) {
-            rules[i].enabled.toggle()
-            save()
+            rules[i].enabled.toggle(); save()
             if isEnabled { localProxy.updateRules(rules) }
         }
     }
@@ -223,18 +233,18 @@ final class AppState: ObservableObject {
     func loadExampleRules() {
         let existingPatterns = Set(rules.map { $0.pattern.lowercased() })
         let new = WAFRule.examples.filter { !existingPatterns.contains($0.pattern.lowercased()) }
-        rules.append(contentsOf: new)
-        save()
+        rules.append(contentsOf: new); save()
         if isEnabled { localProxy.updateRules(rules) }
         log(.info, "Loaded \(new.count) example rules")
     }
 
     // MARK: - Logging
 
-    func log(_ level: LogEntry.Level, _ message: String) {
-        let entry = LogEntry(timestamp: Date(), level: level, message: message)
+    func log(_ level: LogEntry.Level, _ message: String, host: String = "") {
+        let entry = LogEntry(timestamp: Date(), level: level, message: message, host: host)
         logs.insert(entry, at: 0)
         if logs.count > 500 { logs = Array(logs.prefix(500)) }
+        PersistentLogger.shared.write(entry)
     }
 
     func clearLogs() { logs.removeAll() }
@@ -245,6 +255,7 @@ final class AppState: ObservableObject {
         let d = UserDefaults.standard
         if let data = try? JSONEncoder().encode(proxies) { d.set(data, forKey: proxiesKey) }
         if let data = try? JSONEncoder().encode(rules)   { d.set(data, forKey: rulesKey) }
+        if let data = try? JSONEncoder().encode(privacy) { d.set(data, forKey: privacyKey) }
         if let id = selectedProxyID { d.set(id.uuidString, forKey: selectedKey) }
     }
 
@@ -257,6 +268,10 @@ final class AppState: ObservableObject {
         if let data = d.data(forKey: rulesKey),
            let arr = try? JSONDecoder().decode([WAFRule].self, from: data) {
             rules = arr
+        }
+        if let data = d.data(forKey: privacyKey),
+           let p = try? JSONDecoder().decode(PrivacySettings.self, from: data) {
+            privacy = p
         }
         if let s = d.string(forKey: selectedKey), let uuid = UUID(uuidString: s) {
             selectedProxyID = uuid

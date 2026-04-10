@@ -65,13 +65,51 @@ struct WAFRule: Identifiable, Codable, Hashable, Sendable {
     ]
 }
 
-struct LogEntry: Identifiable, Hashable, Sendable {
-    let id: UUID = UUID()
+nonisolated struct LogEntry: Identifiable, Hashable, Codable, Sendable {
+    let id: UUID
     let timestamp: Date
     let level: Level
     let message: String
+    let host: String
 
-    enum Level: String, Sendable {
+    enum Level: String, Codable, Sendable {
         case info, warn, error
     }
+
+    init(id: UUID = UUID(), timestamp: Date = Date(), level: Level, message: String, host: String = "") {
+        self.id = id
+        self.timestamp = timestamp
+        self.level = level
+        self.message = message
+        self.host = host
+    }
+}
+
+// MARK: - Privacy Settings
+
+nonisolated struct PrivacySettings: Codable, Hashable, Sendable {
+    var stripUserAgent: Bool = false
+    var customUserAgent: String = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+    var stripReferer: Bool = false
+    var refererPolicy: RefererPolicy = .originOnly
+    var stripTrackingCookies: Bool = false
+    var forceDNT: Bool = true
+    var forceGPC: Bool = true
+    var stripETag: Bool = false
+    var stripServerHeaders: Bool = false
+
+    enum RefererPolicy: String, Codable, CaseIterable, Identifiable, Sendable {
+        case originOnly  = "Origin Only"
+        case strip       = "Strip Completely"
+        var id: String { rawValue }
+    }
+
+    /// Known tracking cookie name prefixes.
+    static let trackingCookiePrefixes: [String] = [
+        "_ga", "_gid", "_gat", "_gcl", "__utm",     // Google
+        "_fbp", "_fbc", "fr",                        // Facebook
+        "_pin_unauth",                               // Pinterest
+        "_tt_",                                      // TikTok
+        "_uet",                                      // Bing/Microsoft
+    ]
 }

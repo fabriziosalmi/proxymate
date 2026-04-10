@@ -4,10 +4,8 @@
 //
 //  In-process HTTP/HTTPS forward proxy. Bound to 127.0.0.1 on a random port.
 //  When the user enables Proxymate, the OS proxy is set to point at this
-//  listener; we apply the WAF, then forward the raw request to the upstream
-//  proxy chosen by the user. HTTPS comes through as `CONNECT host:port`,
-//  which we WAF-check on the host (we cannot inspect the encrypted body) and
-//  then tunnel transparently.
+//  listener; we apply the WAF + privacy header stripping, then forward the
+//  raw request to the upstream proxy chosen by the user.
 //
 //  Built on Network.framework — no third-party dependencies.
 //
@@ -29,6 +27,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         case stopped
         case allowed(host: String, method: String)
         case blocked(host: String, ruleName: String)
+        case privacyStripped(host: String, actions: [String])
         case log(LogEntry.Level, String)
     }
 
@@ -48,6 +47,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     private let queue = DispatchQueue(label: "proxymate.localproxy", qos: .userInitiated)
     private var listener: NWListener?
     private var rulesSnapshot: [WAFRule] = []
+    private var privacySnapshot = PrivacySettings()
     private var upstream: Upstream?
     private var startCompletion: (@Sendable (Result<UInt16, Error>) -> Void)?
 
@@ -57,6 +57,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     func start(upstream: Upstream,
                rules: [WAFRule],
+               privacy: PrivacySettings,
                completion: @escaping @Sendable (Result<UInt16, Error>) -> Void) {
         queue.async { [weak self] in
             guard let self else { return }
@@ -66,6 +67,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
             self.upstream = upstream
             self.rulesSnapshot = rules
+            self.privacySnapshot = privacy
             self.startCompletion = completion
             do {
                 let params = NWParameters.tcp
@@ -97,15 +99,15 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     }
 
     func updateRules(_ rules: [WAFRule]) {
-        queue.async { [weak self] in
-            self?.rulesSnapshot = rules
-        }
+        queue.async { [weak self] in self?.rulesSnapshot = rules }
     }
 
     func updateUpstream(_ upstream: Upstream) {
-        queue.async { [weak self] in
-            self?.upstream = upstream
-        }
+        queue.async { [weak self] in self?.upstream = upstream }
+    }
+
+    func updatePrivacy(_ privacy: PrivacySettings) {
+        queue.async { [weak self] in self?.privacySnapshot = privacy }
     }
 
     private func handleListenerState(_ state: NWListener.State, listener: NWListener) {
@@ -146,9 +148,6 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         }
     }
 
-    /// Read from `connection` until we hit `\r\n\r\n` or 16KB. Anything past
-    /// the header terminator is returned in `leftover` so we can forward it
-    /// on to the upstream as part of the request body / first packet.
     private func readHeaders(connection: NWConnection,
                              accumulator: Data = Data(),
                              completion: @escaping @Sendable (Result<(Data, Data), Error>) -> Void) {
@@ -191,7 +190,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         let target = String(parts[1])
         let host = Self.extractHost(method: method, target: target, headers: headerString)
 
-        // WAF
+        // WAF check
         if let blocking = rulesSnapshot.first(where: {
             $0.enabled && Self.matches(rule: $0, host: host, target: target, headers: headerString)
         }) {
@@ -201,14 +200,123 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             return
         }
 
+        // Privacy header stripping (only for plain HTTP, not CONNECT tunnels)
+        var finalHeaderData = headerData
+        if method.uppercased() != "CONNECT" {
+            let (rewritten, actions) = Self.applyPrivacy(
+                headerString: headerString,
+                settings: privacySnapshot
+            )
+            if !actions.isEmpty {
+                onEvent?(.privacyStripped(host: host, actions: actions))
+                finalHeaderData = Data(rewritten.utf8)
+            }
+        }
+
         onEvent?(.allowed(host: host, method: method))
 
         guard let up = upstream else {
             sendErrorResponse(client: client, status: "502 Bad Gateway", body: "No upstream configured.")
             return
         }
-        forward(client: client, headerData: headerData, leftover: leftover, upstream: up)
+        forward(client: client, headerData: finalHeaderData, leftover: leftover, upstream: up)
     }
+
+    // MARK: - Privacy header rewriting
+
+    static func applyPrivacy(headerString: String, settings: PrivacySettings) -> (String, [String]) {
+        var actions: [String] = []
+        var lines = headerString.split(separator: "\r\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        guard lines.count > 1 else { return (headerString, []) }
+
+        // Track which headers we need to inject
+        var hasDNT = false
+        var hasGPC = false
+
+        var i = 1  // skip request line
+        while i < lines.count {
+            let lower = lines[i].lowercased()
+
+            // User-Agent
+            if lower.hasPrefix("user-agent:") && settings.stripUserAgent {
+                lines[i] = "User-Agent: \(settings.customUserAgent)"
+                actions.append("UA")
+            }
+
+            // Referer
+            if lower.hasPrefix("referer:") || lower.hasPrefix("referrer:") {
+                if settings.stripReferer {
+                    switch settings.refererPolicy {
+                    case .strip:
+                        lines.remove(at: i)
+                        actions.append("Ref-strip")
+                        continue
+                    case .originOnly:
+                        let val = lines[i].drop(while: { $0 != ":" }).dropFirst()
+                            .trimmingCharacters(in: .whitespaces)
+                        if let url = URL(string: val),
+                           let scheme = url.scheme, let host = url.host {
+                            let port = url.port.map { ":\($0)" } ?? ""
+                            lines[i] = "Referer: \(scheme)://\(host)\(port)/"
+                            actions.append("Ref-origin")
+                        }
+                    }
+                }
+            }
+
+            // Cookie — strip tracking cookies
+            if lower.hasPrefix("cookie:") && settings.stripTrackingCookies {
+                let prefix = "Cookie: "
+                let rawValue = String(lines[i].dropFirst(prefix.count))
+                let cookies = rawValue.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+                let filtered = cookies.filter { cookie in
+                    let name = String(cookie.prefix(while: { $0 != "=" })).lowercased()
+                    return !PrivacySettings.trackingCookiePrefixes.contains(where: { name.hasPrefix($0) })
+                }
+                if filtered.count < cookies.count {
+                    actions.append("Cookie(\(cookies.count - filtered.count))")
+                    if filtered.isEmpty {
+                        lines.remove(at: i)
+                        continue
+                    } else {
+                        lines[i] = prefix + filtered.joined(separator: "; ")
+                    }
+                }
+            }
+
+            // ETag (If-None-Match in request — supercookie tracking)
+            if (lower.hasPrefix("if-none-match:") || lower.hasPrefix("if-match:")) && settings.stripETag {
+                lines.remove(at: i)
+                actions.append("ETag")
+                continue
+            }
+
+            // Detect existing DNT / GPC
+            if lower.hasPrefix("dnt:") { hasDNT = true }
+            if lower.hasPrefix("sec-gpc:") { hasGPC = true }
+
+            i += 1
+        }
+
+        // Inject DNT and Sec-GPC before the final empty line
+        let insertIdx = max(lines.count - 1, 1)
+        if settings.forceDNT && !hasDNT {
+            lines.insert("DNT: 1", at: insertIdx)
+            actions.append("DNT")
+        }
+        if settings.forceGPC && !hasGPC {
+            lines.insert("Sec-GPC: 1", at: insertIdx)
+            actions.append("GPC")
+        }
+
+        if actions.isEmpty {
+            return (headerString, [])
+        }
+        return (lines.joined(separator: "\r\n"), actions)
+    }
+
+    // MARK: - Forwarding
 
     private func forward(client: NWConnection,
                          headerData: Data,
@@ -314,13 +422,11 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     static func extractHost(method: String, target: String, headers: String) -> String {
         if method.uppercased() == "CONNECT" {
-            // target = "host:port"
             return String(target.split(separator: ":").first ?? "")
         }
         if let url = URL(string: target), let h = url.host {
             return h
         }
-        // Fallback: Host: header
         for line in headers.split(separator: "\r\n", omittingEmptySubsequences: false) {
             if line.lowercased().hasPrefix("host:") {
                 let value = line.dropFirst("host:".count).trimmingCharacters(in: .whitespaces)

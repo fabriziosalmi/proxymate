@@ -3,7 +3,7 @@
 //  proxymate
 //
 //  Popover content shown by MenuBarExtra. Header (status + master toggle),
-//  tab bar, and the four tab bodies.
+//  tab bar, and the five tab bodies.
 //
 
 import SwiftUI
@@ -18,6 +18,7 @@ struct ContentView: View {
         case logs    = "Logs"
         case stats   = "Stats"
         case rules   = "Rules"
+        case privacy = "Privacy"
         var id: String { rawValue }
         var systemImage: String {
             switch self {
@@ -25,6 +26,7 @@ struct ContentView: View {
             case .logs:    return "list.bullet.rectangle"
             case .stats:   return "chart.bar"
             case .rules:   return "shield.lefthalf.filled"
+            case .privacy: return "eye.slash"
             }
         }
     }
@@ -36,9 +38,9 @@ struct ContentView: View {
             tabBar
             Divider()
             content
-                .frame(height: 300)
+                .frame(height: 340)
         }
-        .frame(width: 380)
+        .frame(width: 400)
     }
 
     // MARK: - Header
@@ -85,10 +87,11 @@ struct ContentView: View {
                 } label: {
                     VStack(spacing: 2) {
                         Image(systemName: t.systemImage)
-                        Text(t.rawValue).font(.caption)
+                            .font(.caption2)
+                        Text(t.rawValue).font(.system(size: 9))
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 5)
                     .foregroundStyle(tab == t ? Color.accentColor : .secondary)
                     .contentShape(Rectangle())
                 }
@@ -106,6 +109,7 @@ struct ContentView: View {
         case .logs:    LogsView()
         case .stats:   StatsView()
         case .rules:   RulesView()
+        case .privacy: PrivacyView()
         }
     }
 }
@@ -224,28 +228,99 @@ struct AddProxySheet: View {
     }
 }
 
-// MARK: - Logs tab
+// MARK: - Logs tab (search, filter, click-to-rule)
 
 struct LogsView: View {
     @EnvironmentObject var state: AppState
+    @State private var search = ""
+    @State private var levelFilter: LogEntry.Level?
+
+    private var filteredLogs: [LogEntry] {
+        state.logs.filter { entry in
+            if let lf = levelFilter, entry.level != lf { return false }
+            if search.isEmpty { return true }
+            let q = search.lowercased()
+            return entry.message.lowercased().contains(q) ||
+                   entry.host.lowercased().contains(q)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            if state.logs.isEmpty {
+            // Search + filter bar
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                TextField("Search logs...", text: $search)
+                    .textFieldStyle(.plain)
+                    .font(.caption)
+
+                ForEach([
+                    (nil as LogEntry.Level?, "All", Color.primary),
+                    (LogEntry.Level.info,    "I",   Color.blue),
+                    (LogEntry.Level.warn,    "W",   Color.orange),
+                    (LogEntry.Level.error,   "E",   Color.red)
+                ], id: \.1) { (level, label, color) in
+                    Button {
+                        levelFilter = levelFilter == level ? nil : level
+                    } label: {
+                        Text(label)
+                            .font(.system(.caption2, design: .monospaced).weight(.bold))
+                            .foregroundStyle(levelFilter == level ? .white : color)
+                            .frame(width: 20, height: 18)
+                            .background(
+                                levelFilter == level ? color : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 3)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+
+            Divider()
+
+            if filteredLogs.isEmpty {
                 Spacer()
-                Text("No logs yet").foregroundStyle(.secondary)
+                Text(state.logs.isEmpty ? "No logs yet" : "No matching logs")
+                    .foregroundStyle(.secondary)
                 Spacer()
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach(state.logs) { LogRow(entry: $0) }
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(filteredLogs) { entry in
+                            LogRow(entry: entry)
+                                .contextMenu {
+                                    if !entry.host.isEmpty {
+                                        Button("Block \(entry.host)") {
+                                            state.addRule(WAFRule(
+                                                name: "Block \(entry.host)",
+                                                kind: .blockDomain,
+                                                pattern: entry.host,
+                                                category: "Custom"
+                                            ))
+                                        }
+                                        Button("Search: \(entry.host)") {
+                                            search = entry.host
+                                        }
+                                        Divider()
+                                    }
+                                    Button("Copy") {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(entry.message, forType: .string)
+                                    }
+                                }
+                        }
                     }
-                    .padding(8)
+                    .padding(6)
                 }
             }
+
             Divider()
             HStack {
-                Text(verbatim: "\(state.logs.count) entries")
+                Text(verbatim: "\(filteredLogs.count)\(filteredLogs.count != state.logs.count ? " / \(state.logs.count)" : "") entries")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -268,16 +343,18 @@ struct LogRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(Self.formatter.string(from: entry.timestamp))
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.tertiary)
             Circle()
                 .fill(color)
-                .frame(width: 6, height: 6)
+                .frame(width: 5, height: 5)
             Text(entry.message)
-                .font(.caption)
+                .font(.caption2)
                 .textSelection(.enabled)
+                .lineLimit(2)
             Spacer(minLength: 0)
         }
+        .padding(.vertical, 1)
     }
     private var color: Color {
         switch entry.level {
@@ -295,7 +372,7 @@ struct StatsView: View {
     private static let relative = RelativeDateTimeFormatter()
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             HStack(spacing: 10) {
                 StatCard(title: "Status",
                          value: state.isEnabled ? "On" : "Off",
@@ -314,12 +391,15 @@ struct StatsView: View {
                          value: "\(state.stats.requestsBlocked)",
                          color: .red)
             }
+            HStack(spacing: 10) {
+                StatCard(title: "Privacy Actions",
+                         value: "\(state.stats.privacyActions)",
+                         color: .purple)
+                StatCard(title: "Log Entries",
+                         value: "\(state.logs.count)",
+                         color: .secondary)
+            }
             Spacer()
-            Text("Per-request stats activate once the in-app proxy is wired up.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.bottom, 8)
         }
         .padding(12)
     }
@@ -487,5 +567,105 @@ struct AddRuleSheet: View {
         case .blockDomain:  return "example.com"
         case .blockContent: return "substring"
         }
+    }
+}
+
+// MARK: - Privacy tab
+
+struct PrivacyView: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Section: Signals
+                privacySection("Signals") {
+                    privacyToggle("Send Do Not Track (DNT: 1)",
+                                  isOn: binding(\.forceDNT))
+                    privacyToggle("Send Global Privacy Control (Sec-GPC: 1)",
+                                  isOn: binding(\.forceGPC))
+                }
+
+                // Section: Headers
+                privacySection("Headers") {
+                    privacyToggle("Replace User-Agent",
+                                  isOn: binding(\.stripUserAgent))
+                    if state.privacy.stripUserAgent {
+                        TextField("Custom UA", text: binding(\.customUserAgent))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.caption)
+                    }
+
+                    privacyToggle("Strip/reduce Referer",
+                                  isOn: binding(\.stripReferer))
+                    if state.privacy.stripReferer {
+                        Picker("Policy", selection: binding(\.refererPolicy)) {
+                            ForEach(PrivacySettings.RefererPolicy.allCases) {
+                                Text($0.rawValue).tag($0)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    privacyToggle("Strip ETag / If-None-Match (anti-supercookie)",
+                                  isOn: binding(\.stripETag))
+                }
+
+                // Section: Cookies
+                privacySection("Cookies") {
+                    privacyToggle("Strip tracking cookies (_ga, _fbp, etc.)",
+                                  isOn: binding(\.stripTrackingCookies))
+                }
+
+                // Section: Response
+                privacySection("Response Cleaning") {
+                    privacyToggle("Strip Server / X-Powered-By from responses",
+                                  isOn: binding(\.stripServerHeaders))
+                    Text("Response header stripping requires TLS MITM (coming soon).")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+                if state.stats.privacyActions > 0 {
+                    HStack {
+                        Image(systemName: "checkmark.shield")
+                            .foregroundStyle(.purple)
+                        Text(verbatim: "\(state.stats.privacyActions) privacy actions applied this session")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func binding<T>(_ keyPath: WritableKeyPath<PrivacySettings, T>) -> Binding<T> {
+        Binding(
+            get: { state.privacy[keyPath: keyPath] },
+            set: { newVal in
+                var p = state.privacy
+                p[keyPath: keyPath] = newVal
+                state.updatePrivacy(p)
+            }
+        )
+    }
+
+    private func privacySection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+            content()
+        }
+    }
+
+    private func privacyToggle(_ label: String, isOn: Binding<Bool>) -> some View {
+        Toggle(label, isOn: isOn)
+            .font(.caption)
+            .toggleStyle(.switch)
+            .controlSize(.small)
     }
 }
