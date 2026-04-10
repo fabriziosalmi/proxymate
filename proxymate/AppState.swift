@@ -16,6 +16,8 @@ final class AppState: ObservableObject {
     @Published var privacy = PrivacySettings()
     @Published var cacheSettings = CacheSettings()
     @Published var mitmSettings = MITMSettings()
+    @Published var aiSettings = AISettings()
+    @Published var aiProviderStats: [String: AIProviderStats] = [:]
     @Published var blacklistSources: [BlacklistSource] = []
     @Published var exfiltrationPacks: [ExfiltrationPack] = []
     @Published var selectedProxyID: ProxyConfig.ID?
@@ -34,6 +36,9 @@ final class AppState: ObservableObject {
         var cacheHits: Int = 0
         var cacheMisses: Int = 0
         var mitmIntercepted: Int = 0
+        var aiRequests: Int = 0
+        var aiBlocked: Int = 0
+        var aiTotalCostUSD: Double = 0
         var enabledSince: Date?
     }
 
@@ -45,6 +50,7 @@ final class AppState: ObservableObject {
     private let privacyKey     = "proxymate.privacy.v1"
     private let cacheKey       = "proxymate.cache.v1"
     private let mitmKey        = "proxymate.mitm.v1"
+    private let aiSettingsKey  = "proxymate.ai.v1"
     private let blacklistKey   = "proxymate.blacklists.v1"
     private let exfilPacksKey  = "proxymate.exfiltration.v1"
 
@@ -70,8 +76,9 @@ final class AppState: ObservableObject {
         }
         log(.info, "Proxymate ready")
 
-        // Configure cache
+        // Configure cache + AI tracker
         CacheManager.shared.configure(cacheSettings)
+        AITracker.shared.configure(providers: AIProvider.builtIn, settings: aiSettings)
 
         // Check MITM CA status
         mitmSettings.caInstalled = TLSManager.shared.isCAInstalled
@@ -223,6 +230,16 @@ final class AppState: ObservableObject {
         case .mitmIntercepted(let host):
             stats.mitmIntercepted += 1
             log(.info, "MITM \(host)", host: host)
+        case .aiDetected(let host, let provider):
+            stats.aiRequests += 1
+            log(.info, "AI \(provider) \(host)", host: host)
+        case .aiBlocked(let host, let provider, let reason):
+            stats.aiBlocked += 1
+            log(.warn, "AI BLOCKED \(provider) \(host) — \(reason)", host: host)
+        case .aiUsage(let provider, let model, let prompt, let completion, let cost):
+            stats.aiTotalCostUSD += cost
+            aiProviderStats = AITracker.shared.getStats()
+            log(.info, "AI \(provider)/\(model): \(prompt)+\(completion) tokens, $\(String(format: "%.4f", cost))")
         case .log(let level, let message):
             log(level, message)
         }
@@ -276,6 +293,21 @@ final class AppState: ObservableObject {
 
     func trustMITMCA() {
         TLSManager.shared.promptUserToTrust()
+    }
+
+    // MARK: - AI
+
+    func updateAISettings(_ s: AISettings) {
+        aiSettings = s; save()
+        AITracker.shared.updateSettings(s)
+    }
+
+    func resetAIStats() {
+        AITracker.shared.resetStats()
+        aiProviderStats.removeAll()
+        stats.aiRequests = 0
+        stats.aiBlocked = 0
+        stats.aiTotalCostUSD = 0
     }
 
     // MARK: - Blacklists
@@ -436,6 +468,7 @@ final class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(rules)   { d.set(data, forKey: rulesKey) }
         if let data = try? JSONEncoder().encode(privacy) { d.set(data, forKey: privacyKey) }
         if let data = try? JSONEncoder().encode(cacheSettings) { d.set(data, forKey: cacheKey) }
+        if let data = try? JSONEncoder().encode(aiSettings) { d.set(data, forKey: aiSettingsKey) }
         if let data = try? JSONEncoder().encode(mitmSettings) { d.set(data, forKey: mitmKey) }
         if let data = try? JSONEncoder().encode(blacklistSources) { d.set(data, forKey: blacklistKey) }
         if let data = try? JSONEncoder().encode(exfiltrationPacks) { d.set(data, forKey: exfilPacksKey) }
@@ -459,6 +492,10 @@ final class AppState: ObservableObject {
         if let data = d.data(forKey: cacheKey),
            let c = try? JSONDecoder().decode(CacheSettings.self, from: data) {
             cacheSettings = c
+        }
+        if let data = d.data(forKey: aiSettingsKey),
+           let a = try? JSONDecoder().decode(AISettings.self, from: data) {
+            aiSettings = a
         }
         if let data = d.data(forKey: mitmKey),
            let m = try? JSONDecoder().decode(MITMSettings.self, from: data) {

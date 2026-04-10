@@ -18,6 +18,7 @@ struct ContentView: View {
         case logs    = "Logs"
         case stats   = "Stats"
         case rules   = "Rules"
+        case ai      = "AI"
         case cache   = "Cache"
         case privacy = "Privacy"
         var id: String { rawValue }
@@ -27,6 +28,7 @@ struct ContentView: View {
             case .logs:    return "list.bullet.rectangle"
             case .stats:   return "chart.bar"
             case .rules:   return "shield.lefthalf.filled"
+            case .ai:      return "brain"
             case .cache:   return "internaldrive"
             case .privacy: return "eye.slash"
             }
@@ -60,10 +62,12 @@ struct ContentView: View {
                 .keyboardShortcut("3", modifiers: .command)
             Button("") { tab = .rules }
                 .keyboardShortcut("4", modifiers: .command)
-            Button("") { tab = .cache }
+            Button("") { tab = .ai }
                 .keyboardShortcut("5", modifiers: .command)
-            Button("") { tab = .privacy }
+            Button("") { tab = .cache }
                 .keyboardShortcut("6", modifiers: .command)
+            Button("") { tab = .privacy }
+                .keyboardShortcut("7", modifiers: .command)
         }
         .frame(width: 0, height: 0)
         .opacity(0)
@@ -135,6 +139,7 @@ struct ContentView: View {
         case .logs:    LogsView()
         case .stats:   StatsView()
         case .rules:   RulesView()
+        case .ai:      AIView()
         case .cache:   CacheView()
         case .privacy: PrivacyView()
         }
@@ -804,6 +809,160 @@ struct ExfiltrationPackRow: View {
             .labelsHidden()
         }
         .padding(.horizontal, 12).padding(.vertical, 4)
+    }
+}
+
+// MARK: - AI tab
+
+struct AIView: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                // Spend summary
+                spendSummary
+
+                Divider()
+
+                // Provider grid
+                sectionHeader("PROVIDERS")
+                LazyVStack(spacing: 4) {
+                    ForEach(AIProvider.builtIn) { provider in
+                        AIProviderRow(
+                            provider: provider,
+                            stats: state.aiProviderStats[provider.id]
+                        )
+                    }
+                }
+
+                Divider()
+
+                // Budget
+                sectionHeader("BUDGET CAPS")
+                budgetSection
+
+                Divider()
+
+                // Actions
+                HStack {
+                    Button("Reset Stats") { state.resetAIStats() }
+                        .buttonStyle(.bordered).controlSize(.small)
+                    Spacer()
+                    Text(verbatim: "\(state.stats.aiRequests) requests this session")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    private var spendSummary: some View {
+        let (daily, monthly) = AITracker.shared.getTotalSpend()
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Today").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "$\(String(format: "%.2f", daily))")
+                    .font(.title3.weight(.bold)).foregroundStyle(.blue)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("This Month").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "$\(String(format: "%.2f", monthly))")
+                    .font(.title3.weight(.bold)).foregroundStyle(.purple)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("Session").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "$\(String(format: "%.4f", state.stats.aiTotalCostUSD))")
+                    .font(.title3.weight(.bold)).foregroundStyle(.green)
+            }
+        }
+    }
+
+    private var budgetSection: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("Daily limit").font(.caption)
+                Spacer()
+                TextField("0 = no limit", value: aiBinding(\.dailyBudgetUSD),
+                          format: .currency(code: "USD"))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 100)
+                    .font(.caption)
+            }
+            HStack {
+                Text("Monthly limit").font(.caption)
+                Spacer()
+                TextField("0 = no limit", value: aiBinding(\.monthlyBudgetUSD),
+                          format: .currency(code: "USD"))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 100)
+                    .font(.caption)
+            }
+            if state.stats.aiBlocked > 0 {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(verbatim: "\(state.stats.aiBlocked) requests blocked by budget")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func aiBinding<T>(_ keyPath: WritableKeyPath<AISettings, T>) -> Binding<T> {
+        Binding(
+            get: { state.aiSettings[keyPath: keyPath] },
+            set: { newVal in
+                var s = state.aiSettings
+                s[keyPath: keyPath] = newVal
+                state.updateAISettings(s)
+            }
+        )
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title).font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+    }
+}
+
+struct AIProviderRow: View {
+    let provider: AIProvider
+    let stats: AIProviderStats?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: provider.icon)
+                .frame(width: 20)
+                .foregroundStyle(stats != nil ? .blue : .secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(provider.name)
+                    .font(.system(.caption, design: .rounded).weight(.medium))
+                if let s = stats {
+                    HStack(spacing: 8) {
+                        Text(verbatim: "\(s.requests) req")
+                        Text(verbatim: "\(formatTokens(s.promptTokens + s.completionTokens)) tok")
+                        Text(verbatim: "$\(String(format: "%.3f", s.estimatedCostUSD))")
+                    }
+                    .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("No activity").font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+            Spacer()
+            if let s = stats, s.requests > 0 {
+                Text(verbatim: "$\(String(format: "%.2f", s.estimatedCostUSD))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.blue)
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+    }
+
+    private func formatTokens(_ count: Int) -> String {
+        if count >= 1_000_000 { return "\(count / 1_000_000)M" }
+        if count >= 1_000 { return "\(count / 1_000)K" }
+        return "\(count)"
     }
 }
 

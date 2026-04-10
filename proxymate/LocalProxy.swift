@@ -33,6 +33,9 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         case cacheHit(host: String, url: String)
         case cacheMiss(host: String, url: String)
         case mitmIntercepted(host: String)
+        case aiDetected(host: String, provider: String)
+        case aiBlocked(host: String, provider: String, reason: String)
+        case aiUsage(provider: String, model: String, promptTokens: Int, completionTokens: Int, cost: Double)
         case log(LogEntry.Level, String)
     }
 
@@ -276,19 +279,38 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         }
 
         // Pass cache context for GET requests so the response gets stored
+        // AI provider detection + budget blocking
+        var aiProvider: AIProvider?
+        if let detection = AITracker.shared.detect(host: host) {
+            aiProvider = detection.provider
+            onEvent?(.aiDetected(host: host, provider: detection.provider.name))
+            let (blocked, reason) = AITracker.shared.isBlocked(providerId: detection.provider.id)
+            if blocked {
+                onEvent?(.aiBlocked(host: host, provider: detection.provider.name,
+                                     reason: reason ?? "blocked"))
+                sendBlockedResponse(client: client,
+                                     ruleName: "AI Budget: \(reason ?? "blocked")")
+                return
+            }
+        }
+
         let cacheCtx: CacheContext? = (method.uppercased() == "GET" && method.uppercased() != "CONNECT")
             ? CacheContext(method: method, url: target,
                            requestHeaders: String(data: finalHeaderData, encoding: .utf8) ?? headerString)
             : nil
+        let aiCtx: AIContext? = aiProvider.map { AIContext(provider: $0) }
         forward(client: client, headerData: finalHeaderData, leftover: leftover,
-                upstream: up, cacheContext: cacheCtx)
+                upstream: up, cacheContext: cacheCtx, aiContext: aiCtx)
     }
 
-    /// Context needed to store the response in the cache after receiving it.
     private struct CacheContext {
         let method: String
         let url: String
         let requestHeaders: String
+    }
+
+    private struct AIContext {
+        let provider: AIProvider
     }
 
     // MARK: - Privacy header rewriting
@@ -391,7 +413,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                          headerData: Data,
                          leftover: Data,
                          upstream: Upstream,
-                         cacheContext: CacheContext? = nil) {
+                         cacheContext: CacheContext? = nil,
+                         aiContext: AIContext? = nil) {
         guard let port = NWEndpoint.Port(rawValue: upstream.port) else {
             client.cancel()
             return
@@ -412,12 +435,13 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                         return
                     }
                     let startPipes = { [weak self] in
-                        // client→upstream: plain pipe (requests are not cached)
                         self?.pipe(from: client, to: upstreamConn)
-                        // upstream→client: cache-aware pipe if context provided
-                        if let ctx = cacheContext {
-                            self?.pipeAndCache(from: upstreamConn, to: client,
-                                               buffer: Data(), context: ctx)
+                        // Buffer response if we need to cache or extract AI tokens
+                        if cacheContext != nil || aiContext != nil {
+                            self?.pipeAndBuffer(from: upstreamConn, to: client,
+                                                buffer: Data(),
+                                                cacheContext: cacheContext,
+                                                aiContext: aiContext)
                         } else {
                             self?.pipe(from: upstreamConn, to: client)
                         }
@@ -466,11 +490,14 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         }
     }
 
-    /// Like `pipe` but accumulates the full response. On completion, parses
-    /// status line + headers and stores in cache. Caps buffering at 2 MB to
-    /// avoid unbounded memory growth; falls back to plain pipe if exceeded.
-    private func pipeAndCache(from: NWConnection, to: NWConnection,
-                              buffer: Data, context: CacheContext) {
+    /// Like `pipe` but accumulates the full response. On completion:
+    /// 1. Stores in cache if cacheContext is provided
+    /// 2. Extracts AI token usage if aiContext is provided
+    /// Caps buffering at 2 MB; falls back to plain pipe if exceeded.
+    private func pipeAndBuffer(from: NWConnection, to: NWConnection,
+                               buffer: Data,
+                               cacheContext: CacheContext?,
+                               aiContext: AIContext?) {
         let maxBuffer = 2 * 1024 * 1024  // 2 MB
         from.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
             var buf = buffer
@@ -481,18 +508,24 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                         from.cancel(); to.cancel(); return
                     }
                     if buf.count > maxBuffer {
-                        // Too large to cache, switch to plain pipe
                         self?.pipe(from: from, to: to)
                     } else {
-                        self?.pipeAndCache(from: from, to: to, buffer: buf, context: context)
+                        self?.pipeAndBuffer(from: from, to: to, buffer: buf,
+                                            cacheContext: cacheContext, aiContext: aiContext)
                     }
                 })
             }
             if isComplete {
                 to.send(content: nil, isComplete: true, completion: .contentProcessed { _ in })
                 from.cancel()
-                // Parse and store
-                Self.storeInCache(responseData: buf, context: context)
+                // Cache store
+                if let ctx = cacheContext {
+                    Self.storeInCache(responseData: buf, context: ctx)
+                }
+                // AI token extraction
+                if let ai = aiContext {
+                    self?.extractAIUsage(responseData: buf, context: ai)
+                }
                 return
             }
             if error != nil {
@@ -521,6 +554,18 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             responseHeaders: responseHeaders,
             body: body
         )
+    }
+
+    private func extractAIUsage(responseData: Data, context: AIContext) {
+        // Skip response headers, get body only
+        guard let headerEnd = responseData.range(of: Data("\r\n\r\n".utf8)) else { return }
+        let body = responseData.subdata(in: headerEnd.upperBound..<responseData.count)
+        guard let usage = AITracker.shared.extractUsage(provider: context.provider,
+                                                         responseBody: body) else { return }
+        onEvent?(.aiUsage(provider: usage.providerId, model: usage.model,
+                          promptTokens: usage.promptTokens,
+                          completionTokens: usage.completionTokens,
+                          cost: usage.estimatedCost))
     }
 
     private func sendBlockedResponse(client: NWConnection, ruleName: String) {
