@@ -3,9 +3,8 @@
 //  proxymate
 //
 //  Applies / clears system-wide HTTP(S) proxy settings via `networksetup`.
-//  Uses AppleScript "with administrator privileges" so macOS prompts the user
-//  for admin credentials when needed. Runs off the main thread so the UI
-//  doesn't freeze while the auth dialog is on screen.
+//  Uses PrivilegedHelper (cached AuthorizationRef) so the user enters their
+//  admin password only once per session.
 //
 
 import Foundation
@@ -34,7 +33,7 @@ enum ProxyManager {
         \(httpsBlock)
         done
         """
-        try await runWithAdmin(shell)
+        try await runPrivileged(shell)
     }
 
     nonisolated static func disable() async throws {
@@ -44,7 +43,7 @@ enum ProxyManager {
           networksetup -setsecurewebproxystate "$svc" off
         done
         """
-        try await runWithAdmin(shell)
+        try await runPrivileged(shell)
     }
 
     /// Reads the current HTTP proxy state from the first enabled network service.
@@ -87,23 +86,17 @@ enum ProxyManager {
         }.value
     }
 
-    private nonisolated static func runWithAdmin(_ shell: String) async throws {
-        // Escape for embedding inside an AppleScript string literal:
-        // backslashes first, then double quotes.
-        let escaped = shell
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let appleScript = "do shell script \"\(escaped)\" with administrator privileges"
-
+    /// Pre-authorize so the first toggle doesn't block.
+    /// Can be called at launch to "warm up" the auth without running a command.
+    nonisolated static func preAuthorize() async throws {
         try await Task.detached(priority: .userInitiated) {
-            var errorInfo: NSDictionary?
-            let script = NSAppleScript(source: appleScript)
-            _ = script?.executeAndReturnError(&errorInfo)
-            if let errorInfo {
-                let msg = (errorInfo[NSAppleScript.errorMessage] as? String)
-                    ?? "AppleScript execution failed"
-                throw ProxyManagerError.scriptFailed(msg)
-            }
+            try PrivilegedHelper.shared.ensureAuthorized()
+        }.value
+    }
+
+    private nonisolated static func runPrivileged(_ shell: String) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try PrivilegedHelper.shared.runAsRoot(shell)
         }.value
     }
 }
