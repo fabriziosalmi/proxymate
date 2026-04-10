@@ -43,6 +43,30 @@ struct ContentView: View {
                 .frame(height: 340)
         }
         .frame(width: 400)
+        .background(shortcuts)
+    }
+
+    /// Hidden buttons that capture keyboard shortcuts within the popover.
+    @ViewBuilder
+    private var shortcuts: some View {
+        Group {
+            Button("") { Task { await state.toggle() } }
+                .keyboardShortcut("t", modifiers: .command)
+            Button("") { tab = .proxies }
+                .keyboardShortcut("1", modifiers: .command)
+            Button("") { tab = .logs }
+                .keyboardShortcut("2", modifiers: .command)
+            Button("") { tab = .stats }
+                .keyboardShortcut("3", modifiers: .command)
+            Button("") { tab = .rules }
+                .keyboardShortcut("4", modifiers: .command)
+            Button("") { tab = .cache }
+                .keyboardShortcut("5", modifiers: .command)
+            Button("") { tab = .privacy }
+                .keyboardShortcut("6", modifiers: .command)
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
     }
 
     // MARK: - Header
@@ -304,6 +328,9 @@ struct LogsView: View {
                                                 pattern: entry.host,
                                                 category: "Custom"
                                             ))
+                                        }
+                                        Button("Allow \(entry.host)") {
+                                            state.addAllowRule(entry.host)
                                         }
                                         Button("Search: \(entry.host)") {
                                             search = entry.host
@@ -602,6 +629,7 @@ struct AddRuleSheet: View {
 
     private var placeholder: String {
         switch kind {
+        case .allowDomain:  return "example.com"
         case .blockIP:      return "1.2.3.4"
         case .blockDomain:  return "example.com"
         case .blockContent: return "substring"

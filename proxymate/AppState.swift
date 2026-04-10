@@ -76,8 +76,10 @@ final class AppState: ObservableObject {
         // Check MITM CA status
         mitmSettings.caInstalled = TLSManager.shared.isCAInstalled
 
-        // Load cached blacklists from disk
+        // Load cached blacklists from disk, then refresh stale ones
         BlacklistManager.shared.loadCachedSources(blacklistSources)
+        refreshStaleBlacklists()
+        scheduleBlacklistRefresh()
 
         // Compile exfiltration patterns
         ExfiltrationScanner.shared.loadPacks(exfiltrationPacks)
@@ -334,6 +336,27 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Refresh blacklists that haven't been updated in over 6 hours.
+    private func refreshStaleBlacklists() {
+        let sixHours: TimeInterval = 6 * 3600
+        for source in blacklistSources where source.enabled {
+            let stale = source.lastUpdated.map { Date().timeIntervalSince($0) > sixHours } ?? true
+            if stale { refreshBlacklist(source.id) }
+        }
+    }
+
+    private var blacklistTimer: Timer?
+
+    /// Schedule a repeating timer that refreshes stale blacklists every 6 hours.
+    private func scheduleBlacklistRefresh() {
+        blacklistTimer?.invalidate()
+        blacklistTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshStaleBlacklists()
+            }
+        }
+    }
+
     // MARK: - Exfiltration
 
     func toggleExfiltrationPack(_ id: String) {
@@ -365,6 +388,13 @@ final class AppState: ObservableObject {
     func addRule(_ r: WAFRule) {
         rules.append(r); save()
         if isEnabled { localProxy.updateRules(rules) }
+    }
+
+    func addAllowRule(_ host: String) {
+        let rule = WAFRule(name: "Allow \(host)", kind: .allowDomain,
+                           pattern: host, category: "Allowlist")
+        addRule(rule)
+        log(.info, "Allowlisted \(host)")
     }
 
     func removeRule(_ id: WAFRule.ID) {

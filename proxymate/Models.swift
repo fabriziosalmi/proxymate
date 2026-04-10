@@ -22,6 +22,7 @@ struct WAFRule: Identifiable, Codable, Hashable, Sendable {
     var category: String = "Custom"
 
     enum Kind: String, Codable, CaseIterable, Identifiable, Sendable {
+        case allowDomain  = "Allow Domain"
         case blockIP      = "Block IP"
         case blockDomain  = "Block Domain"
         case blockContent = "Block Content"
