@@ -6,8 +6,19 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		01E363A52F8A4D660003B5AD /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 01E363172F87EA4E0003B5AD /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 01E3631E2F87EA4E0003B5AD;
+			remoteInfo = proxymate;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		01E3631F2F87EA4E0003B5AD /* proxymate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = proxymate.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		01E363A12F8A4D660003B5AD /* proxymateTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = proxymateTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +27,22 @@
 			path = proxymate;
 			sourceTree = "<group>";
 		};
+		01E363A22F8A4D660003B5AD /* proxymateTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = proxymateTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		01E3631C2F87EA4E0003B5AD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		01E3639E2F8A4D660003B5AD /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				01E363212F87EA4E0003B5AD /* proxymate */,
+				01E363A22F8A4D660003B5AD /* proxymateTests */,
 				01E363202F87EA4E0003B5AD /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				01E3631F2F87EA4E0003B5AD /* proxymate.app */,
+				01E363A12F8A4D660003B5AD /* proxymateTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +95,29 @@
 			productReference = 01E3631F2F87EA4E0003B5AD /* proxymate.app */;
 			productType = "com.apple.product-type.application";
 		};
+		01E363A02F8A4D660003B5AD /* proxymateTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 01E363A72F8A4D660003B5AD /* Build configuration list for PBXNativeTarget "proxymateTests" */;
+			buildPhases = (
+				01E3639D2F8A4D660003B5AD /* Sources */,
+				01E3639E2F8A4D660003B5AD /* Frameworks */,
+				01E3639F2F8A4D660003B5AD /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				01E363A62F8A4D660003B5AD /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				01E363A22F8A4D660003B5AD /* proxymateTests */,
+			);
+			name = proxymateTests;
+			packageProductDependencies = (
+			);
+			productName = proxymateTests;
+			productReference = 01E363A12F8A4D660003B5AD /* proxymateTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -82,6 +130,10 @@
 				TargetAttributes = {
 					01E3631E2F87EA4E0003B5AD = {
 						CreatedOnToolsVersion = 26.1.1;
+					};
+					01E363A02F8A4D660003B5AD = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = 01E3631E2F87EA4E0003B5AD;
 					};
 				};
 			};
@@ -100,12 +152,20 @@
 			projectRoot = "";
 			targets = (
 				01E3631E2F87EA4E0003B5AD /* proxymate */,
+				01E363A02F8A4D660003B5AD /* proxymateTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		01E3631D2F87EA4E0003B5AD /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		01E3639F2F8A4D660003B5AD /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +182,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		01E3639D2F8A4D660003B5AD /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		01E363A62F8A4D660003B5AD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 01E3631E2F87EA4E0003B5AD /* proxymate */;
+			targetProxy = 01E363A52F8A4D660003B5AD /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		01E363282F87EA4F0003B5AD /* Debug */ = {
@@ -313,6 +388,46 @@
 			};
 			name = Release;
 		};
+		01E363A82F8A4D660003B5AD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7FC7ZTYMYU;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fabriziosalmi.proxymateTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/proxymate.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/proxymate";
+			};
+			name = Debug;
+		};
+		01E363A92F8A4D660003B5AD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7FC7ZTYMYU;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fabriziosalmi.proxymateTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/proxymate.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/proxymate";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -330,6 +445,15 @@
 			buildConfigurations = (
 				01E3632B2F87EA4F0003B5AD /* Debug */,
 				01E3632C2F87EA4F0003B5AD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		01E363A72F8A4D660003B5AD /* Build configuration list for PBXNativeTarget "proxymateTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				01E363A82F8A4D660003B5AD /* Debug */,
+				01E363A92F8A4D660003B5AD /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
