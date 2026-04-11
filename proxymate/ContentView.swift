@@ -14,6 +14,8 @@ struct ContentView: View {
     @EnvironmentObject var state: AppState
     @State private var tab: Tab = .proxies
     @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "proxymate.onboarded")
+    @State private var showAbout = false
+    @State private var showQuitConfirm = false
 
     enum Tab: String, CaseIterable, Identifiable {
         case proxies = "Proxies"
@@ -47,7 +49,19 @@ struct ContentView: View {
                 .frame(height: 340)
         }
         .frame(width: 400)
+        .animation(.easeInOut(duration: 0.15), value: tab)
         .background(shortcuts)
+        .sheet(isPresented: $showAbout) {
+            AboutView().environmentObject(state)
+        }
+        .alert("Quit Proxymate?", isPresented: $showQuitConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Quit", role: .destructive) { NSApplication.shared.terminate(nil) }
+        } message: {
+            Text(state.isEnabled
+                 ? "The proxy is currently active. Quitting will disable it and restore direct connections."
+                 : "Are you sure you want to quit?")
+        }
         .sheet(isPresented: $showOnboarding) {
             OnboardingView(isPresented: $showOnboarding)
                 .environmentObject(state)
@@ -93,7 +107,9 @@ struct ContentView: View {
                 .foregroundStyle(state.isEnabled ? .green : .secondary)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Proxymate").font(.headline)
+                Button("Proxymate") { showAbout = true }
+                    .font(.headline).buttonStyle(.plain)
+                    .accessibilityLabel("About Proxymate")
                 Text(state.isEnabled
                      ? "Active • \(state.selectedProxy?.name ?? "—")"
                      : "Disabled")
@@ -112,6 +128,8 @@ struct ContentView: View {
             .toggleStyle(.switch)
             .labelsHidden()
             .disabled(state.selectedProxy == nil || state.isBusy)
+            .accessibilityLabel("Toggle Proxy")
+            .accessibilityValue(state.isEnabled ? "On" : "Off")
         }
         .padding(12)
     }
@@ -135,6 +153,8 @@ struct ContentView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("\(t.rawValue) tab")
+                .accessibilityAddTraits(tab == t ? .isSelected : [])
             }
         }
     }
@@ -856,11 +876,15 @@ struct StatCard: View {
                 .foregroundStyle(color)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
+                .contentTransition(.numericText())
+                .animation(.easeInOut(duration: 0.3), value: value)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .background(.quaternary.opacity(0.4),
                     in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title): \(value)")
     }
 }
 
