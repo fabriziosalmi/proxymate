@@ -167,11 +167,12 @@ nonisolated final class TLSManager: @unchecked Sendable {
     /// Opens System Preferences → Keychain Access to let the user trust the cert.
     /// Opens Keychain Access with the CA cert for manual trust.
     func promptUserToTrust() {
-        guard let certData = exportCACertDER() else { return }
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ProxymateCA.cer")
-        try? certData.write(to: tempURL)
-        NSWorkspace.shared.open(tempURL)
+        // The cert is already in the keychain (imported via PKCS12 during generateCA).
+        // Opening a .cer file would fail with -25294 (duplicate import).
+        // Instead, open Keychain Access so the user can search "Proxymate Root CA"
+        // and set trust to "Always Trust".
+        let keychainApp = URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app")
+        NSWorkspace.shared.open(keychainApp)
     }
 
     /// Check if the root CA is trusted by the system.
