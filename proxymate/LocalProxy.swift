@@ -35,6 +35,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         case mitmIntercepted(host: String)
         case beaconing(host: String, path: String, intervalSec: Double, count: Int)
         case c2Detected(host: String, framework: String, indicator: String, confidence: String)
+        case agentDetected(host: String, agent: String, indicator: String)
+        case mcpDetected(host: String, method: String)
         case aiDetected(host: String, provider: String)
         case aiBlocked(host: String, provider: String, reason: String)
         case aiUsage(provider: String, model: String, promptTokens: Int, completionTokens: Int, cost: Double)
@@ -274,6 +276,15 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             if c2Settings.action == .block {
                 sendBlockedResponse(client: client, ruleName: "C2: \(c2.framework) (\(c2.indicator))")
                 return
+            }
+        }
+
+        // AI Agent enforcement (Claude Code, Cursor, MCP, etc.)
+        if let agentDetection = AIAgentEnforcer.detectAgent(headers: headerString, host: host) {
+            onEvent?(.log(.info, "AI Agent: \(agentDetection.agentName) [\(agentDetection.confidence)] \(agentDetection.indicator)"))
+            // MCP detection on request body
+            if !leftover.isEmpty, let mcp = AIAgentEnforcer.detectMCP(body: leftover, host: host) {
+                onEvent?(.log(.info, "MCP: \(mcp.method) → \(mcp.serverURL)"))
             }
         }
 

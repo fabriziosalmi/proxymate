@@ -304,6 +304,10 @@ final class AppState: ObservableObject {
             log(.info, "CACHE HIT \(host)", host: host)
         case .cacheMiss(_, _):
             stats.cacheMisses += 1
+        case .agentDetected(let host, let agent, let indicator):
+            log(.info, "AGENT \(agent) \(host) [\(indicator)]", host: host)
+        case .mcpDetected(let host, let method):
+            log(.info, "MCP \(method) → \(host)", host: host)
         case .mitmIntercepted(let host):
             stats.mitmIntercepted += 1
             log(.info, "MITM \(host)", host: host)

@@ -130,7 +130,10 @@ nonisolated struct BlacklistSource: Identifiable, Codable, Hashable, Sendable {
         case torExits    = "TOR Exits"
         case ads         = "Ads & Tracking"
         case malware     = "Malware & C2"
+        case phishing    = "Phishing"
         case cryptoMiner = "Crypto Miners"
+        case telemetry   = "Telemetry"
+        case adult       = "Adult Content"
         case custom      = "Custom"
         var id: String { rawValue }
     }
@@ -143,23 +146,52 @@ nonisolated struct BlacklistSource: Identifiable, Codable, Hashable, Sendable {
         var id: String { rawValue }
     }
 
+    // MARK: - Built-in threat intelligence feeds
+
     static let builtIn: [BlacklistSource] = [
-        .init(name: "TOR Exit Nodes",
-              url: "https://check.torproject.org/torbulkexitlist",
-              category: .torExits,
-              format: .plainIPs),
-        .init(name: "Steven Black Hosts (Ads)",
-              url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
-              category: .ads,
-              format: .hosts),
-        .init(name: "NoCoin Filter",
-              url: "https://raw.githubusercontent.com/nicehash/NoCoin/master/hosts.txt",
-              category: .cryptoMiner,
-              format: .hosts),
-        .init(name: "URLhaus Malware Domains",
-              url: "https://urlhaus.abuse.ch/downloads/hostfile/",
-              category: .malware,
-              format: .hosts),
+        // TOR
+        .init(name: "TOR Exit Nodes", url: "https://check.torproject.org/torbulkexitlist",
+              category: .torExits, format: .plainIPs),
+        // Malware & C2
+        .init(name: "URLhaus Malware", url: "https://urlhaus.abuse.ch/downloads/hostfile/",
+              category: .malware, format: .hosts),
+        .init(name: "ThreatFox C2/IOC", url: "https://threatfox.abuse.ch/downloads/hostfile/",
+              category: .malware, format: .hosts),
+        .init(name: "DShield Suspicious", url: "https://www.dshield.org/feeds/suspiciousdomains_Low.txt",
+              category: .malware, format: .plainDomains),
+        .init(name: "HaGeZi Threat Intel", url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/tif.txt",
+              category: .malware, format: .plainDomains),
+        // Phishing
+        .init(name: "Phishing Army Extended", url: "https://phishing.army/download/phishing_army_blocklist_extended.txt",
+              category: .phishing, format: .plainDomains),
+        .init(name: "OpenPhish Community", url: "https://openphish.com/feed.txt",
+              category: .phishing, format: .plainDomains),
+        .init(name: "StopForumSpam Toxic", url: "https://www.stopforumspam.com/downloads/toxic_domains_whole.txt",
+              category: .phishing, format: .plainDomains),
+        // Ads & Tracking
+        .init(name: "Steven Black Unified", url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+              category: .ads, format: .hosts),
+        .init(name: "AdGuard DNS Filter", url: "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt",
+              category: .ads, format: .adblockPlus),
+        .init(name: "EasyList", url: "https://easylist.to/easylist/easylist.txt",
+              category: .ads, format: .adblockPlus),
+        .init(name: "EasyPrivacy", url: "https://easylist.to/easylist/easyprivacy.txt",
+              category: .ads, format: .adblockPlus),
+        .init(name: "HaGeZi Multi PRO", url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/pro.txt",
+              category: .ads, format: .plainDomains),
+        // Crypto Miners
+        .init(name: "NoCoin Filter", url: "https://raw.githubusercontent.com/nicehash/NoCoin/master/hosts.txt",
+              category: .cryptoMiner, format: .hosts),
+        // Telemetry
+        .init(name: "Apple Telemetry", url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/native.apple.txt",
+              category: .telemetry, format: .plainDomains),
+        .init(name: "Microsoft Telemetry", url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/native.winoffice.txt",
+              category: .telemetry, format: .plainDomains),
+        .init(name: "TikTok Telemetry", url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/native.tiktok.txt",
+              category: .telemetry, format: .plainDomains),
+        // Adult (opt-in for Family Safety)
+        .init(name: "Steven Black Adult", url: "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn/hosts",
+              category: .adult, format: .hosts),
     ]
 }
 

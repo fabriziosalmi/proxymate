@@ -1267,7 +1267,10 @@ struct BlacklistRow: View {
         case .torExits: return .purple
         case .ads: return .orange
         case .malware: return .red
+        case .phishing: return .pink
         case .cryptoMiner: return .yellow
+        case .telemetry: return .indigo
+        case .adult: return .gray
         case .custom: return .blue
         }
     }

@@ -49,6 +49,13 @@ struct OnboardingView: View {
                 ) { applyProfile(.work) }
 
                 ProfileButton(
+                    title: "Family Safety",
+                    subtitle: "Maximum protection. Block adult, malware, phishing, ads, telemetry. DoH enforced.",
+                    icon: "figure.2.and.child.holdinghands",
+                    color: .orange
+                ) { applyProfile(.familySafety) }
+
+                ProfileButton(
                     title: "Minimal",
                     subtitle: "Start clean. No rules, no lists, no privacy stripping. Configure manually.",
                     icon: "slider.horizontal.3",
@@ -66,43 +73,78 @@ struct OnboardingView: View {
     }
 
     enum Profile {
-        case privacy, developer, work, minimal
+        case privacy, developer, work, familySafety, minimal
     }
 
     private func applyProfile(_ profile: Profile) {
         switch profile {
         case .privacy:
+            // Maximum Privacy: strip everything, DoH, all ad/tracking/telemetry lists
             state.updatePrivacy(PrivacySettings(
                 stripUserAgent: true, stripReferer: true,
                 refererPolicy: .originOnly, stripTrackingCookies: true,
-                forceDNT: true, forceGPC: true, stripETag: true
+                forceDNT: true, forceGPC: true, stripETag: true, stripServerHeaders: true
             ))
             state.updateDNS(DNSSettings(enabled: true, provider: .cloudflare))
+            state.updateCache(CacheSettings(enabled: true, stripTrackingParams: true))
             state.loadExampleRules()
-            state.loadBuiltInBlacklists()
-            state.log(.info, "Applied Privacy profile")
+            // Enable: all ads/tracking + telemetry + crypto miners
+            loadBlacklistsByCategory([.ads, .telemetry, .cryptoMiner, .malware, .phishing])
+            state.log(.info, "Applied Maximum Privacy profile — ads, trackers, telemetry, miners blocked")
 
         case .developer:
+            // Developer: malware/C2 protection + AI tracking + cache + exfiltration ON, minimal blocking
             state.updatePrivacy(PrivacySettings(forceDNT: true, forceGPC: true))
             state.updateCache(CacheSettings(enabled: true))
-            state.loadExampleRules()
-            state.log(.info, "Applied Developer profile")
+            // Only malware/C2 lists
+            loadBlacklistsByCategory([.malware, .cryptoMiner])
+            state.addAllowEntry(AllowEntry(pattern: "localhost", note: "Local dev"))
+            state.addAllowEntry(AllowEntry(pattern: "127.0.0.0/8", note: "Loopback"))
+            state.addAllowEntry(AllowEntry(pattern: "10.0.0.0/8", note: "LAN"))
+            state.addAllowEntry(AllowEntry(pattern: "192.168.0.0/16", note: "LAN"))
+            state.log(.info, "Applied Developer profile — malware blocked, AI tracked, local allowed")
 
         case .work:
+            // Enterprise Security: malware + phishing + C2 + tracking, TLS inspection ready
             state.updatePrivacy(PrivacySettings(
                 stripTrackingCookies: true, forceDNT: true, forceGPC: true
             ))
-            state.loadBuiltInBlacklists()
+            state.updateDNS(DNSSettings(enabled: true, provider: .quad9))
+            loadBlacklistsByCategory([.malware, .phishing, .ads, .cryptoMiner, .torExits])
+            state.loadExampleRules()
             state.addAllowEntry(AllowEntry(pattern: "10.0.0.0/8", note: "Corporate LAN"))
             state.addAllowEntry(AllowEntry(pattern: "172.16.0.0/12", note: "Corporate LAN"))
             state.addAllowEntry(AllowEntry(pattern: "192.168.0.0/16", note: "Local network"))
-            state.log(.info, "Applied Work profile")
+            state.log(.info, "Applied Enterprise Security profile — full threat protection")
+
+        case .familySafety:
+            // Family: everything in Enterprise + adult content + telemetry
+            state.updatePrivacy(PrivacySettings(
+                stripUserAgent: true, stripReferer: true,
+                stripTrackingCookies: true, forceDNT: true, forceGPC: true, stripETag: true
+            ))
+            state.updateDNS(DNSSettings(enabled: true, provider: .cloudflare))
+            loadBlacklistsByCategory([.malware, .phishing, .ads, .cryptoMiner, .telemetry, .adult])
+            state.loadExampleRules()
+            state.log(.info, "Applied Family Safety profile — maximum protection")
 
         case .minimal:
-            state.log(.info, "Applied Minimal profile")
+            state.log(.info, "Applied Minimal profile — configure manually")
         }
 
         isPresented = false
+    }
+
+    /// Load built-in blacklists matching the given categories.
+    private func loadBlacklistsByCategory(_ categories: [BlacklistSource.BlacklistCategory]) {
+        let existing = Set(state.blacklistSources.map { $0.url.lowercased() })
+        let toAdd = BlacklistSource.builtIn.filter { source in
+            categories.contains(source.category) && !existing.contains(source.url.lowercased())
+        }
+        for source in toAdd {
+            state.addBlacklistSource(source)
+        }
+        state.refreshAllBlacklists()
     }
 }
 
