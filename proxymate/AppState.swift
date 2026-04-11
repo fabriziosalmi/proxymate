@@ -12,6 +12,9 @@ final class AppState: ObservableObject {
     // MARK: - Published state
 
     @Published var proxies: [ProxyConfig] = []
+    @Published var pools: [UpstreamPool] = []
+    @Published var poolOverrides: [PoolOverride] = []
+    @Published var poolHealth: [UUID: MemberHealth] = [:]
     @Published var rules: [WAFRule] = []
     @Published var privacy = PrivacySettings()
     @Published var cacheSettings = CacheSettings()
@@ -45,6 +48,8 @@ final class AppState: ObservableObject {
     // MARK: - Persistence keys
 
     private let proxiesKey     = "proxymate.proxies.v1"
+    private let poolsKey       = "proxymate.pools.v1"
+    private let overridesKey   = "proxymate.overrides.v1"
     private let rulesKey       = "proxymate.rules.v1"
     private let selectedKey    = "proxymate.selected.v1"
     private let privacyKey     = "proxymate.privacy.v1"
@@ -75,6 +80,14 @@ final class AppState: ObservableObject {
             exfiltrationPacks = ExfiltrationPack.builtIn
         }
         log(.info, "Proxymate ready")
+
+        // Configure pool router
+        PoolRouter.shared.configure(pools: pools, overrides: poolOverrides)
+        PoolRouter.shared.onEvent = { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handlePoolEvent(event)
+            }
+        }
 
         // Configure cache + AI tracker
         CacheManager.shared.configure(cacheSettings)
@@ -310,6 +323,68 @@ final class AppState: ObservableObject {
         stats.aiTotalCostUSD = 0
     }
 
+    // MARK: - Pools
+
+    private func handlePoolEvent(_ event: PoolRouter.Event) {
+        switch event {
+        case .healthChanged(_, let host, let healthy, let latencyMs):
+            let ms = latencyMs.map { String(format: "%.0fms", $0) } ?? ""
+            log(healthy ? .info : .warn,
+                "Health: \(host) \(healthy ? "UP" : "DOWN") \(ms)")
+            poolHealth = PoolRouter.shared.getHealth()
+        case .log(let level, let message):
+            log(level, message)
+        }
+    }
+
+    func addPool(_ pool: UpstreamPool) {
+        pools.append(pool); save()
+        syncPoolRouter()
+    }
+
+    func removePool(_ id: UUID) {
+        pools.removeAll { $0.id == id }
+        poolOverrides.removeAll { $0.poolId == id }
+        save(); syncPoolRouter()
+    }
+
+    func updatePool(_ pool: UpstreamPool) {
+        if let i = pools.firstIndex(where: { $0.id == pool.id }) {
+            pools[i] = pool; save(); syncPoolRouter()
+        }
+    }
+
+    func setDefaultPool(_ id: UUID) {
+        for i in pools.indices {
+            pools[i].isDefault = (pools[i].id == id)
+        }
+        save(); syncPoolRouter()
+    }
+
+    func addPoolOverride(_ o: PoolOverride) {
+        poolOverrides.append(o); save(); syncPoolRouter()
+    }
+
+    func removePoolOverride(_ id: UUID) {
+        poolOverrides.removeAll { $0.id == id }; save(); syncPoolRouter()
+    }
+
+    /// Create a pool from the existing legacy ProxyConfig selection.
+    func createPoolFromProxy(_ proxy: ProxyConfig) {
+        let pool = UpstreamPool(
+            name: proxy.name,
+            members: [PoolMember(host: proxy.host, port: proxy.port)],
+            strategy: .failover,
+            healthCheck: HealthCheckConfig(),
+            isDefault: pools.isEmpty
+        )
+        addPool(pool)
+    }
+
+    private func syncPoolRouter() {
+        PoolRouter.shared.configure(pools: pools, overrides: poolOverrides)
+    }
+
     // MARK: - Blacklists
 
     func addBlacklistSource(_ s: BlacklistSource) {
@@ -465,6 +540,8 @@ final class AppState: ObservableObject {
     private func save() {
         let d = UserDefaults.standard
         if let data = try? JSONEncoder().encode(proxies) { d.set(data, forKey: proxiesKey) }
+        if let data = try? JSONEncoder().encode(pools) { d.set(data, forKey: poolsKey) }
+        if let data = try? JSONEncoder().encode(poolOverrides) { d.set(data, forKey: overridesKey) }
         if let data = try? JSONEncoder().encode(rules)   { d.set(data, forKey: rulesKey) }
         if let data = try? JSONEncoder().encode(privacy) { d.set(data, forKey: privacyKey) }
         if let data = try? JSONEncoder().encode(cacheSettings) { d.set(data, forKey: cacheKey) }
@@ -480,6 +557,14 @@ final class AppState: ObservableObject {
         if let data = d.data(forKey: proxiesKey),
            let arr = try? JSONDecoder().decode([ProxyConfig].self, from: data) {
             proxies = arr
+        }
+        if let data = d.data(forKey: poolsKey),
+           let arr = try? JSONDecoder().decode([UpstreamPool].self, from: data) {
+            pools = arr
+        }
+        if let data = d.data(forKey: overridesKey),
+           let arr = try? JSONDecoder().decode([PoolOverride].self, from: data) {
+            poolOverrides = arr
         }
         if let data = d.data(forKey: rulesKey),
            let arr = try? JSONDecoder().decode([WAFRule].self, from: data) {

@@ -150,6 +150,34 @@ struct ContentView: View {
 
 struct ProxiesView: View {
     @EnvironmentObject var state: AppState
+    @State private var section: ProxySection = .proxies
+
+    enum ProxySection: String, CaseIterable, Identifiable {
+        case proxies = "Quick"
+        case pools   = "Pools"
+        var id: String { rawValue }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Section", selection: $section) {
+                ForEach(ProxySection.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(8)
+            Divider()
+            switch section {
+            case .proxies: QuickProxiesSection()
+            case .pools:   PoolsSection()
+            }
+        }
+    }
+}
+
+// MARK: Quick proxies (legacy single upstream)
+
+struct QuickProxiesSection: View {
+    @EnvironmentObject var state: AppState
     @State private var showingAdd = false
 
     var body: some View {
@@ -162,6 +190,9 @@ struct ProxiesView: View {
                             .onTapGesture { state.select(p.id) }
                             .contextMenu {
                                 Button("Use this proxy") { state.select(p.id) }
+                                Button("Create Pool from this") {
+                                    state.createPoolFromProxy(p)
+                                }
                                 Divider()
                                 Button("Delete", role: .destructive) { state.removeProxy(p.id) }
                             }
@@ -173,12 +204,10 @@ struct ProxiesView: View {
             HStack {
                 Button { showingAdd = true } label: {
                     Label("Add", systemImage: "plus")
-                }
-                .buttonStyle(.borderless)
+                }.buttonStyle(.borderless)
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
             }
             .padding(8)
         }
@@ -188,6 +217,140 @@ struct ProxiesView: View {
                 state.select(p.id)
             }
         }
+    }
+}
+
+// MARK: Pools section
+
+struct PoolsSection: View {
+    @EnvironmentObject var state: AppState
+    @State private var showingAdd = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if state.pools.isEmpty {
+                VStack(spacing: 8) {
+                    Spacer()
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.title2).foregroundStyle(.secondary)
+                    Text("No pools configured").foregroundStyle(.secondary)
+                    Text("Pools enable multi-upstream routing with failover, load balancing, and health checks.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center).padding(.horizontal, 20)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(state.pools) { pool in
+                            PoolRow(pool: pool, health: state.poolHealth)
+                                .contextMenu {
+                                    Button(pool.isDefault ? "Default Pool" : "Set as Default") {
+                                        state.setDefaultPool(pool.id)
+                                    }
+                                    .disabled(pool.isDefault)
+                                    Divider()
+                                    Button("Delete", role: .destructive) {
+                                        state.removePool(pool.id)
+                                    }
+                                }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            Divider()
+            HStack {
+                Button { showingAdd = true } label: {
+                    Label("Add Pool", systemImage: "plus")
+                }.buttonStyle(.borderless)
+                Spacer()
+                Text(verbatim: "\(state.pools.count) pools")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(8)
+        }
+        .sheet(isPresented: $showingAdd) {
+            AddPoolSheet { state.addPool($0) }
+        }
+    }
+}
+
+struct PoolRow: View {
+    let pool: UpstreamPool
+    let health: [UUID: MemberHealth]
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: pool.isDefault ? "star.fill" : "square.stack.3d.up")
+                .foregroundStyle(pool.isDefault ? .yellow : .secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(pool.name)
+                        .font(.system(.body, design: .rounded).weight(.medium))
+                    if pool.isDefault {
+                        Text("DEFAULT")
+                            .font(.system(size: 8, weight: .bold))
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(.yellow.opacity(0.2), in: RoundedRectangle(cornerRadius: 3))
+                            .foregroundStyle(.yellow)
+                    }
+                }
+                HStack(spacing: 6) {
+                    Text(pool.strategy.rawValue)
+                    Text(verbatim: "• \(pool.members.count) members")
+                    let healthy = pool.members.filter { health[$0.id]?.isHealthy ?? true }.count
+                    Text(verbatim: "• \(healthy)/\(pool.members.count) healthy")
+                        .foregroundStyle(healthy == pool.members.count ? .green : .orange)
+                }
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+}
+
+struct AddPoolSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var host = ""
+    @State private var port = "8080"
+    @State private var strategy: UpstreamPool.Strategy = .failover
+    let onAdd: (UpstreamPool) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add Pool").font(.headline)
+            Form {
+                TextField("Pool Name", text: $name)
+                TextField("First Member Host", text: $host)
+                TextField("Port", text: $port)
+                Picker("Strategy", selection: $strategy) {
+                    ForEach(UpstreamPool.Strategy.allCases) { Text($0.rawValue).tag($0) }
+                }
+            }
+            Text("You can add more members after creation via right-click.")
+                .font(.caption2).foregroundStyle(.tertiary)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Add") {
+                    let pool = UpstreamPool(
+                        name: name.isEmpty ? "Pool" : name,
+                        members: [PoolMember(host: host, port: Int(port) ?? 8080)],
+                        strategy: strategy,
+                        healthCheck: HealthCheckConfig()
+                    )
+                    onAdd(pool)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction).disabled(host.isEmpty)
+            }
+        }
+        .padding(16).frame(width: 340)
     }
 }
 

@@ -273,10 +273,25 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             onEvent?(.cacheMiss(host: host, url: target))
         }
 
-        guard let up = upstream else {
+        // Resolve upstream: pool router first, then legacy single upstream
+        let selected = PoolRouter.shared.select(forHost: host)
+        let resolvedHost: String
+        let resolvedPort: UInt16
+        let memberId: UUID?
+        if let sel = selected {
+            resolvedHost = sel.host
+            resolvedPort = sel.port
+            memberId = sel.memberId
+            PoolRouter.shared.connectionStarted(memberId: sel.memberId)
+        } else if let up = upstream {
+            resolvedHost = up.host
+            resolvedPort = up.port
+            memberId = nil
+        } else {
             sendErrorResponse(client: client, status: "502 Bad Gateway", body: "No upstream configured.")
             return
         }
+        let resolvedUpstream = Upstream(host: resolvedHost, port: resolvedPort)
 
         // Pass cache context for GET requests so the response gets stored
         // AI provider detection + budget blocking
@@ -300,7 +315,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             : nil
         let aiCtx: AIContext? = aiProvider.map { AIContext(provider: $0) }
         forward(client: client, headerData: finalHeaderData, leftover: leftover,
-                upstream: up, cacheContext: cacheCtx, aiContext: aiCtx)
+                upstream: resolvedUpstream, cacheContext: cacheCtx, aiContext: aiCtx,
+                memberId: memberId)
     }
 
     private struct CacheContext {
@@ -414,7 +430,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                          leftover: Data,
                          upstream: Upstream,
                          cacheContext: CacheContext? = nil,
-                         aiContext: AIContext? = nil) {
+                         aiContext: AIContext? = nil,
+                         memberId: UUID? = nil) {
         guard let port = NWEndpoint.Port(rawValue: upstream.port) else {
             client.cancel()
             return
@@ -456,8 +473,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 })
             case .failed(let err):
                 self?.onEvent?(.log(.error, "Upstream connect failed: \(err.localizedDescription)"))
+                if let mid = memberId { PoolRouter.shared.connectionEnded(memberId: mid) }
                 client.cancel()
             case .cancelled:
+                if let mid = memberId { PoolRouter.shared.connectionEnded(memberId: mid) }
                 client.cancel()
             default:
                 break
