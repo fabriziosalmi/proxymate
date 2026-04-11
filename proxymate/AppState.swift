@@ -29,6 +29,7 @@ final class AppState: ObservableObject {
     @Published var socks5Settings = SOCKS5Settings()
     @Published var beaconingSettings = BeaconingSettings()
     @Published var c2Settings = C2Settings()
+    @Published var loopBreakerSettings = LoopBreakerSettings()
     @Published var processRules: [ProcessRule] = []
     @Published var aiSettings = AISettings()
     @Published var aiProviderStats: [String: AIProviderStats] = [:]
@@ -72,6 +73,7 @@ final class AppState: ObservableObject {
     private let socks5Key      = "proxymate.socks5.v1"
     private let beaconingKey   = "proxymate.beaconing.v1"
     private let c2Key          = "proxymate.c2.v1"
+    private let loopBreakerKey = "proxymate.loopbreaker.v1"
     private let processRulesKey = "proxymate.processrules.v1"
     private let cloudSyncKey   = "proxymate.cloudsync.v1"
     private let diskCacheKey   = "proxymate.diskcache.v1"
@@ -124,6 +126,7 @@ final class AppState: ObservableObject {
             startMetrics()
         }
         BeaconingDetector.shared.configure(beaconingSettings)
+        AgentLoopBreaker.shared.configure(loopBreakerSettings)
         if cloudSyncSettings.enabled {
             startCloudSync()
         }
@@ -333,6 +336,7 @@ final class AppState: ObservableObject {
         case .aiUsage(let provider, let model, let prompt, let completion, let cost):
             stats.aiTotalCostUSD += cost
             aiProviderStats = AITracker.shared.getStats()
+            AgentLoopBreaker.shared.recordCost(cost)
             log(.info, "AI \(provider)/\(model): \(prompt)+\(completion) tokens, $\(String(format: "%.4f", cost))")
         case .log(let level, let message):
             log(level, message)
@@ -439,6 +443,13 @@ final class AppState: ObservableObject {
     /// Call after stat changes to keep the static snapshot fresh.
     private func syncMetricsSnapshot() {
         AppState.latestStats = stats
+    }
+
+    // MARK: - Loop breaker
+
+    func updateLoopBreaker(_ s: LoopBreakerSettings) {
+        loopBreakerSettings = s; save()
+        AgentLoopBreaker.shared.configure(s)
     }
 
     // MARK: - Cloud sync
@@ -787,6 +798,7 @@ final class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(socks5Settings) { d.set(data, forKey: socks5Key) }
         if let data = try? JSONEncoder().encode(beaconingSettings) { d.set(data, forKey: beaconingKey) }
         if let data = try? JSONEncoder().encode(c2Settings) { d.set(data, forKey: c2Key) }
+        if let data = try? JSONEncoder().encode(loopBreakerSettings) { d.set(data, forKey: loopBreakerKey) }
         if let data = try? JSONEncoder().encode(processRules) { d.set(data, forKey: processRulesKey) }
         if let data = try? JSONEncoder().encode(cloudSyncSettings) { d.set(data, forKey: cloudSyncKey) }
         if let data = try? JSONEncoder().encode(diskCacheSettings) { d.set(data, forKey: diskCacheKey) }
@@ -842,6 +854,10 @@ final class AppState: ObservableObject {
         if let data = d.data(forKey: processRulesKey),
            let arr = try? JSONDecoder().decode([ProcessRule].self, from: data) {
             processRules = arr
+        }
+        if let data = d.data(forKey: loopBreakerKey),
+           let s = try? JSONDecoder().decode(LoopBreakerSettings.self, from: data) {
+            loopBreakerSettings = s
         }
         if let data = d.data(forKey: cloudSyncKey),
            let s = try? JSONDecoder().decode(CloudSyncSettings.self, from: data) {

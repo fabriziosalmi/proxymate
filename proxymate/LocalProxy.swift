@@ -280,11 +280,32 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         }
 
         // AI Agent enforcement (Claude Code, Cursor, MCP, etc.)
+        var detectedMCPMethod: String?
         if let agentDetection = AIAgentEnforcer.detectAgent(headers: headerString, host: host) {
-            onEvent?(.log(.info, "AI Agent: \(agentDetection.agentName) [\(agentDetection.confidence)] \(agentDetection.indicator)"))
+            onEvent?(.agentDetected(host: host, agent: agentDetection.agentName,
+                                     indicator: agentDetection.indicator))
             // MCP detection on request body
             if !leftover.isEmpty, let mcp = AIAgentEnforcer.detectMCP(body: leftover, host: host) {
-                onEvent?(.log(.info, "MCP: \(mcp.method) → \(mcp.serverURL)"))
+                onEvent?(.mcpDetected(host: host, method: mcp.method))
+                detectedMCPMethod = mcp.method
+            }
+        }
+
+        // Loop breaker: detect stuck agents, rapid-fire, MCP loops
+        if let loop = AgentLoopBreaker.shared.check(
+            host: host, bodyData: leftover.isEmpty ? nil : leftover,
+            mcpMethod: detectedMCPMethod
+        ) {
+            switch loop.severity {
+            case .warn:
+                // Log + notify but DO NOT block — zero false positive policy
+                onEvent?(.log(.warn, "LOOP WARNING [\(loop.kind.rawValue)] \(host): \(loop.detail)"))
+            case .block:
+                // Actually block — threshold far exceeded, definitely a loop
+                onEvent?(.log(.error, "LOOP BLOCKED [\(loop.kind.rawValue)] \(host): \(loop.detail)"))
+                sendErrorResponse(client: client, status: "429 Too Many Requests",
+                                  body: "Proxymate Loop Breaker: \(loop.kind.rawValue)\n\n\(loop.detail)\n\nThis request was blocked because it matched a runaway loop pattern.\nThe block will auto-expire in \(AgentLoopBreaker.shared.settings.cooldownSeconds)s.\n")
+                return
             }
         }
 

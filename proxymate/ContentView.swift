@@ -1386,6 +1386,12 @@ struct AIView: View {
                     Text(verbatim: "\(state.stats.aiRequests) requests this session")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+
+                Divider()
+
+                // Loop Breaker — full enterprise control
+                sectionHeader("LOOP BREAKER")
+                loopBreakerSection
             }
             .padding(12)
         }
@@ -1485,6 +1491,62 @@ struct AIView: View {
                 state.updateAISettings(s)
             }
         }
+    }
+
+    private var loopBreakerSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Enable Loop Breaker", isOn: lbBinding(\.enabled))
+                .font(.caption).toggleStyle(.switch).controlSize(.small)
+
+            if state.loopBreakerSettings.enabled {
+                Text("Detects stuck AI agents and runaway loops. First detection warns (no block). Repeated violations block with 429.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+
+                Group {
+                    lbRow("Identical body WARN after", value: lbBinding(\.identicalThreshold), unit: "repeats")
+                    lbRow("Identical body BLOCK after", value: lbBinding(\.identicalBlockThreshold), unit: "repeats")
+                    lbRow("Identical window", value: lbBinding(\.identicalWindowSeconds), unit: "seconds")
+                }
+                Group {
+                    lbRow("Rapid-fire WARN after", value: lbBinding(\.rapidFireThreshold), unit: "req")
+                    lbRow("Rapid-fire BLOCK after", value: lbBinding(\.rapidFireBlockThreshold), unit: "req")
+                    lbRow("Rapid-fire window", value: lbBinding(\.rapidFireWindowSeconds), unit: "seconds")
+                }
+                Group {
+                    lbRow("MCP loop WARN after", value: lbBinding(\.mcpRepeatThreshold), unit: "repeats")
+                    lbRow("MCP loop BLOCK after", value: lbBinding(\.mcpBlockThreshold), unit: "repeats")
+                }
+                HStack {
+                    Text("Cost hard cap").font(.caption)
+                    Spacer()
+                    TextField("$/min", value: lbBinding(\.maxCostPerMinuteUSD), format: .number)
+                        .textFieldStyle(.roundedBorder).frame(width: 60).font(.caption)
+                    Text("$/min").font(.caption2).foregroundStyle(.secondary)
+                }
+                lbRow("Cooldown after block", value: lbBinding(\.cooldownSeconds), unit: "seconds")
+            }
+        }
+    }
+
+    private func lbRow(_ label: String, value: Binding<Int>, unit: String) -> some View {
+        HStack {
+            Text(label).font(.caption)
+            Spacer()
+            TextField("", value: value, format: .number)
+                .textFieldStyle(.roundedBorder).frame(width: 50).font(.caption)
+            Text(unit).font(.caption2).foregroundStyle(.secondary).frame(width: 50, alignment: .leading)
+        }
+    }
+
+    private func lbBinding<T>(_ keyPath: WritableKeyPath<LoopBreakerSettings, T>) -> Binding<T> {
+        Binding(
+            get: { state.loopBreakerSettings[keyPath: keyPath] },
+            set: { newVal in
+                var s = state.loopBreakerSettings
+                s[keyPath: keyPath] = newVal
+                state.updateLoopBreaker(s)
+            }
+        )
     }
 
     private func aiBinding<T>(_ keyPath: WritableKeyPath<AISettings, T>) -> Binding<T> {
