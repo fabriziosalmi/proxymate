@@ -317,8 +317,9 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
         }
 
-        // Loop breaker: detect stuck agents, rapid-fire, MCP loops
-        if let loop = AgentLoopBreaker.shared.check(
+        // Loop breaker: only runs on AI/agent traffic (not normal browsing)
+        if detectedMCPMethod != nil || AIAgentEnforcer.detectAgent(headers: headerString, host: host) != nil || AITracker.shared.detect(host: host) != nil,
+           let loop = AgentLoopBreaker.shared.check(
             host: host, bodyData: leftover.isEmpty ? nil : leftover,
             mcpMethod: detectedMCPMethod
         ) {
