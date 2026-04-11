@@ -90,7 +90,7 @@ final class CloudSync {
     // MARK: - Merge logic
 
     /// Merge remote rules into local. Union by pattern, keep local if conflict.
-    static func mergeRules(local: [WAFRule], remote: [WAFRule]) -> [WAFRule] {
+    nonisolated static func mergeRules(local: [WAFRule], remote: [WAFRule]) -> [WAFRule] {
         var result = local
         let localPatterns = Set(local.map { $0.pattern.lowercased() })
         for rule in remote {
@@ -101,7 +101,7 @@ final class CloudSync {
         return result
     }
 
-    static func mergeAllowlist(local: [AllowEntry], remote: [AllowEntry]) -> [AllowEntry] {
+    nonisolated static func mergeAllowlist(local: [AllowEntry], remote: [AllowEntry]) -> [AllowEntry] {
         var result = local
         let localPatterns = Set(local.map { $0.pattern.lowercased() })
         for entry in remote {
