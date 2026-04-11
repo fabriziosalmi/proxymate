@@ -26,7 +26,8 @@ nonisolated final class PersistentLogger: @unchecked Sendable {
     private var currentFileSize: Int = 0
 
     init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
         logDir = appSupport.appendingPathComponent("Proxymate/logs", isDirectory: true)
         try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
         encoder.dateEncodingStrategy = .iso8601

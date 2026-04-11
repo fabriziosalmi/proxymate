@@ -69,13 +69,13 @@ nonisolated final class BeaconingDetector: @unchecked Sendable {
                 tracker.timestamps.removeFirst(tracker.timestamps.count - 20)
             }
 
-            guard tracker.timestamps.count >= 3 else {
+            guard tracker.timestamps.count >= 3,
+                  let latest = tracker.timestamps.last,
+                  tracker.timestamps.count >= 2 else {
                 trackers[key] = tracker
                 return nil
             }
 
-            // Calculate latest interval
-            let latest = tracker.timestamps.last!
             let prev = tracker.timestamps[tracker.timestamps.count - 2]
             let interval = latest.timeIntervalSince(prev)
 
@@ -91,8 +91,7 @@ nonisolated final class BeaconingDetector: @unchecked Sendable {
             if tracker.intervals.isEmpty {
                 tracker.intervals.append(interval)
                 tracker.consecutiveMatches = 1
-            } else {
-                let prevInterval = tracker.intervals.last!
+            } else if let prevInterval = tracker.intervals.last {
                 let tolerance = prevInterval * Double(settings.jitterTolerancePercent) / 100.0
                 if abs(interval - prevInterval) <= tolerance {
                     tracker.consecutiveMatches += 1

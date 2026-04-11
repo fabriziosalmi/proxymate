@@ -359,7 +359,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         }
 
         // Cache check (plain HTTP GET only)
-        if method.uppercased() == "GET" && method.uppercased() != "CONNECT" {
+        if method.uppercased() == "GET" {
             let headerStr = String(data: finalHeaderData, encoding: .utf8) ?? headerString
             if let cached = CacheManager.shared.lookup(method: method, url: target, requestHeaders: headerStr) {
                 onEvent?(.cacheHit(host: host, url: target))
@@ -421,7 +421,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
         }
 
-        let cacheCtx: CacheContext? = (method.uppercased() == "GET" && method.uppercased() != "CONNECT")
+        let cacheCtx: CacheContext? = (method.uppercased() == "GET")
             ? CacheContext(method: method, url: target,
                            requestHeaders: String(data: finalHeaderData, encoding: .utf8) ?? headerString)
             : nil

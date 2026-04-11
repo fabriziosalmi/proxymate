@@ -96,23 +96,23 @@ nonisolated final class SOCKS5Listener: @unchecked Sendable {
                 return
             }
 
-            let atyp = data[2 + 1] // skip RSV
+            guard data.count >= 5 else { client.cancel(); return }
+            let atyp = data[3] // skip RSV at index 2
             var host = ""
             var portOffset = 0
 
             switch atyp {
-            case 0x01: // IPv4
+            case 0x01: // IPv4: 4 bytes addr + 2 bytes port
                 guard data.count >= 10 else { client.cancel(); return }
                 host = (4...7).map { "\(data[$0])" }.joined(separator: ".")
                 portOffset = 8
-            case 0x03: // Domain
+            case 0x03: // Domain: 1 byte len + N bytes + 2 bytes port
                 let len = Int(data[4])
-                guard data.count >= 5 + len + 2 else { client.cancel(); return }
+                guard len > 0, data.count >= 5 + len + 2 else { client.cancel(); return }
                 host = String(data: data[5..<(5+len)], encoding: .utf8) ?? ""
                 portOffset = 5 + len
-            case 0x04: // IPv6
+            case 0x04: // IPv6: 16 bytes addr + 2 bytes port
                 guard data.count >= 22 else { client.cancel(); return }
-                // Simplified IPv6 — just join hex pairs
                 host = stride(from: 4, to: 20, by: 2).map {
                     String(format: "%02x%02x", data[$0], data[$0+1])
                 }.joined(separator: ":")

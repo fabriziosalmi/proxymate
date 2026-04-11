@@ -17,7 +17,8 @@ nonisolated struct DiskCacheSettings: Codable, Hashable, Sendable {
 
     var resolvedDirectory: URL {
         if !directory.isEmpty { return URL(fileURLWithPath: directory) }
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
         return caches.appendingPathComponent("Proxymate/http", isDirectory: true)
     }
 }
@@ -200,8 +201,13 @@ nonisolated final class DiskCache: @unchecked Sendable {
         let maxBytes = Int64(settings.maxSizeMB) * 1024 * 1024
         guard currentSizeBytes > maxBytes else { return }
 
-        // Delete expired first
-        sqlite3_exec(db, "DELETE FROM cache WHERE expires_at < \(Date().timeIntervalSince1970)", nil, nil, nil)
+        // Delete expired first (prepared statement, not string interpolation)
+        var expStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "DELETE FROM cache WHERE expires_at < ?", -1, &expStmt, nil) == SQLITE_OK {
+            sqlite3_bind_double(expStmt, 1, Date().timeIntervalSince1970)
+            sqlite3_step(expStmt)
+        }
+        sqlite3_finalize(expStmt)
         computeCurrentSize()
         if currentSizeBytes <= maxBytes { return }
 

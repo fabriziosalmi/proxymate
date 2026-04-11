@@ -326,12 +326,14 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         data.withUnsafeBytes { buf in
             guard let base = buf.baseAddress else { return }
             var offset = 0
-            while offset < data.count {
+            var maxIterations = data.count + 100  // safety cap against infinite loop
+            while offset < data.count && maxIterations > 0 {
+                maxIterations -= 1
                 var processed = 0
                 let s = MITMWrite(ctx, base.advanced(by: offset), data.count - offset, &processed)
+                if processed == 0 { break }
                 offset += processed
                 if Int32(s) != errSecSuccess && Int32(s) != errSSLWouldBlock { break }
-                if processed == 0 { break }
             }
         }
         flushWrites()

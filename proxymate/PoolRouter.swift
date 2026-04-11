@@ -152,7 +152,7 @@ nonisolated final class PoolRouter: @unchecked Sendable {
             }) ?? eligible[0]
 
         case .random:
-            member = eligible.randomElement()!
+            member = eligible.randomElement() ?? eligible[0]
         }
 
         guard let port = UInt16(exactly: member.port) else { return nil }

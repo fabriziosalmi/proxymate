@@ -291,7 +291,6 @@ nonisolated final class TLSManager: @unchecked Sendable {
         guard status == errSecSuccess, let identity = item else {
             throw TLSError.identityNotFound
         }
-        // swiftlint:disable:next force_cast
         return (identity as! SecIdentity)
     }
 
@@ -307,7 +306,7 @@ nonisolated final class TLSManager: @unchecked Sendable {
         ]
         var keyItem: CFTypeRef?
         if SecItemCopyMatching(keyQuery as CFDictionary, &keyItem) == errSecSuccess {
-            rootKey = (keyItem as! SecKey) // swiftlint:disable:this force_cast
+            rootKey = (keyItem as! SecKey)
         }
 
         // Load certificate
@@ -318,7 +317,7 @@ nonisolated final class TLSManager: @unchecked Sendable {
         ]
         var certItem: CFTypeRef?
         if SecItemCopyMatching(certQuery as CFDictionary, &certItem) == errSecSuccess {
-            rootCert = (certItem as! SecCertificate) // swiftlint:disable:this force_cast
+            rootCert = (certItem as! SecCertificate)
         }
     }
 
