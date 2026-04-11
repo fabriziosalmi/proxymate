@@ -19,9 +19,15 @@ struct AboutView: View {
     var body: some View {
         VStack(spacing: 16) {
             // Icon + name
-            Image(systemName: "shield.lefthalf.filled")
-                .font(.system(size: 44))
-                .foregroundStyle(.blue)
+            if let icon = NSApp.applicationIconImage {
+                Image(nsImage: icon)
+                    .resizable()
+                    .frame(width: 64, height: 64)
+            } else {
+                Image(systemName: "shield.lefthalf.filled")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.blue)
+            }
             Text("Proxymate")
                 .font(.title2.weight(.bold))
             Text(verbatim: "v\(version) (build \(build))")

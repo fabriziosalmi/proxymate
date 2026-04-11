@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="proxymate.svg" width="80" alt="Proxymate icon">
+</p>
+
 # Proxymate
 
 [![CI](https://github.com/fabriziosalmi/proxymate/actions/workflows/ci.yml/badge.svg)](https://github.com/fabriziosalmi/proxymate/actions/workflows/ci.yml)
