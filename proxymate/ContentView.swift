@@ -693,7 +693,7 @@ struct LogsView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(filteredLogs) { entry in
+                        ForEach(filteredLogs.reversed()) { entry in
                             LogRow(entry: entry)
                                 .contextMenu {
                                     if !entry.host.isEmpty {

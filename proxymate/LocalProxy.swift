@@ -267,9 +267,11 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             return
         }
 
-        // DNS-level blocking: resolve domain → IPs, check if any IP is blacklisted
+        // DNS-level blocking: check cached DNS only (never blocks).
+        // resolveAsync populates cache for future requests.
         if !isAllowed {
-            let resolvedIPs = DNSResolver.shared.resolveSync(host, timeout: 1)
+            DNSResolver.shared.resolveAsync(host)
+            let resolvedIPs = DNSResolver.shared.lookupCacheOnly(host)
             for ip in resolvedIPs {
                 if let hit = BlacklistManager.shared.lookup(host: ip, enabledSources: blacklistSourcesSnapshot) {
                     onEvent?(.blacklisted(host: host, sourceName: "\(hit.sourceName) (resolved IP \(ip))",

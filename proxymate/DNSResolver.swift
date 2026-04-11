@@ -130,6 +130,23 @@ nonisolated final class DNSResolver: @unchecked Sendable {
         return result
     }
 
+    /// Non-blocking cache-only lookup. Returns cached IPs or empty array.
+    /// Never blocks, never makes network calls. Safe for the hot path.
+    func lookupCacheOnly(_ domain: String) -> [String] {
+        guard settings.enabled else { return [] }
+        let key = domain.lowercased()
+        return queue.sync {
+            guard let cached = cache[key], !cached.isExpired else { return [] }
+            touchLRU(key)
+            return cached.ips
+        }
+    }
+
+    /// Trigger an async resolve (populates cache for future lookupCacheOnly calls).
+    func resolveAsync(_ domain: String) {
+        resolve(domain) { _ in }
+    }
+
     func clearCache() {
         cache.removeAll()
         accessOrder.removeAll()

@@ -224,6 +224,7 @@ final class AppState: ObservableObject {
         }
 
         isEnabled = true
+        UserDefaults.standard.set(true, forKey: "proxymate.wasEnabled")
         stats.enabledSince = Date()
         log(.info, "Enabled — local 127.0.0.1:\(port) → upstream \(proxy.name) (\(proxy.host):\(proxy.port))")
 
@@ -271,6 +272,7 @@ final class AppState: ObservableObject {
         blacklistTimer = nil
         localPort = nil
         isEnabled = false
+        UserDefaults.standard.set(false, forKey: "proxymate.wasEnabled")
         stats.enabledSince = nil
         log(.info, "Disabled")
     }
@@ -844,8 +846,8 @@ final class AppState: ObservableObject {
 
     func log(_ level: LogEntry.Level, _ message: String, host: String = "") {
         let entry = LogEntry(timestamp: Date(), level: level, message: message, host: host)
-        logs.insert(entry, at: 0)
-        if logs.count > 500 { logs = Array(logs.prefix(500)) }
+        logs.append(entry)
+        if logs.count > 500 { logs.removeFirst(logs.count - 500) }
         PersistentLogger.shared.write(entry)
     }
 
