@@ -679,8 +679,16 @@ struct LogsView: View {
 
             if filteredLogs.isEmpty {
                 Spacer()
-                Text(state.logs.isEmpty ? "No logs yet" : "No matching logs")
-                    .foregroundStyle(.secondary)
+                VStack(spacing: 6) {
+                    Image(systemName: state.logs.isEmpty ? "doc.text" : "magnifyingglass")
+                        .font(.title2).foregroundStyle(.quaternary)
+                    Text(state.logs.isEmpty ? "No logs yet" : "No matching logs")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if state.logs.isEmpty {
+                        Text("Logs appear here when the proxy is active")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
                 Spacer()
             } else {
                 ScrollView {
@@ -984,8 +992,10 @@ struct WAFRulesSection: View {
                 VStack(spacing: 8) {
                     Spacer()
                     Image(systemName: "shield.lefthalf.filled")
-                        .font(.title2).foregroundStyle(.secondary)
-                    Text("No rules yet").foregroundStyle(.secondary)
+                        .font(.title2).foregroundStyle(.quaternary)
+                    Text("No rules yet").font(.caption).foregroundStyle(.secondary)
+                    Text("Rules control what gets blocked, allowed, or inspected")
+                        .font(.caption2).foregroundStyle(.tertiary)
                     Button("Load Examples") { state.loadExampleRules() }
                         .buttonStyle(.bordered).controlSize(.small)
                     Spacer()
@@ -1168,8 +1178,8 @@ struct AllowlistSection: View {
                 VStack(spacing: 8) {
                     Spacer()
                     Image(systemName: "checkmark.shield")
-                        .font(.title2).foregroundStyle(.secondary)
-                    Text("No allowlist entries").foregroundStyle(.secondary)
+                        .font(.title2).foregroundStyle(.quaternary)
+                    Text("No allowlist entries").font(.caption).foregroundStyle(.secondary)
                     Text("Allowed hosts bypass all block rules, blacklists, and exfiltration scans. Supports IPs, CIDR ranges, and domains.")
                         .font(.caption2).foregroundStyle(.tertiary)
                         .multilineTextAlignment(.center).padding(.horizontal, 16)
@@ -1899,6 +1909,7 @@ struct AIProviderRow: View {
 
 struct CacheView: View {
     @EnvironmentObject var state: AppState
+    @State private var showPurgeConfirm = false
 
     var body: some View {
         ScrollView {
@@ -1950,8 +1961,10 @@ struct CacheView: View {
                     privacySection("Behavior") {
                         Toggle("Honor Cache-Control: no-store", isOn: cacheBinding(\.honorNoStore))
                             .font(.caption).toggleStyle(.switch).controlSize(.small)
+                            .help("When enabled, responses with no-store are never cached. Disable for aggressive caching.")
                         Toggle("Strip tracking params from cache key (utm_*, fbclid)",
                                isOn: cacheBinding(\.stripTrackingParams))
+                            .help("Removes utm_source, fbclid, gclid etc. from cache keys for better hit rate")
                             .font(.caption).toggleStyle(.switch).controlSize(.small)
                     }
 
@@ -1977,8 +1990,11 @@ struct CacheView: View {
                         }
                     }
 
-                    Button("Purge Cache") { state.purgeCache() }
+                    Button("Purge Cache", role: .destructive) { showPurgeConfirm = true }
                         .buttonStyle(.bordered).controlSize(.small)
+                        .confirmationDialog("Purge all cached responses?", isPresented: $showPurgeConfirm) {
+                            Button("Purge", role: .destructive) { state.purgeCache() }
+                        }
                 }
             }
             .padding(12)
