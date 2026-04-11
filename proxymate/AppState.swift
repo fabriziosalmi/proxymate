@@ -573,6 +573,7 @@ final class AppState: ObservableObject {
         save()
         syncRulesToListeners()
         log(.info, "Imported \(result.rules.count) rules (\(result.skipped) skipped, format: \(result.format.rawValue))")
+        ToastState.shared.show("Imported \(result.rules.count) rules", icon: "arrow.down.doc")
     }
 
     func importRulesFromURL(_ urlString: String, format: RuleImporter.ImportFormat, category: String) {
@@ -721,6 +722,7 @@ final class AppState: ObservableObject {
                         self.save()
                     }
                     self.log(.info, "\(source.name): \(count) entries loaded")
+                    ToastState.shared.show("\(source.name): \(count) entries", icon: "arrow.clockwise")
                 case .failure(let err):
                     self.log(.error, "\(source.name) refresh failed: \(err.localizedDescription)")
                 }
@@ -847,7 +849,11 @@ final class AppState: ObservableObject {
         PersistentLogger.shared.write(entry)
     }
 
-    func clearLogs() { logs.removeAll() }
+    func clearLogs() {
+        let count = logs.count
+        logs.removeAll()
+        ToastState.shared.show("\(count) log entries cleared", icon: "trash", color: .secondary)
+    }
 
     // MARK: - Persistence
 

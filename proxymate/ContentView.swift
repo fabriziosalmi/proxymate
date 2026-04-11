@@ -42,6 +42,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            ToastOverlay()
             Divider()
             tabBar
             Divider()
@@ -1176,23 +1177,24 @@ struct AllowlistSection: View {
                 }
                 .frame(maxWidth: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(state.allowlist) { entry in
-                            AllowEntryRow(entry: entry)
-                                .contextMenu {
-                                    Button(entry.enabled ? "Disable" : "Enable") {
-                                        state.toggleAllowEntry(entry.id)
-                                    }
-                                    Divider()
-                                    Button("Delete", role: .destructive) {
-                                        state.removeAllowEntry(entry.id)
-                                    }
+                List {
+                    ForEach(state.allowlist) { entry in
+                        AllowEntryRow(entry: entry)
+                            .contextMenu {
+                                Button(entry.enabled ? "Disable" : "Enable") {
+                                    state.toggleAllowEntry(entry.id)
                                 }
-                        }
+                                Divider()
+                                Button("Delete", role: .destructive) {
+                                    state.removeAllowEntry(entry.id)
+                                }
+                            }
+                            .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
                     }
-                    .padding(.vertical, 4)
+                    .onMove { state.allowlist.move(fromOffsets: $0, toOffset: $1) }
+                    .onDelete { state.allowlist.remove(atOffsets: $0) }
                 }
+                .listStyle(.plain)
             }
             Divider()
             HStack {
@@ -2017,6 +2019,7 @@ struct PrivacyView: View {
                 privacySection("Signals") {
                     privacyToggle("Send Do Not Track (DNT: 1)",
                                   isOn: binding(\.forceDNT))
+                        .help("Adds DNT: 1 header to all HTTP requests, signaling opt-out from tracking")
                     privacyToggle("Send Global Privacy Control (Sec-GPC: 1)",
                                   isOn: binding(\.forceGPC))
                 }
@@ -2025,6 +2028,7 @@ struct PrivacyView: View {
                 privacySection("Headers") {
                     privacyToggle("Replace User-Agent",
                                   isOn: binding(\.stripUserAgent))
+                        .help("Replaces your browser fingerprint with a generic User-Agent string")
                     if state.privacy.stripUserAgent {
                         TextField("Custom UA", text: binding(\.customUserAgent))
                             .textFieldStyle(.roundedBorder)

@@ -20,7 +20,7 @@ nonisolated final class RuleEngine: @unchecked Sendable {
     private var blockDomains = Set<String>()     // exact domain → block
     private var blockSuffixes: [String] = []     // .suffix → block
     private var blockIPs = Set<String>()         // exact IP → block
-    private var contentPatterns: [(name: String, pattern: String)] = []  // lowercased
+    private var contentAC = AhoCorasick()        // Aho-Corasick automaton for content rules
 
     // Stats
     private var _compiledRuleCount = 0
@@ -42,7 +42,7 @@ nonisolated final class RuleEngine: @unchecked Sendable {
             var bd = Set<String>()
             var bs = [String]()
             var bi = Set<String>()
-            var cp = [(String, String)]()
+            let ac = AhoCorasick()
 
             for rule in rules where rule.enabled {
                 let pat = rule.pattern.lowercased()
@@ -62,16 +62,17 @@ nonisolated final class RuleEngine: @unchecked Sendable {
 
                 case .blockContent:
                     let name = rule.name.isEmpty ? rule.pattern : rule.name
-                    cp.append((name, pat))
+                    ac.addPattern(name: name, pattern: pat)
                 }
             }
+            ac.compile()
 
             self.allowDomains = ad
             self.allowSuffixes = as_
             self.blockDomains = bd
             self.blockSuffixes = bs
             self.blockIPs = bi
-            self.contentPatterns = cp
+            self.contentAC = ac
             self._compiledRuleCount = rules.count
             self._lastCompileTime = CFAbsoluteTimeGetCurrent() - start
         }
@@ -109,14 +110,11 @@ nonisolated final class RuleEngine: @unchecked Sendable {
     }
 
     /// Check if content (target URL + headers) matches any content rule.
-    /// Returns the rule name if blocked, nil if clean.
+    /// Uses Aho-Corasick automaton: O(text_length) regardless of pattern count.
     func checkContent(target: String, headers: String) -> String? {
-        let t = target.lowercased()
-        let h = headers.lowercased()
-        for (name, pattern) in contentPatterns {
-            if t.contains(pattern) || h.contains(pattern) {
-                return name
-            }
+        let combined = target + "\n" + headers
+        if let match = contentAC.search(combined) {
+            return match.name
         }
         return nil
     }
