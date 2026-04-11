@@ -124,6 +124,10 @@ nonisolated final class SOCKS5Listener: @unchecked Sendable {
 
             let port = UInt16(data[portOffset]) << 8 | UInt16(data[portOffset + 1])
 
+            guard !host.isEmpty, port > 0 else {
+                self.sendReply(client, rep: 0x01) // general failure
+                return
+            }
             self.connectAndRelay(client: client, host: host, port: port)
         }
     }
@@ -157,16 +161,16 @@ nonisolated final class SOCKS5Listener: @unchecked Sendable {
         }
         let target = NWConnection(host: .init(host), port: nwPort, using: .tcp)
         target.stateUpdateHandler = { [weak self] state in
+            guard let self else { target.cancel(); client.cancel(); return }
             switch state {
             case .ready:
-                // Success reply: VER=5, REP=0, RSV=0, ATYP=1, BND.ADDR=0.0.0.0, BND.PORT=0
                 let reply = Data([0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
                 client.send(content: reply, completion: .contentProcessed { [weak self] _ in
                     self?.pipe(from: client, to: target)
                     self?.pipe(from: target, to: client)
                 })
             case .failed:
-                self?.sendReply(client, rep: 0x05) // connection refused
+                self.sendReply(client, rep: 0x05)
                 target.cancel()
             default: break
             }

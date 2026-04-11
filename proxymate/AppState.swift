@@ -233,6 +233,10 @@ final class AppState: ObservableObject {
     private let socks5Listener = SOCKS5Listener()
 
     private func startSOCKS5() {
+        guard socks5Settings.port > 0 && socks5Settings.port <= 65535 else {
+            log(.error, "Invalid SOCKS5 port: \(socks5Settings.port)")
+            return
+        }
         socks5Listener.onEvent = { [weak self] event in
             Task { @MainActor [weak self] in self?.handle(event: event) }
         }
@@ -249,6 +253,9 @@ final class AppState: ObservableObject {
         }
         localProxy.stop()
         socks5Listener.stop()
+        PoolRouter.shared.stop()
+        blacklistTimer?.invalidate()
+        blacklistTimer = nil
         localPort = nil
         isEnabled = false
         stats.enabledSince = nil
@@ -464,13 +471,12 @@ final class AppState: ObservableObject {
             guard let self else { return }
             if self.cloudSyncSettings.syncRules {
                 self.rules = CloudSync.mergeRules(local: self.rules, remote: remoteRules)
-                if self.isEnabled { self.localProxy.updateRules(self.rules) }
             }
             if self.cloudSyncSettings.syncAllowlist {
                 self.allowlist = CloudSync.mergeAllowlist(local: self.allowlist, remote: remoteAllow)
-                if self.isEnabled { self.localProxy.updateAllowlist(self.allowlist) }
             }
             self.save()
+            self.syncRulesToListeners()
             self.log(.info, "Cloud sync: merged remote changes")
         }
         CloudSync.shared.start()
@@ -487,19 +493,19 @@ final class AppState: ObservableObject {
 
     func addAllowEntry(_ entry: AllowEntry) {
         allowlist.append(entry); save(); pushToCloud()
-        if isEnabled { localProxy.updateAllowlist(allowlist) }
+        syncRulesToListeners()
         log(.info, "Allowlisted \(entry.pattern)")
     }
 
     func removeAllowEntry(_ id: UUID) {
         allowlist.removeAll { $0.id == id }; save()
-        if isEnabled { localProxy.updateAllowlist(allowlist) }
+        syncRulesToListeners()
     }
 
     func toggleAllowEntry(_ id: UUID) {
         if let i = allowlist.firstIndex(where: { $0.id == id }) {
             allowlist[i].enabled.toggle(); save()
-            if isEnabled { localProxy.updateAllowlist(allowlist) }
+            syncRulesToListeners()
         }
     }
 
@@ -518,7 +524,7 @@ final class AppState: ObservableObject {
                                                category: category, existingPatterns: existing)
         rules.append(contentsOf: result.rules)
         save()
-        if isEnabled { localProxy.updateRules(rules) }
+        syncRulesToListeners()
         log(.info, "Imported \(result.rules.count) rules (\(result.skipped) skipped, format: \(result.format.rawValue))")
     }
 
@@ -612,25 +618,36 @@ final class AppState: ObservableObject {
         PoolRouter.shared.configure(pools: pools, overrides: poolOverrides)
     }
 
+    /// Syncs rules, allowlist, and blacklists to BOTH localProxy and socks5Listener.
+    private func syncRulesToListeners() {
+        guard isEnabled else { return }
+        localProxy.updateRules(rules)
+        localProxy.updateAllowlist(allowlist)
+        localProxy.updateBlacklistSources(blacklistSources)
+        socks5Listener.updateRules(rules)
+        socks5Listener.updateAllowlist(allowlist)
+        socks5Listener.updateBlacklists(blacklistSources)
+    }
+
     // MARK: - Blacklists
 
     func addBlacklistSource(_ s: BlacklistSource) {
         blacklistSources.append(s); save()
-        if isEnabled { localProxy.updateBlacklistSources(blacklistSources) }
+        syncRulesToListeners()
     }
 
     func removeBlacklistSource(_ id: UUID) {
         blacklistSources.removeAll { $0.id == id }
         BlacklistManager.shared.clearSource(id)
         save()
-        if isEnabled { localProxy.updateBlacklistSources(blacklistSources) }
+        syncRulesToListeners()
     }
 
     func toggleBlacklistSource(_ id: UUID) {
         if let i = blacklistSources.firstIndex(where: { $0.id == id }) {
             blacklistSources[i].enabled.toggle()
             save()
-            if isEnabled { localProxy.updateBlacklistSources(blacklistSources) }
+            syncRulesToListeners()
         }
     }
 
@@ -639,7 +656,7 @@ final class AppState: ObservableObject {
         let new = BlacklistSource.builtIn.filter { !existing.contains($0.url.lowercased()) }
         blacklistSources.append(contentsOf: new)
         save()
-        if isEnabled { localProxy.updateBlacklistSources(blacklistSources) }
+        syncRulesToListeners()
         log(.info, "Added \(new.count) built-in blacklist sources")
     }
 
@@ -734,17 +751,17 @@ final class AppState: ObservableObject {
 
     func addRule(_ r: WAFRule) {
         rules.append(r); save(); pushToCloud()
-        if isEnabled { localProxy.updateRules(rules) }
+        syncRulesToListeners()
     }
 
     func moveRule(from source: IndexSet, to destination: Int) {
         rules.move(fromOffsets: source, toOffset: destination); save()
-        if isEnabled { localProxy.updateRules(rules) }
+        syncRulesToListeners()
     }
 
     func deleteRules(at offsets: IndexSet) {
         rules.remove(atOffsets: offsets); save()
-        if isEnabled { localProxy.updateRules(rules) }
+        syncRulesToListeners()
     }
 
     func addAllowRule(_ host: String) {
@@ -756,13 +773,13 @@ final class AppState: ObservableObject {
 
     func removeRule(_ id: WAFRule.ID) {
         rules.removeAll { $0.id == id }; save(); pushToCloud()
-        if isEnabled { localProxy.updateRules(rules) }
+        syncRulesToListeners()
     }
 
     func toggleRule(_ id: WAFRule.ID) {
         if let i = rules.firstIndex(where: { $0.id == id }) {
             rules[i].enabled.toggle(); save()
-            if isEnabled { localProxy.updateRules(rules) }
+            syncRulesToListeners()
         }
     }
 
@@ -770,7 +787,7 @@ final class AppState: ObservableObject {
         let existingPatterns = Set(rules.map { $0.pattern.lowercased() })
         let new = WAFRule.examples.filter { !existingPatterns.contains($0.pattern.lowercased()) }
         rules.append(contentsOf: new); save()
-        if isEnabled { localProxy.updateRules(rules) }
+        syncRulesToListeners()
         log(.info, "Loaded \(new.count) example rules")
     }
 

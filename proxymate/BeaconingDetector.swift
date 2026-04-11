@@ -61,6 +61,9 @@ nonisolated final class BeaconingDetector: @unchecked Sendable {
         let now = Date()
 
         return queue.sync { () -> Detection? in
+            // Prune if trackers grow too large (prevent unbounded memory)
+            if trackers.count > 10_000 { pruneTrackers() }
+
             var tracker = trackers[key] ?? Tracker()
             tracker.timestamps.append(now)
 
@@ -126,5 +129,18 @@ nonisolated final class BeaconingDetector: @unchecked Sendable {
 
     func reset() {
         queue.async { [weak self] in self?.trackers.removeAll() }
+    }
+
+    /// Prune trackers to prevent unbounded growth from unique host|path keys.
+    private func pruneTrackers() {
+        guard trackers.count > 10_000 else { return }
+        // Remove trackers with no recent activity (older than max window)
+        let maxWindow = Double(max(settings.minIntervalSeconds * Double(settings.minConsecutive + 5),
+                                    Double(settings.maxIntervalSeconds)))
+        let now = Date()
+        trackers = trackers.filter { _, tracker in
+            guard let last = tracker.timestamps.last else { return false }
+            return now.timeIntervalSince(last) < maxWindow
+        }
     }
 }
