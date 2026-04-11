@@ -49,44 +49,87 @@ nonisolated final class TLSManager: @unchecked Sendable {
     /// certificate for display/trust purposes. Overwrites any existing CA.
     func generateCA() throws -> SecCertificate {
         try queue.sync {
-            // 1. Generate RSA 2048 key pair
-            let keyParams: [String: Any] = [
-                kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
-                kSecAttrKeySizeInBits as String: 2048,
-                kSecAttrLabel as String: caLabel,
-                kSecAttrApplicationTag as String: caTag.data(using: .utf8)!,
-                kSecAttrIsPermanent as String: true,
+            let caDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("proxymate-ca", isDirectory: true)
+            try? FileManager.default.createDirectory(at: caDir, withIntermediateDirectories: true)
+            let keyPath = caDir.appendingPathComponent("ca.key").path
+            let certPath = caDir.appendingPathComponent("ca.pem").path
+            let derPath = caDir.appendingPathComponent("ca.der").path
+            let p12Path = caDir.appendingPathComponent("ca.p12").path
+
+            // 1. Generate CA key + self-signed cert via openssl
+            let genResult = shell("/usr/bin/openssl", args: [
+                "req", "-x509", "-new", "-nodes", "-newkey", "rsa:2048",
+                "-keyout", keyPath, "-out", certPath, "-days", "3650",
+                "-subj", "/CN=\(caLabel)/O=Proxymate/C=US"
+            ])
+            guard genResult == 0 else {
+                throw TLSError.keyGenFailed("openssl req failed with exit code \(genResult)")
+            }
+
+            // 2. Convert to DER for SecCertificateCreateWithData
+            let derResult = shell("/usr/bin/openssl", args: [
+                "x509", "-in", certPath, "-outform", "DER", "-out", derPath
+            ])
+            guard derResult == 0 else {
+                throw TLSError.certCreationFailed
+            }
+
+            // 3. Create PKCS12 for import into Keychain (key + cert)
+            let p12Result = shell("/usr/bin/openssl", args: [
+                "pkcs12", "-export", "-inkey", keyPath, "-in", certPath,
+                "-out", p12Path, "-passout", "pass:proxymate"
+            ])
+            guard p12Result == 0 else {
+                throw TLSError.certCreationFailed
+            }
+
+            // 4. Load DER cert
+            guard let derData = try? Data(contentsOf: URL(fileURLWithPath: derPath)),
+                  let cert = SecCertificateCreateWithData(nil, derData as CFData) else {
+                throw TLSError.certCreationFailed
+            }
+
+            // 5. Import PKCS12 into Keychain (includes private key)
+            guard let p12Data = try? Data(contentsOf: URL(fileURLWithPath: p12Path)) else {
+                throw TLSError.certCreationFailed
+            }
+            var items: CFArray?
+            let importOptions: [String: Any] = [
+                kSecImportExportPassphrase as String: "proxymate"
             ]
-            var error: Unmanaged<CFError>?
-            guard let privateKey = SecKeyCreateRandomKey(keyParams as CFDictionary, &error) else {
-                throw TLSError.keyGenFailed(error?.takeRetainedValue().localizedDescription ?? "unknown")
-            }
-            guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
-                throw TLSError.keyGenFailed("Could not extract public key")
+            let importStatus = SecPKCS12Import(p12Data as CFData, importOptions as CFDictionary, &items)
+            guard importStatus == errSecSuccess else {
+                throw TLSError.keychainError(importStatus)
             }
 
-            // 2. Create self-signed certificate
-            let cert = try createSelfSignedCert(privateKey: privateKey, publicKey: publicKey)
-
-            // 3. Store certificate in Keychain
-            let addQuery: [String: Any] = [
-                kSecClass as String: kSecClassCertificate,
-                kSecValueRef as String: cert,
-                kSecAttrLabel as String: caLabel,
-            ]
-            // Remove old cert if exists
-            SecItemDelete(addQuery as CFDictionary)
-            let status = SecItemAdd(addQuery as CFDictionary, nil)
-            guard status == errSecSuccess || status == errSecDuplicateItem else {
-                throw TLSError.keychainError(status)
+            // Extract private key from imported identity
+            if let itemArray = items as? [[String: Any]],
+               let identity = itemArray.first?[kSecImportItemIdentity as String] {
+                var privateKey: SecKey?
+                SecIdentityCopyPrivateKey(identity as! SecIdentity, &privateKey)
+                self.rootKey = privateKey
             }
 
-            self.rootKey = privateKey
             self.rootCert = cert
             self.leafCache.removeAll()
 
+            // Cleanup temp files
+            try? FileManager.default.removeItem(at: caDir)
+
             return cert
         }
+    }
+
+    private func shell(_ command: String, args: [String]) -> Int32 {
+        let p = Process()
+        p.launchPath = command
+        p.arguments = args
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        do { try p.run() } catch { return -1 }
+        p.waitUntilExit()
+        return p.terminationStatus
     }
 
     /// Removes the root CA from the Keychain.
@@ -171,37 +214,102 @@ nonisolated final class TLSManager: @unchecked Sendable {
         try queue.sync {
             if let cached = leafCache[hostname] { return cached }
 
-            guard let caKey = rootKey, let caCert = rootCert else {
+            guard rootKey != nil, rootCert != nil else {
                 throw TLSError.noCA
             }
 
+            // Generate leaf cert signed by CA via openssl
+            let leafDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("proxymate-leaf-\(UUID().uuidString)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: leafDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: leafDir) }
+
+            let caKeyPath = leafDir.appendingPathComponent("ca.key").path
+            let caCertPath = leafDir.appendingPathComponent("ca.pem").path
+            let leafKeyPath = leafDir.appendingPathComponent("leaf.key").path
+            let leafCSRPath = leafDir.appendingPathComponent("leaf.csr").path
+            let leafCertPath = leafDir.appendingPathComponent("leaf.pem").path
+            let leafP12Path = leafDir.appendingPathComponent("leaf.p12").path
+            let extPath = leafDir.appendingPathComponent("ext.cnf").path
+
+            // Export CA key+cert from keychain to files for openssl signing
+            guard let caKeyData = exportPrivateKey(rootKey!),
+                  let caCertData = exportCACertDER() else {
+                throw TLSError.certCreationFailed
+            }
+            try caKeyData.write(to: URL(fileURLWithPath: caKeyPath))
+            // Convert DER to PEM for openssl
+            let pemHeader = "-----BEGIN CERTIFICATE-----\n"
+            let pemFooter = "\n-----END CERTIFICATE-----\n"
+            let pemBody = caCertData.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed])
+            try (pemHeader + pemBody + pemFooter).write(toFile: caCertPath, atomically: true, encoding: .utf8)
+
+            // SAN extension config
+            let extCnf = """
+            [v3_leaf]
+            subjectAltName = DNS:\(hostname)
+            basicConstraints = CA:FALSE
+            keyUsage = digitalSignature, keyEncipherment
+            extendedKeyUsage = serverAuth
+            """
+            try extCnf.write(toFile: extPath, atomically: true, encoding: .utf8)
+
             // Generate leaf key
-            let leafKeyParams: [String: Any] = [
-                kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
-                kSecAttrKeySizeInBits as String: 2048,
-            ]
-            var error: Unmanaged<CFError>?
-            guard let leafPrivateKey = SecKeyCreateRandomKey(leafKeyParams as CFDictionary, &error) else {
+            guard shell("/usr/bin/openssl", args: ["genrsa", "-out", leafKeyPath, "2048"]) == 0 else {
                 throw TLSError.keyGenFailed("Leaf key generation failed")
             }
-            guard let leafPublicKey = SecKeyCopyPublicKey(leafPrivateKey) else {
-                throw TLSError.keyGenFailed("Could not extract leaf public key")
+
+            // Generate CSR
+            guard shell("/usr/bin/openssl", args: [
+                "req", "-new", "-key", leafKeyPath, "-out", leafCSRPath,
+                "-subj", "/CN=\(hostname)/O=Proxymate MITM"
+            ]) == 0 else {
+                throw TLSError.certCreationFailed
             }
 
-            // Create leaf cert signed by CA
-            let leafCert = try createLeafCert(
-                hostname: hostname,
-                leafPrivateKey: leafPrivateKey,
-                leafPublicKey: leafPublicKey,
-                caKey: caKey,
-                caCert: caCert
-            )
+            // Sign with CA
+            guard shell("/usr/bin/openssl", args: [
+                "x509", "-req", "-in", leafCSRPath, "-CA", caCertPath, "-CAkey", caKeyPath,
+                "-CAcreateserial", "-out", leafCertPath, "-days", "365",
+                "-extensions", "v3_leaf", "-extfile", extPath
+            ]) == 0 else {
+                throw TLSError.certCreationFailed
+            }
 
-            // Create identity by adding to temporary keychain
-            let identity = try createIdentity(privateKey: leafPrivateKey, cert: leafCert)
+            // Create PKCS12
+            guard shell("/usr/bin/openssl", args: [
+                "pkcs12", "-export", "-inkey", leafKeyPath, "-in", leafCertPath,
+                "-certfile", caCertPath, "-out", leafP12Path, "-passout", "pass:proxymate"
+            ]) == 0 else {
+                throw TLSError.certCreationFailed
+            }
+
+            // Import PKCS12 to get SecIdentity
+            guard let p12Data = try? Data(contentsOf: URL(fileURLWithPath: leafP12Path)) else {
+                throw TLSError.certCreationFailed
+            }
+            var items: CFArray?
+            let opts: [String: Any] = [kSecImportExportPassphrase as String: "proxymate"]
+            guard SecPKCS12Import(p12Data as CFData, opts as CFDictionary, &items) == errSecSuccess,
+                  let arr = items as? [[String: Any]],
+                  let identityRef = arr.first?[kSecImportItemIdentity as String] else {
+                throw TLSError.identityNotFound
+            }
+
+            let identity = identityRef as! SecIdentity
             leafCache[hostname] = identity
             return identity
         }
+    }
+
+    /// Export private key as PEM string for openssl.
+    private func exportPrivateKey(_ key: SecKey) -> Data? {
+        var error: Unmanaged<CFError>?
+        guard let data = SecKeyCopyExternalRepresentation(key, &error) as Data? else { return nil }
+        let pem = "-----BEGIN RSA PRIVATE KEY-----\n" +
+                  data.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed]) +
+                  "\n-----END RSA PRIVATE KEY-----\n"
+        return pem.data(using: .utf8)
     }
 
     /// Check if a host should be intercepted based on settings.
