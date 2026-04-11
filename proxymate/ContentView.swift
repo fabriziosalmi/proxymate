@@ -13,6 +13,7 @@ import Charts
 struct ContentView: View {
     @EnvironmentObject var state: AppState
     @State private var tab: Tab = .proxies
+    @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "proxymate.onboarded")
 
     enum Tab: String, CaseIterable, Identifiable {
         case proxies = "Proxies"
@@ -47,6 +48,13 @@ struct ContentView: View {
         }
         .frame(width: 400)
         .background(shortcuts)
+        .sheet(isPresented: $showOnboarding) {
+            OnboardingView(isPresented: $showOnboarding)
+                .environmentObject(state)
+                .onDisappear {
+                    UserDefaults.standard.set(true, forKey: "proxymate.onboarded")
+                }
+        }
     }
 
     /// Hidden buttons that capture keyboard shortcuts within the popover.

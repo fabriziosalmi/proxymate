@@ -22,6 +22,9 @@ final class AppState: ObservableObject {
     @Published var mitmSettings = MITMSettings()
     @Published var allowlist: [AllowEntry] = []
     @Published var dnsSettings = DNSSettings()
+    @Published var diskCacheSettings = DiskCacheSettings()
+    @Published var metricsSettings = MetricsSettings()
+    @Published var webhookSettings = WebhookSettings()
     @Published var aiSettings = AISettings()
     @Published var aiProviderStats: [String: AIProviderStats] = [:]
     @Published var blacklistSources: [BlacklistSource] = []
@@ -59,6 +62,9 @@ final class AppState: ObservableObject {
     private let privacyKey     = "proxymate.privacy.v1"
     private let cacheKey       = "proxymate.cache.v1"
     private let mitmKey        = "proxymate.mitm.v1"
+    private let diskCacheKey   = "proxymate.diskcache.v1"
+    private let metricsKey     = "proxymate.metrics.v1"
+    private let webhookKey     = "proxymate.webhook.v1"
     private let allowlistKey   = "proxymate.allowlist.v1"
     private let dnsKey         = "proxymate.dns.v1"
     private let aiSettingsKey  = "proxymate.ai.v1"
@@ -100,6 +106,11 @@ final class AppState: ObservableObject {
         CacheManager.shared.configure(cacheSettings)
         AITracker.shared.configure(providers: AIProvider.builtIn, settings: aiSettings)
         DNSResolver.shared.configure(dnsSettings)
+        DiskCache.shared.configure(diskCacheSettings)
+        WebhookManager.shared.configure(webhookSettings)
+        if metricsSettings.enabled {
+            startMetrics()
+        }
 
         // Check MITM CA status
         mitmSettings.caInstalled = TLSManager.shared.isCAInstalled
@@ -240,15 +251,18 @@ final class AppState: ObservableObject {
             timeSeries.recordBlocked()
             log(.warn, "BLOCKED \(host) — \(ruleName)", host: host)
             NotificationManager.shared.notifyBlock(host: host, ruleName: ruleName)
+            WebhookManager.shared.sendBlock(host: host, ruleName: ruleName)
         case .blacklisted(let host, let sourceName, let category):
             stats.blacklistBlocked += 1
             timeSeries.recordBlocked()
             log(.warn, "BLACKLIST \(host) — \(sourceName) [\(category)]", host: host)
             NotificationManager.shared.notifyBlock(host: host, ruleName: "\(sourceName) [\(category)]")
+            WebhookManager.shared.sendBlock(host: host, ruleName: "\(sourceName) [\(category)]")
         case .exfiltration(let host, let patternName, let severity, let preview):
             stats.exfiltrationBlocked += 1
             log(.error, "EXFILTRATION [\(severity)] \(patternName) → \(host) | \(preview)", host: host)
             NotificationManager.shared.notifyExfiltration(host: host, patternName: patternName)
+            WebhookManager.shared.sendExfiltration(host: host, patternName: patternName, severity: severity, preview: preview)
         case .privacyStripped(let host, let actions):
             stats.privacyActions += 1
             log(.info, "Privacy [\(actions.joined(separator: ", "))] \(host)", host: host)
@@ -267,6 +281,7 @@ final class AppState: ObservableObject {
             stats.aiBlocked += 1
             log(.warn, "AI BLOCKED \(provider) \(host) — \(reason)", host: host)
             NotificationManager.shared.notifyBudget(provider: provider, reason: reason)
+            WebhookManager.shared.sendBudget(provider: provider, reason: reason)
         case .aiUsage(let provider, let model, let prompt, let completion, let cost):
             stats.aiTotalCostUSD += cost
             aiProviderStats = AITracker.shared.getStats()
@@ -274,6 +289,7 @@ final class AppState: ObservableObject {
         case .log(let level, let message):
             log(level, message)
         }
+        syncMetricsSnapshot()
     }
 
     // MARK: - Privacy
@@ -339,6 +355,42 @@ final class AppState: ObservableObject {
         stats.aiRequests = 0
         stats.aiBlocked = 0
         stats.aiTotalCostUSD = 0
+    }
+
+    // MARK: - Disk cache, Metrics, Webhooks
+
+    func updateDiskCache(_ s: DiskCacheSettings) {
+        diskCacheSettings = s; save()
+        DiskCache.shared.configure(s)
+    }
+
+    func updateMetrics(_ s: MetricsSettings) {
+        metricsSettings = s; save()
+        if s.enabled { startMetrics() } else { MetricsServer.shared.stop() }
+    }
+
+    func updateWebhook(_ s: WebhookSettings) {
+        webhookSettings = s; save()
+        WebhookManager.shared.configure(s)
+    }
+
+    nonisolated(unsafe) static var latestStats = Stats()
+
+    private func startMetrics() {
+        MetricsServer.shared.statsProvider = {
+            MetricsServer.generatePrometheusMetrics(
+                state: AppState.latestStats,
+                cache: CacheManager.shared.stats,
+                disk: DiskCache.shared.stats,
+                dns: DNSResolver.shared.stats
+            )
+        }
+        MetricsServer.shared.start(port: UInt16(metricsSettings.port))
+    }
+
+    /// Call after stat changes to keep the static snapshot fresh.
+    private func syncMetricsSnapshot() {
+        AppState.latestStats = stats
     }
 
     // MARK: - Allowlist
@@ -653,6 +705,9 @@ final class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(rules)   { d.set(data, forKey: rulesKey) }
         if let data = try? JSONEncoder().encode(privacy) { d.set(data, forKey: privacyKey) }
         if let data = try? JSONEncoder().encode(cacheSettings) { d.set(data, forKey: cacheKey) }
+        if let data = try? JSONEncoder().encode(diskCacheSettings) { d.set(data, forKey: diskCacheKey) }
+        if let data = try? JSONEncoder().encode(metricsSettings) { d.set(data, forKey: metricsKey) }
+        if let data = try? JSONEncoder().encode(webhookSettings) { d.set(data, forKey: webhookKey) }
         if let data = try? JSONEncoder().encode(allowlist) { d.set(data, forKey: allowlistKey) }
         if let data = try? JSONEncoder().encode(dnsSettings) { d.set(data, forKey: dnsKey) }
         if let data = try? JSONEncoder().encode(aiSettings) { d.set(data, forKey: aiSettingsKey) }
@@ -687,6 +742,18 @@ final class AppState: ObservableObject {
         if let data = d.data(forKey: cacheKey),
            let c = try? JSONDecoder().decode(CacheSettings.self, from: data) {
             cacheSettings = c
+        }
+        if let data = d.data(forKey: diskCacheKey),
+           let s = try? JSONDecoder().decode(DiskCacheSettings.self, from: data) {
+            diskCacheSettings = s
+        }
+        if let data = d.data(forKey: metricsKey),
+           let s = try? JSONDecoder().decode(MetricsSettings.self, from: data) {
+            metricsSettings = s
+        }
+        if let data = d.data(forKey: webhookKey),
+           let s = try? JSONDecoder().decode(WebhookSettings.self, from: data) {
+            webhookSettings = s
         }
         if let data = d.data(forKey: allowlistKey),
            let arr = try? JSONDecoder().decode([AllowEntry].self, from: data) {

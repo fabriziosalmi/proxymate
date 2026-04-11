@@ -96,11 +96,20 @@ nonisolated final class CacheManager: @unchecked Sendable {
 
         return queue.sync { () -> LookupResult? in
             guard let entry = entries[key] else {
+                // L1 miss → try L2 disk cache
+                if let l2 = DiskCache.shared.lookup(key: key) {
+                    _stats.hits += 1
+                    return l2
+                }
                 _stats.misses += 1
                 return nil
             }
             if entry.isExpired {
                 remove(key: key)
+                if let l2 = DiskCache.shared.lookup(key: key) {
+                    _stats.hits += 1
+                    return l2
+                }
                 _stats.misses += 1
                 return nil
             }
@@ -204,6 +213,10 @@ nonisolated final class CacheManager: @unchecked Sendable {
             self.evictIfNeeded()
             self._stats.currentEntries = self.entries.count
             self._stats.currentSizeMB = Double(self.currentSizeBytes) / (1024 * 1024)
+
+            // Also store to L2 disk cache
+            DiskCache.shared.store(key: key, statusLine: statusLine,
+                                    headers: responseHeaders, body: body, maxAge: maxAge)
         }
     }
 
