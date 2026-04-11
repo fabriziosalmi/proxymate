@@ -8,6 +8,7 @@
 
 import SwiftUI
 import AppKit
+import Charts
 
 struct ContentView: View {
     @EnvironmentObject var state: AppState
@@ -182,24 +183,25 @@ struct QuickProxiesSection: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(state.proxies) { p in
-                        ProxyRow(proxy: p, isSelected: p.id == state.selectedProxyID)
-                            .contentShape(Rectangle())
-                            .onTapGesture { state.select(p.id) }
-                            .contextMenu {
-                                Button("Use this proxy") { state.select(p.id) }
-                                Button("Create Pool from this") {
-                                    state.createPoolFromProxy(p)
-                                }
-                                Divider()
-                                Button("Delete", role: .destructive) { state.removeProxy(p.id) }
+            List {
+                ForEach(state.proxies) { p in
+                    ProxyRow(proxy: p, isSelected: p.id == state.selectedProxyID)
+                        .contentShape(Rectangle())
+                        .onTapGesture { state.select(p.id) }
+                        .contextMenu {
+                            Button("Use this proxy") { state.select(p.id) }
+                            Button("Create Pool from this") {
+                                state.createPoolFromProxy(p)
                             }
-                    }
+                            Divider()
+                            Button("Delete", role: .destructive) { state.removeProxy(p.id) }
+                        }
+                        .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
                 }
-                .padding(.vertical, 4)
+                .onMove { state.moveProxy(from: $0, to: $1) }
+                .onDelete { state.deleteProxies(at: $0) }
             }
+            .listStyle(.plain)
             Divider()
             HStack {
                 Button { showingAdd = true } label: {
@@ -694,6 +696,51 @@ struct StatsView: View {
                              value: "\(state.logs.count)",
                              color: .secondary)
                 }
+
+                // Live chart
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("REQUESTS / SECOND").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                    Chart(state.timeSeries.points) { point in
+                        AreaMark(
+                            x: .value("Time", point.timestamp),
+                            y: .value("Allowed", point.allowed)
+                        )
+                        .foregroundStyle(.blue.opacity(0.3))
+                        AreaMark(
+                            x: .value("Time", point.timestamp),
+                            y: .value("Blocked", point.blocked)
+                        )
+                        .foregroundStyle(.red.opacity(0.3))
+                        LineMark(
+                            x: .value("Time", point.timestamp),
+                            y: .value("Allowed", point.allowed)
+                        )
+                        .foregroundStyle(.blue)
+                        LineMark(
+                            x: .value("Time", point.timestamp),
+                            y: .value("Blocked", point.blocked)
+                        )
+                        .foregroundStyle(.red)
+                    }
+                    .chartXAxis(.hidden)
+                    .chartYAxis {
+                        AxisMarks(position: .leading) { value in
+                            AxisValueLabel {
+                                if let v = value.as(Int.self) {
+                                    Text(verbatim: "\(v)").font(.caption2)
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 80)
+
+                    HStack(spacing: 12) {
+                        Label("Allowed", systemImage: "circle.fill")
+                            .font(.caption2).foregroundStyle(.blue)
+                        Label("Blocked", systemImage: "circle.fill")
+                            .font(.caption2).foregroundStyle(.red)
+                    }
+                }
             }
             .padding(12)
         }
@@ -780,29 +827,24 @@ struct WAFRulesSection: View {
                 }
                 .frame(maxWidth: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6) {
-                        ForEach(grouped, id: \.category) { group in
-                            Text(group.category.uppercased())
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 12).padding(.top, 6)
-                            ForEach(group.rules) { rule in
-                                RuleRow(rule: rule)
-                                    .contextMenu {
-                                        Button(rule.enabled ? "Disable" : "Enable") {
-                                            state.toggleRule(rule.id)
-                                        }
-                                        Divider()
-                                        Button("Delete", role: .destructive) {
-                                            state.removeRule(rule.id)
-                                        }
-                                    }
+                List {
+                    ForEach(state.rules) { rule in
+                        RuleRow(rule: rule)
+                            .contextMenu {
+                                Button(rule.enabled ? "Disable" : "Enable") {
+                                    state.toggleRule(rule.id)
+                                }
+                                Divider()
+                                Button("Delete", role: .destructive) {
+                                    state.removeRule(rule.id)
+                                }
                             }
-                        }
+                            .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
                     }
-                    .padding(.vertical, 4)
+                    .onMove { state.moveRule(from: $0, to: $1) }
+                    .onDelete { state.deleteRules(at: $0) }
                 }
+                .listStyle(.plain)
             }
             Divider()
             HStack {
@@ -1075,6 +1117,7 @@ struct AddAllowEntrySheet: View {
 struct BlacklistsSection: View {
     @EnvironmentObject var state: AppState
     @State private var isRefreshing = false
+    @State private var showingAddCustom = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1113,7 +1156,9 @@ struct BlacklistsSection: View {
             }
             Divider()
             HStack {
-                Button("Add Built-in") { state.loadBuiltInBlacklists() }
+                Button("Built-in") { state.loadBuiltInBlacklists() }
+                    .buttonStyle(.borderless)
+                Button("Custom") { showingAddCustom = true }
                     .buttonStyle(.borderless)
                 Spacer()
                 Button {
@@ -1124,13 +1169,57 @@ struct BlacklistsSection: View {
                     if isRefreshing {
                         ProgressView().controlSize(.small)
                     } else {
-                        Label("Refresh All", systemImage: "arrow.clockwise")
+                        Label("Refresh", systemImage: "arrow.clockwise")
                     }
                 }
                 .buttonStyle(.borderless)
             }
             .padding(8)
         }
+        .sheet(isPresented: $showingAddCustom) {
+            AddCustomBlacklistSheet { source in
+                state.addBlacklistSource(source)
+                state.refreshBlacklist(source.id)
+            }
+        }
+    }
+}
+
+struct AddCustomBlacklistSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var url = ""
+    @State private var category: BlacklistSource.BlacklistCategory = .custom
+    @State private var format: BlacklistSource.ListFormat = .hosts
+    let onAdd: (BlacklistSource) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add Custom Blacklist").font(.headline)
+            Form {
+                TextField("Name", text: $name)
+                TextField("URL", text: $url)
+                Picker("Category", selection: $category) {
+                    ForEach(BlacklistSource.BlacklistCategory.allCases) { Text($0.rawValue).tag($0) }
+                }
+                Picker("Format", selection: $format) {
+                    ForEach(BlacklistSource.ListFormat.allCases) { Text($0.rawValue).tag($0) }
+                }
+            }
+            Text("Lists auto-refresh every 6 hours when enabled.")
+                .font(.caption2).foregroundStyle(.tertiary)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Add & Refresh") {
+                    onAdd(BlacklistSource(name: name.isEmpty ? "Custom" : name,
+                                          url: url, category: category, format: format))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction).disabled(url.isEmpty)
+            }
+        }
+        .padding(16).frame(width: 380)
     }
 }
 

@@ -5,6 +5,7 @@
 
 import Foundation
 import Combine
+import SwiftUI
 
 @MainActor
 final class AppState: ObservableObject {
@@ -31,6 +32,7 @@ final class AppState: ObservableObject {
     @Published var localPort: UInt16?
     @Published var logs: [LogEntry] = []
     @Published var stats = Stats()
+    let timeSeries = StatsTimeSeries()
 
     struct Stats {
         var requestsAllowed: Int = 0
@@ -231,13 +233,16 @@ final class AppState: ObservableObject {
             log(.info, "Local proxy stopped")
         case .allowed(let host, let method):
             stats.requestsAllowed += 1
+            timeSeries.recordAllowed()
             log(.info, "\(method) \(host)", host: host)
         case .blocked(let host, let ruleName):
             stats.requestsBlocked += 1
+            timeSeries.recordBlocked()
             log(.warn, "BLOCKED \(host) — \(ruleName)", host: host)
             NotificationManager.shared.notifyBlock(host: host, ruleName: ruleName)
         case .blacklisted(let host, let sourceName, let category):
             stats.blacklistBlocked += 1
+            timeSeries.recordBlocked()
             log(.warn, "BLACKLIST \(host) — \(sourceName) [\(category)]", host: host)
             NotificationManager.shared.notifyBlock(host: host, ruleName: "\(sourceName) [\(category)]")
         case .exfiltration(let host, let patternName, let severity, let preview):
@@ -558,6 +563,19 @@ final class AppState: ObservableObject {
 
     func addProxy(_ p: ProxyConfig) { proxies.append(p); save() }
 
+    func moveProxy(from source: IndexSet, to destination: Int) {
+        proxies.move(fromOffsets: source, toOffset: destination); save()
+    }
+
+    func deleteProxies(at offsets: IndexSet) {
+        let ids = offsets.map { proxies[$0].id }
+        proxies.remove(atOffsets: offsets)
+        for id in ids where selectedProxyID == id {
+            selectedProxyID = proxies.first?.id
+        }
+        save()
+    }
+
     func removeProxy(_ id: ProxyConfig.ID) {
         proxies.removeAll { $0.id == id }
         if selectedProxyID == id { selectedProxyID = proxies.first?.id }
@@ -574,6 +592,16 @@ final class AppState: ObservableObject {
 
     func addRule(_ r: WAFRule) {
         rules.append(r); save()
+        if isEnabled { localProxy.updateRules(rules) }
+    }
+
+    func moveRule(from source: IndexSet, to destination: Int) {
+        rules.move(fromOffsets: source, toOffset: destination); save()
+        if isEnabled { localProxy.updateRules(rules) }
+    }
+
+    func deleteRules(at offsets: IndexSet) {
+        rules.remove(atOffsets: offsets); save()
         if isEnabled { localProxy.updateRules(rules) }
     }
 

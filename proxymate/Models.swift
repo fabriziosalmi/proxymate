@@ -282,5 +282,31 @@ extension ExfiltrationPack {
                       severity: .medium),
             ]
         ),
+        .init(
+            id: "pii",
+            name: "PII (Personally Identifiable Info)",
+            description: "Detects credit cards (Luhn), IBAN, Italian fiscal codes, and US SSN in outbound requests",
+            enabled: false,
+            patterns: [
+                .init(name: "Credit Card (Visa/MC/Amex/Discover)",
+                      regex: #"(?:^|[^0-9])([3-6]\d{3}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{1,4})(?:[^0-9]|$)"#,
+                      severity: .critical),
+                .init(name: "IBAN (EU)",
+                      regex: #"[A-Z]{2}\d{2}[\s]?[A-Z0-9]{4}[\s]?(?:[A-Z0-9]{4}[\s]?){2,7}[A-Z0-9]{1,4}"#,
+                      severity: .critical),
+                .init(name: "Italian Fiscal Code (Codice Fiscale)",
+                      regex: #"[A-Z]{6}\d{2}[A-EHLMPRST]\d{2}[A-Z]\d{3}[A-Z]"#,
+                      severity: .high),
+                .init(name: "US Social Security Number",
+                      regex: #"(?:^|[^0-9])(\d{3}[-\s]?\d{2}[-\s]?\d{4})(?:[^0-9]|$)"#,
+                      severity: .critical),
+                .init(name: "Email Address (outbound leak)",
+                      regex: #"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"#,
+                      severity: .medium),
+                .init(name: "Phone Number (international)",
+                      regex: #"\+\d{1,3}[\s-]?\d{6,14}"#,
+                      severity: .medium),
+            ]
+        ),
     ]
 }
