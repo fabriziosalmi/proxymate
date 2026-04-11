@@ -44,8 +44,11 @@ nonisolated enum AllowlistMatcher {
 
         let pattern = entry.pattern.lowercased().trimmingCharacters(in: .whitespaces)
 
-        // CIDR check
+        // CIDR check (IPv4 and IPv6)
         if pattern.contains("/") {
+            if pattern.contains(":") {
+                return IPv6Support.matchesCIDR6(ip: host, cidr: pattern)
+            }
             return matchesCIDR(ip: host, cidr: pattern)
         }
 

@@ -202,10 +202,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 completion(.success((headers, leftover)))
                 return
             }
-            if isComplete || acc.count >= 16_384 {
+            if isComplete || acc.count >= 65_536 {
                 completion(.failure(NSError(
                     domain: "Proxymate.LocalProxy", code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Headers truncated or too large"])))
+                    userInfo: [NSLocalizedDescriptionKey: "Headers too large (>\(acc.count) bytes)"])))
                 return
             }
             self?.readHeaders(connection: connection, accumulator: acc, completion: completion)
@@ -213,6 +213,13 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     }
 
     private func routeRequest(client: NWConnection, headerData: Data, leftover: Data) {
+        // Defensive: validate headers before parsing
+        guard HTTPParser.validateHeaders(headerData) else {
+            onEvent?(.log(.warn, "Malformed request rejected (invalid headers)"))
+            sendErrorResponse(client: client, status: "400 Bad Request", body: "Malformed HTTP request\n")
+            return
+        }
+
         guard let headerString = String(data: headerData, encoding: .utf8) else {
             client.cancel()
             return
@@ -221,11 +228,18 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         let firstLine = String(headerString[headerString.startIndex..<firstLineEnd])
         let parts = firstLine.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
         guard parts.count >= 2 else {
-            client.cancel()
+            sendErrorResponse(client: client, status: "400 Bad Request", body: "Invalid request line\n")
             return
         }
         let method = String(parts[0])
         let target = String(parts[1])
+
+        // URL length check
+        guard target.count <= HTTPParser.maxURLLength else {
+            sendErrorResponse(client: client, status: "414 URI Too Long", body: "URL exceeds \(HTTPParser.maxURLLength) bytes\n")
+            return
+        }
+
         let host = Self.extractHost(method: method, target: target, headers: headerString)
 
         // Allow check: RuleEngine (O(1) domain) + allowlist (CIDR)
@@ -746,7 +760,9 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     static func extractHost(method: String, target: String, headers: String) -> String {
         if method.uppercased() == "CONNECT" {
-            return String(target.split(separator: ":").first ?? "")
+            // Handle [IPv6]:port and host:port
+            let parsed = IPv6Support.parseHostPort(target)
+            return parsed.host
         }
         if let url = URL(string: target), let h = url.host {
             return h
@@ -754,7 +770,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         for line in headers.split(separator: "\r\n", omittingEmptySubsequences: false) {
             if line.lowercased().hasPrefix("host:") {
                 let value = line.dropFirst("host:".count).trimmingCharacters(in: .whitespaces)
-                return String(value.split(separator: ":").first ?? "")
+                return IPv6Support.parseHostPort(value).host
             }
         }
         return ""
