@@ -122,13 +122,45 @@ nonisolated final class TLSManager: @unchecked Sendable {
     }
 
     /// Opens System Preferences → Keychain Access to let the user trust the cert.
+    /// Opens Keychain Access with the CA cert for manual trust.
     func promptUserToTrust() {
         guard let certData = exportCACertDER() else { return }
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("ProxymateCA.cer")
         try? certData.write(to: tempURL)
-        // Open the cert file which launches Keychain Access
         NSWorkspace.shared.open(tempURL)
+    }
+
+    /// Check if the root CA is trusted by the system.
+    func isCATrusted() -> Bool {
+        guard let cert = rootCert else { return false }
+        var trust: SecTrust?
+        let policy = SecPolicyCreateSSL(true, nil)
+        guard SecTrustCreateWithCertificates(cert, policy, &trust) == errSecSuccess,
+              let trust else { return false }
+        var error: CFError?
+        return SecTrustEvaluateWithError(trust, &error)
+    }
+
+    // MARK: - Cert pinning detection
+
+    private var pinningFailures: [String: Int] = [:]
+    private let pinningAutoExcludeThreshold = 3
+
+    /// Record a handshake failure for a host. Returns true if the host
+    /// should be auto-excluded (cert pinning detected).
+    func recordHandshakeFailure(host: String) -> Bool {
+        queue.sync {
+            let h = host.lowercased()
+            let count = (pinningFailures[h] ?? 0) + 1
+            pinningFailures[h] = count
+            return count >= pinningAutoExcludeThreshold
+        }
+    }
+
+    /// Clear pinning failure history.
+    func resetPinningHistory() {
+        queue.sync { pinningFailures.removeAll() }
     }
 
     // MARK: - Leaf cert forging
@@ -177,7 +209,13 @@ nonisolated final class TLSManager: @unchecked Sendable {
         guard settings.enabled else { return false }
         let h = host.lowercased()
 
-        // Check excludes first
+        // HSTS preload — never intercept these
+        if HSTSPreload.isPreloaded(h) { return false }
+
+        // Auto-excluded by cert pinning detection
+        if (pinningFailures[h] ?? 0) >= pinningAutoExcludeThreshold { return false }
+
+        // Check user excludes
         for pattern in settings.excludeHosts {
             if matchesWildcard(host: h, pattern: pattern.lowercased()) { return false }
         }
