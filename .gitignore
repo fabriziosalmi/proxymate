@@ -26,6 +26,7 @@ Packages/
 # Local roadmap, never to be tracked or shipped
 FEATURES.md
 FEATURES_SHORT.md
+NEWFEATURES.md
 ROADMAP.md
 NOTES.md
 TODO.local.md
