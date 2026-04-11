@@ -47,6 +47,7 @@ struct ContentView: View {
             Divider()
             content
                 .frame(height: 340)
+            CommunityBar()
         }
         .frame(width: 400)
         .animation(.easeInOut(duration: 0.15), value: tab)
@@ -758,6 +759,44 @@ struct LogRow: View {
         case .warn:  return .orange
         case .error: return .red
         }
+    }
+}
+
+// MARK: - Community bar
+
+struct CommunityBar: View {
+    @Environment(\.openURL) private var openURL
+
+    private let links: [(icon: String, label: String, url: String)] = [
+        ("star.fill",                "Star",     "https://github.com/fabriziosalmi/proxymate"),
+        ("ladybug.fill",             "Bug",      "https://github.com/fabriziosalmi/proxymate/issues/new?labels=bug&template=bug_report.yml"),
+        ("lightbulb.fill",           "Idea",     "https://github.com/fabriziosalmi/proxymate/issues/new?labels=enhancement&template=feature_request.yml"),
+        ("bubble.left.fill",         "Discuss",  "https://github.com/fabriziosalmi/proxymate/discussions"),
+        ("heart.fill",               "Sponsor",  "https://github.com/sponsors/fabriziosalmi"),
+    ]
+
+    var body: some View {
+        Divider()
+        HStack(spacing: 0) {
+            ForEach(links, id: \.label) { link in
+                Button {
+                    if let u = URL(string: link.url) { openURL(u) }
+                } label: {
+                    VStack(spacing: 1) {
+                        Image(systemName: link.icon)
+                            .font(.system(size: 9))
+                        Text(link.label)
+                            .font(.system(size: 7))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(link.label)
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
     }
 }
 
