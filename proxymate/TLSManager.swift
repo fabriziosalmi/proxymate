@@ -166,13 +166,35 @@ nonisolated final class TLSManager: @unchecked Sendable {
 
     /// Opens System Preferences → Keychain Access to let the user trust the cert.
     /// Opens Keychain Access with the CA cert for manual trust.
+    /// Trust the root CA system-wide using `security add-trusted-cert` via admin privileges.
     func promptUserToTrust() {
-        // The cert is already in the keychain (imported via PKCS12 during generateCA).
-        // Opening a .cer file would fail with -25294 (duplicate import).
-        // Instead, open Keychain Access so the user can search "Proxymate Root CA"
-        // and set trust to "Always Trust".
-        let keychainApp = URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app")
-        NSWorkspace.shared.open(keychainApp)
+        // Export cert to temp PEM file
+        let p = Process()
+        p.launchPath = "/usr/bin/security"
+        p.arguments = ["find-certificate", "-a", "-c", caLabel, "-p"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do { try p.run() } catch { return }
+        p.waitUntilExit()
+        let pem = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard !pem.isEmpty else { return }
+
+        let tempPEM = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ProxymateCA.pem")
+        try? pem.write(to: tempPEM, atomically: true, encoding: .utf8)
+
+        // Trust via admin privileges (prompts for password)
+        let script = "security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain \"\(tempPEM.path)\""
+        Task {
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try PrivilegedHelper.shared.runAsRoot(script)
+                }.value
+            } catch {
+                // If admin auth fails, silently ignore
+            }
+        }
     }
 
     /// Check if the root CA is trusted by the system.
