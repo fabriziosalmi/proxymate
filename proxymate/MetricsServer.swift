@@ -67,7 +67,7 @@ nonisolated final class MetricsServer: @unchecked Sendable {
 
 extension MetricsServer {
 
-    static func generatePrometheusMetrics(state: AppState.Stats,
+    nonisolated static func generatePrometheusMetrics(state: AppState.Stats,
                                            cache: CacheManager.Stats,
                                            disk: DiskCache.Stats,
                                            dns: DNSResolver.DNSStats) -> String {

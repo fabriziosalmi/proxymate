@@ -38,7 +38,10 @@ final class CloudSync {
             object: store,
             queue: .main
         ) { [weak self] notification in
-            self?.handleRemoteChange(notification)
+            let reason = notification.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int
+            Task { @MainActor [weak self] in
+                self?.handleRemoteChange(reason: reason)
+            }
         }
         store.synchronize()
     }
@@ -66,9 +69,8 @@ final class CloudSync {
 
     // MARK: - Pull + merge
 
-    private func handleRemoteChange(_ notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let reason = userInfo[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int,
+    private func handleRemoteChange(reason: Int?) {
+        guard let reason,
               reason == NSUbiquitousKeyValueStoreServerChange ||
               reason == NSUbiquitousKeyValueStoreInitialSyncChange else { return }
 

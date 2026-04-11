@@ -48,7 +48,7 @@ nonisolated struct AIAgentSettings: Codable, Hashable, Sendable {
 }
 
 extension AIAgentPolicy {
-    static let defaults: [AIAgentPolicy] = [
+    nonisolated static let defaults: [AIAgentPolicy] = [
         .init(agentId: "claude-code",  name: "Claude Code",     action: .audit),
         .init(agentId: "cursor",       name: "Cursor",          action: .audit),
         .init(agentId: "windsurf",     name: "Windsurf",        action: .audit),

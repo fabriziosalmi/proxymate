@@ -45,7 +45,7 @@ final class AppState: ObservableObject {
     @Published var stats = Stats()
     let timeSeries = StatsTimeSeries()
 
-    struct Stats {
+    nonisolated struct Stats: Sendable {
         var requestsAllowed: Int = 0
         var requestsBlocked: Int = 0
         var blacklistBlocked: Int = 0

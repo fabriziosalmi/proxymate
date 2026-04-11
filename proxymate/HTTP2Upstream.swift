@@ -20,7 +20,7 @@ nonisolated final class HTTP2Upstream: @unchecked Sendable {
 
     init() {
         let config = URLSessionConfiguration.default
-        config.httpShouldUsePipelining = true
+        // HTTP/2 multiplexing replaces pipelining
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
         // URLSession uses HTTP/2 by default for HTTPS connections

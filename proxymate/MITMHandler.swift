@@ -11,6 +11,12 @@ import Foundation
 import Network
 import Compression
 
+/// Wraps SSLContext + Unmanaged pointer for Sendable compliance.
+private struct TLSSession: @unchecked Sendable {
+    nonisolated(unsafe) let ctx: SSLContext
+    nonisolated(unsafe) let ptr: UnsafeMutableRawPointer
+}
+
 nonisolated final class MITMHandler: @unchecked Sendable {
 
     fileprivate let clientConn: NWConnection
@@ -86,8 +92,9 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             return
         }
 
+        let session = TLSSession(ctx: ctx, ptr: ptr)
         pumpClient()
-        handshake(ctx: ctx, ptr: ptr)
+        handshake(session: session)
     }
 
     // MARK: - Client byte pump
@@ -118,35 +125,35 @@ nonisolated final class MITMHandler: @unchecked Sendable {
 
     // MARK: - TLS handshake (with timeout + retry limit)
 
-    private func handshake(ctx: SSLContext, ptr: UnsafeMutableRawPointer) {
+    private func handshake(session: TLSSession) {
         // Timeout check
         if Date().timeIntervalSince(startTime) > handshakeTimeout {
             onEvent?(.log(.warn, "MITM handshake timeout for \(hostname) after \(handshakeTimeout)s"))
-            done(ctx: ctx, ptr: ptr)
+            done(session: session)
             return
         }
 
         queue.asyncAfter(deadline: .now() + 0.02) { [weak self] in
             guard let self else {
-                Unmanaged<MITMHandler>.fromOpaque(ptr).release()
+                Unmanaged<MITMHandler>.fromOpaque(session.ptr).release()
                 return
             }
 
-            let status = MITMHandshake(ctx)
+            let status = MITMHandshake(session.ctx)
             self.flushWrites()
 
             switch Int32(status) {
             case errSecSuccess:
                 self.onEvent?(.log(.info, "MITM TLS OK: \(self.hostname)"))
-                self.readDecrypted(ctx: ctx, ptr: ptr)
+                self.readDecrypted(session: session)
 
             case errSSLWouldBlock:
                 self.handshakeRetries += 1
                 if self.handshakeRetries >= self.maxHandshakeRetries {
                     self.onEvent?(.log(.warn, "MITM handshake max retries for \(self.hostname)"))
-                    self.done(ctx: ctx, ptr: ptr)
+                    self.done(session: session)
                 } else {
-                    self.handshake(ctx: ctx, ptr: ptr)
+                    self.handshake(session: session)
                 }
 
             case errSSLPeerHandshakeFail, errSSLPeerCertUnknown, errSSLPeerBadCert:
@@ -156,49 +163,49 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                 } else {
                     self.onEvent?(.log(.warn, "MITM: \(self.hostname) rejected cert (\(Self.sslErrorName(status)))"))
                 }
-                self.done(ctx: ctx, ptr: ptr)
+                self.done(session: session)
 
             case errSSLClosedAbort, errSSLClosedGraceful, errSSLClosedNoNotify:
                 self.onEvent?(.log(.info, "MITM: \(self.hostname) closed during handshake"))
-                self.done(ctx: ctx, ptr: ptr)
+                self.done(session: session)
 
             default:
                 self.onEvent?(.log(.warn, "MITM handshake error \(self.hostname): \(Self.sslErrorName(status))"))
-                self.done(ctx: ctx, ptr: ptr)
+                self.done(session: session)
             }
         }
     }
 
     // MARK: - Read decrypted HTTP
 
-    private func readDecrypted(ctx: SSLContext, ptr: UnsafeMutableRawPointer) {
+    private func readDecrypted(session: TLSSession) {
         queue.asyncAfter(deadline: .now() + 0.01) { [weak self] in
             guard let self else {
-                Unmanaged<MITMHandler>.fromOpaque(ptr).release()
+                Unmanaged<MITMHandler>.fromOpaque(session.ptr).release()
                 return
             }
             var buf = [UInt8](repeating: 0, count: 16384)
             var processed = 0
-            let status = MITMRead(ctx, &buf, buf.count, &processed)
+            let status = MITMRead(session.ctx, &buf, buf.count, &processed)
 
             if processed > 0 {
                 let data = Data(buf[0..<processed])
-                self.processRequest(data, ctx: ctx, ptr: ptr)
+                self.processRequest(data, session: session)
                 return
             }
             if Int32(status) == errSSLWouldBlock {
-                self.readDecrypted(ctx: ctx, ptr: ptr)
+                self.readDecrypted(session: session)
                 return
             }
-            self.done(ctx: ctx, ptr: ptr)
+            self.done(session: session)
         }
     }
 
     // MARK: - Process decrypted request
 
-    private func processRequest(_ data: Data, ctx: SSLContext, ptr: UnsafeMutableRawPointer) {
+    private func processRequest(_ data: Data, session: TLSSession) {
         guard let text = String(data: data, encoding: .utf8) else {
-            done(ctx: ctx, ptr: ptr); return
+            done(session: session); return
         }
         let firstLineEnd = text.range(of: "\r\n")?.lowerBound ?? text.endIndex
         let parts = text[text.startIndex..<firstLineEnd].split(separator: " ", maxSplits: 2)
@@ -211,8 +218,8 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         }) {
             let label = hit.name.isEmpty ? hit.pattern : hit.name
             onEvent?(.blocked(host: hostname, ruleName: "MITM: \(label)"))
-            sendEncrypted(ctx: ctx, text: "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-            done(ctx: ctx, ptr: ptr)
+            sendEncrypted(session: session, text: "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            done(session: session)
             return
         }
 
@@ -220,8 +227,8 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         if let hit = ExfiltrationScanner.shared.scan(headers: text, target: target) {
             onEvent?(.exfiltration(host: hostname, patternName: hit.patternName,
                                    severity: hit.severity.rawValue, preview: hit.matchPreview))
-            sendEncrypted(ctx: ctx, text: "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-            done(ctx: ctx, ptr: ptr)
+            sendEncrypted(session: session, text: "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            done(session: session)
             return
         }
 
@@ -234,18 +241,18 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         }
 
         onEvent?(.allowed(host: hostname, method: method))
-        forwardToServer(requestData: finalData, ctx: ctx, ptr: ptr)
+        forwardToServer(requestData: finalData, session: session)
     }
 
     // MARK: - Forward to real server
 
-    private func forwardToServer(requestData: Data, ctx: SSLContext, ptr: UnsafeMutableRawPointer) {
+    private func forwardToServer(requestData: Data, session: TLSSession) {
         let tls = NWProtocolTLS.Options()
         sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, _, cb in cb(true) }, queue)
         let params = NWParameters(tls: tls)
 
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            done(ctx: ctx, ptr: ptr); return
+            done(session: session); return
         }
         let server = NWConnection(host: .init(hostname), port: nwPort, using: params)
         server.stateUpdateHandler = { [weak self] state in
@@ -254,12 +261,12 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             case .ready:
                 server.send(content: requestData, completion: .contentProcessed { [weak self] err in
                     guard let self else { server.cancel(); return }
-                    if err != nil { self.done(ctx: ctx, ptr: ptr); server.cancel(); return }
-                    self.bufferServerResponse(server: server, ctx: ctx, ptr: ptr, buffer: Data())
+                    if err != nil { self.done(session: session); server.cancel(); return }
+                    self.bufferServerResponse(server: server, session: session, buffer: Data())
                 })
             case .failed(let err):
                 self.onEvent?(.log(.error, "MITM server failed \(self.hostname): \(err)"))
-                self.done(ctx: ctx, ptr: ptr)
+                self.done(session: session)
             case .cancelled:
                 break
             default: break
@@ -270,8 +277,8 @@ nonisolated final class MITMHandler: @unchecked Sendable {
 
     // MARK: - Response buffering + inspection + stripping
 
-    private func bufferServerResponse(server: NWConnection, ctx: SSLContext,
-                                       ptr: UnsafeMutableRawPointer, buffer: Data) {
+    private func bufferServerResponse(server: NWConnection, session: TLSSession,
+                                       buffer: Data) {
         server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self else { server.cancel(); return }
             var buf = buffer
@@ -296,19 +303,19 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                 var toSend = strippedHeaders
                 toSend.append(Data("\r\n\r\n".utf8))
                 toSend.append(afterHeaders)
-                self.sendEncrypted(ctx: ctx, data: toSend)
+                self.sendEncrypted(session: session, data: toSend)
 
                 if isComplete || error != nil {
                     server.cancel()
                     // Inspect full response body
                     self.inspectResponseBody(headerStr: headerStr, body: afterHeaders,
                                               needsDecompress: needsDecompress)
-                    self.done(ctx: ctx, ptr: ptr)
+                    self.done(session: session)
                     return
                 }
 
                 // Stream remaining body directly
-                self.streamServerBody(server: server, ctx: ctx, ptr: ptr,
+                self.streamServerBody(server: server, session: session,
                                        bodyAccum: afterHeaders, headerStr: headerStr,
                                        needsDecompress: needsDecompress)
                 return
@@ -317,24 +324,23 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             // Headers not complete yet, keep buffering (max 32KB)
             if buf.count > 32768 {
                 // Headers too large, send raw and give up on inspection
-                self.sendEncrypted(ctx: ctx, data: buf)
-                self.streamRaw(server: server, ctx: ctx, ptr: ptr)
+                self.sendEncrypted(session: session, data: buf)
+                self.streamRaw(server: server, session: session)
                 return
             }
 
             if isComplete || error != nil {
                 server.cancel()
-                self.sendEncrypted(ctx: ctx, data: buf)
-                self.done(ctx: ctx, ptr: ptr)
+                self.sendEncrypted(session: session, data: buf)
+                self.done(session: session)
                 return
             }
 
-            self.bufferServerResponse(server: server, ctx: ctx, ptr: ptr, buffer: buf)
+            self.bufferServerResponse(server: server, session: session, buffer: buf)
         }
     }
 
-    private func streamServerBody(server: NWConnection, ctx: SSLContext,
-                                   ptr: UnsafeMutableRawPointer,
+    private func streamServerBody(server: NWConnection, session: TLSSession,
                                    bodyAccum: Data, headerStr: String,
                                    needsDecompress: Bool) {
         server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
@@ -342,7 +348,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             var accum = bodyAccum
             if let data, !data.isEmpty {
                 accum.append(data)
-                self.sendEncrypted(ctx: ctx, data: data)
+                self.sendEncrypted(session: session, data: data)
             }
             if isComplete || error != nil {
                 server.cancel()
@@ -351,29 +357,29 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                     self.inspectResponseBody(headerStr: headerStr, body: accum,
                                               needsDecompress: needsDecompress)
                 }
-                self.done(ctx: ctx, ptr: ptr)
+                self.done(session: session)
                 return
             }
             // Stop accumulating body after 2MB but keep streaming
             let nextAccum = accum.count <= 2 * 1024 * 1024 ? accum : Data()
-            self.streamServerBody(server: server, ctx: ctx, ptr: ptr,
+            self.streamServerBody(server: server, session: session,
                                    bodyAccum: nextAccum, headerStr: headerStr,
                                    needsDecompress: needsDecompress)
         }
     }
 
-    private func streamRaw(server: NWConnection, ctx: SSLContext, ptr: UnsafeMutableRawPointer) {
+    private func streamRaw(server: NWConnection, session: TLSSession) {
         server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self else { server.cancel(); return }
             if let data, !data.isEmpty {
-                self.sendEncrypted(ctx: ctx, data: data)
+                self.sendEncrypted(session: session, data: data)
             }
             if isComplete || error != nil {
                 server.cancel()
-                self.done(ctx: ctx, ptr: ptr)
+                self.done(session: session)
                 return
             }
-            self.streamRaw(server: server, ctx: ctx, ptr: ptr)
+            self.streamRaw(server: server, session: session)
         }
     }
 
@@ -456,11 +462,11 @@ nonisolated final class MITMHandler: @unchecked Sendable {
 
     // MARK: - SSL write helpers
 
-    private func sendEncrypted(ctx: SSLContext, text: String) {
-        sendEncrypted(ctx: ctx, data: Data(text.utf8))
+    private func sendEncrypted(session: TLSSession, text: String) {
+        sendEncrypted(session: session, data: Data(text.utf8))
     }
 
-    private func sendEncrypted(ctx: SSLContext, data: Data) {
+    private func sendEncrypted(session: TLSSession, data: Data) {
         data.withUnsafeBytes { buf in
             guard let base = buf.baseAddress else { return }
             var offset = 0
@@ -468,7 +474,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             while offset < data.count && maxIter > 0 {
                 maxIter -= 1
                 var processed = 0
-                let s = MITMWrite(ctx, base.advanced(by: offset), data.count - offset, &processed)
+                let s = MITMWrite(session.ctx, base.advanced(by: offset), data.count - offset, &processed)
                 if processed == 0 { break }
                 offset += processed
                 if Int32(s) != errSecSuccess && Int32(s) != errSSLWouldBlock { break }
@@ -477,9 +483,9 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         flushWrites()
     }
 
-    private func done(ctx: SSLContext, ptr: UnsafeMutableRawPointer) {
-        MITMClose(ctx)
-        Unmanaged<MITMHandler>.fromOpaque(ptr).release()
+    private func done(session: TLSSession) {
+        MITMClose(session.ctx)
+        Unmanaged<MITMHandler>.fromOpaque(session.ptr).release()
         clientConn.cancel()
     }
 

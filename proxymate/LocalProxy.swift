@@ -586,8 +586,6 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             port: port,
             using: .tcp
         )
-        let upHost = upstream.host
-        let upPort = port.rawValue
         upstreamConn.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
