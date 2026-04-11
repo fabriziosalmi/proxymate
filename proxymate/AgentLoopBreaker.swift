@@ -24,13 +24,13 @@ nonisolated struct LoopBreakerSettings: Codable, Hashable, Sendable {
     var enabled: Bool = true
 
     // Identical content loop (very conservative — must be truly stuck)
-    var identicalThreshold: Int = 10      // same body hash N times before WARNING
-    var identicalBlockThreshold: Int = 15 // same body hash N times before BLOCK
+    var identicalThreshold: Int = 20      // same body hash N times before WARNING
+    var identicalBlockThreshold: Int = 30 // same body hash N times before BLOCK
     var identicalWindowSeconds: Int = 120 // within this window
 
-    // Rapid-fire (any content) — high thresholds to avoid false positives
-    var rapidFireThreshold: Int = 50      // requests to same host → WARNING
-    var rapidFireBlockThreshold: Int = 80 // requests to same host → BLOCK
+    // Rapid-fire (any content) — very high to avoid false positives on normal browsing
+    var rapidFireThreshold: Int = 200     // requests to same host → WARNING
+    var rapidFireBlockThreshold: Int = 500 // requests to same host → BLOCK
     var rapidFireWindowSeconds: Int = 60  // within this window
 
     // MCP loop — moderate, MCP calls are distinct and structured
