@@ -225,6 +225,7 @@ struct QuickProxiesSection: View {
 struct PoolsSection: View {
     @EnvironmentObject var state: AppState
     @State private var showingAdd = false
+    @State private var showingOverride = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -256,6 +257,22 @@ struct PoolsSection: View {
                                     }
                                 }
                         }
+
+                        // Override chain
+                        if !state.poolOverrides.isEmpty {
+                            Text("ROUTING OVERRIDES")
+                                .font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 12).padding(.top, 8)
+                            ForEach(state.poolOverrides) { ov in
+                                OverrideRow(override: ov,
+                                            poolName: state.pools.first { $0.id == ov.poolId }?.name ?? "?")
+                                    .contextMenu {
+                                        Button("Delete", role: .destructive) {
+                                            state.removePoolOverride(ov.id)
+                                        }
+                                    }
+                            }
+                        }
                     }
                     .padding(.vertical, 4)
                 }
@@ -263,8 +280,13 @@ struct PoolsSection: View {
             Divider()
             HStack {
                 Button { showingAdd = true } label: {
-                    Label("Add Pool", systemImage: "plus")
+                    Label("Pool", systemImage: "plus")
                 }.buttonStyle(.borderless)
+                if !state.pools.isEmpty {
+                    Button { showingOverride = true } label: {
+                        Label("Route", systemImage: "arrow.triangle.branch")
+                    }.buttonStyle(.borderless)
+                }
                 Spacer()
                 Text(verbatim: "\(state.pools.count) pools")
                     .font(.caption).foregroundStyle(.secondary)
@@ -274,6 +296,63 @@ struct PoolsSection: View {
         .sheet(isPresented: $showingAdd) {
             AddPoolSheet { state.addPool($0) }
         }
+        .sheet(isPresented: $showingOverride) {
+            AddOverrideSheet(pools: state.pools) { state.addPoolOverride($0) }
+        }
+    }
+}
+
+struct OverrideRow: View {
+    let override: PoolOverride
+    let poolName: String
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(.orange).frame(width: 20)
+            Text(override.hostPattern)
+                .font(.system(.caption, design: .monospaced))
+            Image(systemName: "arrow.right")
+                .font(.caption2).foregroundStyle(.tertiary)
+            Text(poolName)
+                .font(.caption.weight(.medium)).foregroundStyle(.blue)
+            Spacer()
+        }
+        .padding(.horizontal, 12).padding(.vertical, 4)
+    }
+}
+
+struct AddOverrideSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let pools: [UpstreamPool]
+    @State private var pattern = ""
+    @State private var selectedPoolId: UUID?
+    let onAdd: (PoolOverride) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add Routing Override").font(.headline)
+            Form {
+                TextField("Host pattern (e.g. *.github.com)", text: $pattern)
+                Picker("Route to Pool", selection: $selectedPoolId) {
+                    Text("Select...").tag(nil as UUID?)
+                    ForEach(pools) { Text($0.name).tag($0.id as UUID?) }
+                }
+            }
+            Text("Requests matching this pattern will use the selected pool instead of the default.")
+                .font(.caption2).foregroundStyle(.tertiary)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Add") {
+                    guard let pid = selectedPoolId else { return }
+                    onAdd(PoolOverride(hostPattern: pattern, poolId: pid))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(pattern.isEmpty || selectedPoolId == nil)
+            }
+        }
+        .padding(16).frame(width: 380)
     }
 }
 

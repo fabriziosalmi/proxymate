@@ -84,6 +84,7 @@ final class AppState: ObservableObject {
             exfiltrationPacks = ExfiltrationPack.builtIn
         }
         log(.info, "Proxymate ready")
+        NotificationManager.shared.setup()
 
         // Configure pool router
         PoolRouter.shared.configure(pools: pools, overrides: poolOverrides)
@@ -234,12 +235,15 @@ final class AppState: ObservableObject {
         case .blocked(let host, let ruleName):
             stats.requestsBlocked += 1
             log(.warn, "BLOCKED \(host) — \(ruleName)", host: host)
+            NotificationManager.shared.notifyBlock(host: host, ruleName: ruleName)
         case .blacklisted(let host, let sourceName, let category):
             stats.blacklistBlocked += 1
             log(.warn, "BLACKLIST \(host) — \(sourceName) [\(category)]", host: host)
+            NotificationManager.shared.notifyBlock(host: host, ruleName: "\(sourceName) [\(category)]")
         case .exfiltration(let host, let patternName, let severity, let preview):
             stats.exfiltrationBlocked += 1
             log(.error, "EXFILTRATION [\(severity)] \(patternName) → \(host) | \(preview)", host: host)
+            NotificationManager.shared.notifyExfiltration(host: host, patternName: patternName)
         case .privacyStripped(let host, let actions):
             stats.privacyActions += 1
             log(.info, "Privacy [\(actions.joined(separator: ", "))] \(host)", host: host)
@@ -257,6 +261,7 @@ final class AppState: ObservableObject {
         case .aiBlocked(let host, let provider, let reason):
             stats.aiBlocked += 1
             log(.warn, "AI BLOCKED \(provider) \(host) — \(reason)", host: host)
+            NotificationManager.shared.notifyBudget(provider: provider, reason: reason)
         case .aiUsage(let provider, let model, let prompt, let completion, let cost):
             stats.aiTotalCostUSD += cost
             aiProviderStats = AITracker.shared.getStats()

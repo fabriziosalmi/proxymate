@@ -242,6 +242,19 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             return
         }
 
+        // DNS-level blocking: resolve domain → IPs, check if any IP is blacklisted
+        if !isAllowed {
+            let resolvedIPs = DNSResolver.shared.resolveSync(host, timeout: 1)
+            for ip in resolvedIPs {
+                if let hit = BlacklistManager.shared.lookup(host: ip, enabledSources: blacklistSourcesSnapshot) {
+                    onEvent?(.blacklisted(host: host, sourceName: "\(hit.sourceName) (resolved IP \(ip))",
+                                          category: hit.category.rawValue))
+                    sendBlockedResponse(client: client, ruleName: "DNS→IP: \(hit.sourceName) [\(ip)]")
+                    return
+                }
+            }
+        }
+
         // Exfiltration scan (headers + URL only, not body)
         if let hit = ExfiltrationScanner.shared.scan(headers: headerString, target: target) {
             onEvent?(.exfiltration(host: host, patternName: hit.patternName,
