@@ -768,11 +768,11 @@ struct CommunityBar: View {
     @Environment(\.openURL) private var openURL
 
     private let links: [(icon: String, label: String, url: String)] = [
-        ("star.fill",                "Star",     "https://github.com/fabriziosalmi/proxymate"),
-        ("ladybug.fill",             "Bug",      "https://github.com/fabriziosalmi/proxymate/issues/new?labels=bug&template=bug_report.yml"),
-        ("lightbulb.fill",           "Idea",     "https://github.com/fabriziosalmi/proxymate/issues/new?labels=enhancement&template=feature_request.yml"),
-        ("bubble.left.fill",         "Discuss",  "https://github.com/fabriziosalmi/proxymate/discussions"),
-        ("heart.fill",               "Sponsor",  "https://github.com/sponsors/fabriziosalmi"),
+        ("star",              "Star",    "https://github.com/fabriziosalmi/proxymate"),
+        ("ant",               "Bug",     "https://github.com/fabriziosalmi/proxymate/issues/new?labels=bug&template=bug_report.yml"),
+        ("plus.bubble",       "Idea",    "https://github.com/fabriziosalmi/proxymate/issues/new?labels=enhancement&template=feature_request.yml"),
+        ("text.bubble",       "Discuss", "https://github.com/fabriziosalmi/proxymate/discussions"),
+        ("arrow.up.heart",    "Support", "https://github.com/sponsors/fabriziosalmi"),
     ]
 
     var body: some View {
@@ -782,21 +782,22 @@ struct CommunityBar: View {
                 Button {
                     if let u = URL(string: link.url) { openURL(u) }
                 } label: {
-                    VStack(spacing: 1) {
+                    VStack(spacing: 2) {
                         Image(systemName: link.icon)
-                            .font(.system(size: 9))
+                            .font(.system(size: 10, weight: .regular))
                         Text(link.label)
-                            .font(.system(size: 7))
+                            .font(.system(size: 8, weight: .medium))
                     }
                     .frame(maxWidth: .infinity)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tertiary)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(link.label)
             }
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .padding(.horizontal, 6)
     }
 }
 
