@@ -19,6 +19,8 @@ final class AppState: ObservableObject {
     @Published var privacy = PrivacySettings()
     @Published var cacheSettings = CacheSettings()
     @Published var mitmSettings = MITMSettings()
+    @Published var allowlist: [AllowEntry] = []
+    @Published var dnsSettings = DNSSettings()
     @Published var aiSettings = AISettings()
     @Published var aiProviderStats: [String: AIProviderStats] = [:]
     @Published var blacklistSources: [BlacklistSource] = []
@@ -55,6 +57,8 @@ final class AppState: ObservableObject {
     private let privacyKey     = "proxymate.privacy.v1"
     private let cacheKey       = "proxymate.cache.v1"
     private let mitmKey        = "proxymate.mitm.v1"
+    private let allowlistKey   = "proxymate.allowlist.v1"
+    private let dnsKey         = "proxymate.dns.v1"
     private let aiSettingsKey  = "proxymate.ai.v1"
     private let blacklistKey   = "proxymate.blacklists.v1"
     private let exfilPacksKey  = "proxymate.exfiltration.v1"
@@ -92,6 +96,7 @@ final class AppState: ObservableObject {
         // Configure cache + AI tracker
         CacheManager.shared.configure(cacheSettings)
         AITracker.shared.configure(providers: AIProvider.builtIn, settings: aiSettings)
+        DNSResolver.shared.configure(dnsSettings)
 
         // Check MITM CA status
         mitmSettings.caInstalled = TLSManager.shared.isCAInstalled
@@ -161,6 +166,7 @@ final class AppState: ObservableObject {
             port = try await startLocalProxy(
                 upstream: .init(host: proxy.host, port: upstreamPort),
                 rules: rules,
+                allowlist: allowlist,
                 privacy: privacy,
                 blacklistSources: blacklistSources,
                 mitm: mitmSettings
@@ -201,12 +207,14 @@ final class AppState: ObservableObject {
 
     private func startLocalProxy(upstream: LocalProxy.Upstream,
                                  rules: [WAFRule],
+                                 allowlist: [AllowEntry],
                                  privacy: PrivacySettings,
                                  blacklistSources: [BlacklistSource],
                                  mitm: MITMSettings) async throws -> UInt16 {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UInt16, Error>) in
-            localProxy.start(upstream: upstream, rules: rules, privacy: privacy,
-                             blacklistSources: blacklistSources, mitm: mitm) { result in
+            localProxy.start(upstream: upstream, rules: rules, allowlist: allowlist,
+                             privacy: privacy, blacklistSources: blacklistSources,
+                             mitm: mitm) { result in
                 cont.resume(with: result)
             }
         }
@@ -321,6 +329,73 @@ final class AppState: ObservableObject {
         stats.aiRequests = 0
         stats.aiBlocked = 0
         stats.aiTotalCostUSD = 0
+    }
+
+    // MARK: - Allowlist
+
+    func addAllowEntry(_ entry: AllowEntry) {
+        allowlist.append(entry); save()
+        if isEnabled { localProxy.updateAllowlist(allowlist) }
+        log(.info, "Allowlisted \(entry.pattern)")
+    }
+
+    func removeAllowEntry(_ id: UUID) {
+        allowlist.removeAll { $0.id == id }; save()
+        if isEnabled { localProxy.updateAllowlist(allowlist) }
+    }
+
+    func toggleAllowEntry(_ id: UUID) {
+        if let i = allowlist.firstIndex(where: { $0.id == id }) {
+            allowlist[i].enabled.toggle(); save()
+            if isEnabled { localProxy.updateAllowlist(allowlist) }
+        }
+    }
+
+    // MARK: - DNS
+
+    func updateDNS(_ s: DNSSettings) {
+        dnsSettings = s; save()
+        DNSResolver.shared.configure(s)
+    }
+
+    // MARK: - Rule import
+
+    func importRulesFromText(_ text: String, format: RuleImporter.ImportFormat, category: String) {
+        let existing = Set(rules.map { $0.pattern.lowercased() })
+        let result = RuleImporter.importRules(from: text, format: format,
+                                               category: category, existingPatterns: existing)
+        rules.append(contentsOf: result.rules)
+        save()
+        if isEnabled { localProxy.updateRules(rules) }
+        log(.info, "Imported \(result.rules.count) rules (\(result.skipped) skipped, format: \(result.format.rawValue))")
+    }
+
+    func importRulesFromURL(_ urlString: String, format: RuleImporter.ImportFormat, category: String) {
+        let existing = Set(rules.map { $0.pattern.lowercased() })
+        log(.info, "Importing from \(urlString)...")
+        RuleImporter.importFromURL(urlString, format: format, category: category,
+                                    existingPatterns: existing) { [weak self] result in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                switch result {
+                case .success(let r):
+                    self.rules.append(contentsOf: r.rules)
+                    self.save()
+                    if self.isEnabled { self.localProxy.updateRules(self.rules) }
+                    self.log(.info, "Imported \(r.rules.count) rules from URL (\(r.skipped) skipped)")
+                case .failure(let err):
+                    self.log(.error, "Import failed: \(err.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func exportRulesJSON() -> String {
+        RuleImporter.exportRules(rules)
+    }
+
+    func exportRulesHosts() -> String {
+        RuleImporter.exportAsHosts(rules)
     }
 
     // MARK: - Pools
@@ -545,6 +620,8 @@ final class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(rules)   { d.set(data, forKey: rulesKey) }
         if let data = try? JSONEncoder().encode(privacy) { d.set(data, forKey: privacyKey) }
         if let data = try? JSONEncoder().encode(cacheSettings) { d.set(data, forKey: cacheKey) }
+        if let data = try? JSONEncoder().encode(allowlist) { d.set(data, forKey: allowlistKey) }
+        if let data = try? JSONEncoder().encode(dnsSettings) { d.set(data, forKey: dnsKey) }
         if let data = try? JSONEncoder().encode(aiSettings) { d.set(data, forKey: aiSettingsKey) }
         if let data = try? JSONEncoder().encode(mitmSettings) { d.set(data, forKey: mitmKey) }
         if let data = try? JSONEncoder().encode(blacklistSources) { d.set(data, forKey: blacklistKey) }
@@ -577,6 +654,14 @@ final class AppState: ObservableObject {
         if let data = d.data(forKey: cacheKey),
            let c = try? JSONDecoder().decode(CacheSettings.self, from: data) {
             cacheSettings = c
+        }
+        if let data = d.data(forKey: allowlistKey),
+           let arr = try? JSONDecoder().decode([AllowEntry].self, from: data) {
+            allowlist = arr
+        }
+        if let data = d.data(forKey: dnsKey),
+           let s = try? JSONDecoder().decode(DNSSettings.self, from: data) {
+            dnsSettings = s
         }
         if let data = d.data(forKey: aiSettingsKey),
            let a = try? JSONDecoder().decode(AISettings.self, from: data) {

@@ -55,6 +55,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     private let queue = DispatchQueue(label: "proxymate.localproxy", qos: .userInitiated)
     private var listener: NWListener?
     private var rulesSnapshot: [WAFRule] = []
+    private var allowlistSnapshot: [AllowEntry] = []
     private var privacySnapshot = PrivacySettings()
     private var blacklistSourcesSnapshot: [BlacklistSource] = []
     private var mitmSnapshot = MITMSettings()
@@ -67,6 +68,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     func start(upstream: Upstream,
                rules: [WAFRule],
+               allowlist: [AllowEntry] = [],
                privacy: PrivacySettings,
                blacklistSources: [BlacklistSource],
                mitm: MITMSettings = MITMSettings(),
@@ -79,6 +81,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
             self.upstream = upstream
             self.rulesSnapshot = rules
+            self.allowlistSnapshot = allowlist
             self.privacySnapshot = privacy
             self.blacklistSourcesSnapshot = blacklistSources
             self.mitmSnapshot = mitm
@@ -114,6 +117,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     func updateRules(_ rules: [WAFRule]) {
         queue.async { [weak self] in self?.rulesSnapshot = rules }
+    }
+
+    func updateAllowlist(_ entries: [AllowEntry]) {
+        queue.async { [weak self] in self?.allowlistSnapshot = entries }
     }
 
     func updateUpstream(_ upstream: Upstream) {
@@ -212,10 +219,11 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         let target = String(parts[1])
         let host = Self.extractHost(method: method, target: target, headers: headerString)
 
-        // Allow check (higher priority — skip WAF + blacklist if matched)
-        let isAllowed = rulesSnapshot.contains(where: {
-            $0.enabled && $0.kind == .allowDomain && Self.matchesDomain(host: host, pattern: $0.pattern)
-        })
+        // Allow check: allowlist entries (CIDR + domain) + allow WAF rules
+        let isAllowed = AllowlistMatcher.isAllowed(host: host, port: nil, entries: allowlistSnapshot)
+            || rulesSnapshot.contains(where: {
+                $0.enabled && $0.kind == .allowDomain && Self.matchesDomain(host: host, pattern: $0.pattern)
+            })
 
         // WAF check
         if !isAllowed, let blocking = rulesSnapshot.first(where: {

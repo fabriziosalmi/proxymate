@@ -13,7 +13,7 @@ struct ProxyConfig: Identifiable, Codable, Hashable, Sendable {
     var applyToHTTPS: Bool
 }
 
-struct WAFRule: Identifiable, Codable, Hashable, Sendable {
+nonisolated struct WAFRule: Identifiable, Codable, Hashable, Sendable {
     var id: UUID = UUID()
     var name: String
     var kind: Kind

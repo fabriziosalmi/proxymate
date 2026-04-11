@@ -649,6 +649,7 @@ struct RulesView: View {
 
     enum RulesSection: String, CaseIterable, Identifiable {
         case waf          = "WAF"
+        case allowlist    = "Allow"
         case blacklists   = "Lists"
         case exfiltration = "Secrets"
         var id: String { rawValue }
@@ -666,6 +667,7 @@ struct RulesView: View {
 
             switch section {
             case .waf:          WAFRulesSection()
+            case .allowlist:    AllowlistSection()
             case .blacklists:   BlacklistsSection()
             case .exfiltration: ExfiltrationSection()
             }
@@ -678,6 +680,7 @@ struct RulesView: View {
 struct WAFRulesSection: View {
     @EnvironmentObject var state: AppState
     @State private var showingAdd = false
+    @State private var showingImport = false
 
     private var grouped: [(category: String, rules: [WAFRule])] {
         let dict = Dictionary(grouping: state.rules) { $0.category.isEmpty ? "Custom" : $0.category }
@@ -729,6 +732,8 @@ struct WAFRulesSection: View {
                 }.buttonStyle(.borderless)
                 Button("Examples") { state.loadExampleRules() }
                     .buttonStyle(.borderless).foregroundStyle(.secondary)
+                Button("Import") { showingImport = true }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
                 Spacer()
                 Text(verbatim: "\(state.rules.filter(\.enabled).count) / \(state.rules.count)")
                     .font(.caption).foregroundStyle(.secondary)
@@ -737,6 +742,9 @@ struct WAFRulesSection: View {
         }
         .sheet(isPresented: $showingAdd) {
             AddRuleSheet { state.addRule($0) }
+        }
+        .sheet(isPresented: $showingImport) {
+            ImportRulesSheet()
         }
     }
 }
@@ -802,6 +810,184 @@ struct AddRuleSheet: View {
         case .blockDomain:  return "example.com"
         case .blockContent: return "substring"
         }
+    }
+}
+
+// MARK: Import sheet
+
+struct ImportRulesSheet: View {
+    @EnvironmentObject var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var source: ImportSource = .url
+    @State private var urlText = ""
+    @State private var pasteText = ""
+    @State private var format: RuleImporter.ImportFormat = .autoDetect
+    @State private var category = "Imported"
+
+    enum ImportSource: String, CaseIterable { case url = "URL", paste = "Paste" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Import Rules").font(.headline)
+            Picker("Source", selection: $source) {
+                ForEach(ImportSource.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented)
+
+            if source == .url {
+                TextField("https://example.com/hosts.txt", text: $urlText)
+                    .textFieldStyle(.roundedBorder).font(.caption)
+            } else {
+                TextEditor(text: $pasteText)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(height: 100)
+                    .border(Color.secondary.opacity(0.3))
+            }
+
+            HStack {
+                Picker("Format", selection: $format) {
+                    ForEach(RuleImporter.ImportFormat.allCases) { Text($0.rawValue).tag($0) }
+                }.frame(width: 160)
+                TextField("Category", text: $category)
+                    .textFieldStyle(.roundedBorder).frame(width: 100)
+            }.font(.caption)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Import") {
+                    if source == .url {
+                        state.importRulesFromURL(urlText, format: format, category: category)
+                    } else {
+                        state.importRulesFromText(pasteText, format: format, category: category)
+                    }
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(source == .url ? urlText.isEmpty : pasteText.isEmpty)
+            }
+        }
+        .padding(16).frame(width: 400)
+    }
+}
+
+// MARK: Allowlist sub-section
+
+struct AllowlistSection: View {
+    @EnvironmentObject var state: AppState
+    @State private var showingAdd = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if state.allowlist.isEmpty {
+                VStack(spacing: 8) {
+                    Spacer()
+                    Image(systemName: "checkmark.shield")
+                        .font(.title2).foregroundStyle(.secondary)
+                    Text("No allowlist entries").foregroundStyle(.secondary)
+                    Text("Allowed hosts bypass all block rules, blacklists, and exfiltration scans. Supports IPs, CIDR ranges, and domains.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center).padding(.horizontal, 16)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(state.allowlist) { entry in
+                            AllowEntryRow(entry: entry)
+                                .contextMenu {
+                                    Button(entry.enabled ? "Disable" : "Enable") {
+                                        state.toggleAllowEntry(entry.id)
+                                    }
+                                    Divider()
+                                    Button("Delete", role: .destructive) {
+                                        state.removeAllowEntry(entry.id)
+                                    }
+                                }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            Divider()
+            HStack {
+                Button { showingAdd = true } label: {
+                    Label("Add", systemImage: "plus")
+                }.buttonStyle(.borderless)
+                Spacer()
+                Text(verbatim: "\(state.allowlist.filter(\.enabled).count) entries")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(8)
+        }
+        .sheet(isPresented: $showingAdd) {
+            AddAllowEntrySheet { state.addAllowEntry($0) }
+        }
+    }
+}
+
+struct AllowEntryRow: View {
+    let entry: AllowEntry
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.shield")
+                .foregroundStyle(entry.enabled ? .green : .secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.pattern)
+                    .font(.system(.body, design: .monospaced).weight(.medium))
+                HStack(spacing: 4) {
+                    if let port = entry.port { Text(verbatim: ":\(port)") }
+                    if let proto = entry.proto, proto != .any { Text(proto.rawValue) }
+                    if !entry.note.isEmpty { Text(entry.note) }
+                }
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if !entry.enabled {
+                Text("OFF").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+}
+
+struct AddAllowEntrySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var pattern = ""
+    @State private var port = ""
+    @State private var proto: AllowEntry.Proto = .any
+    @State private var note = ""
+    let onAdd: (AllowEntry) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add Allow Entry").font(.headline)
+            Form {
+                TextField("IP, CIDR (10.0.0.0/8), or domain", text: $pattern)
+                HStack {
+                    TextField("Port (optional)", text: $port).frame(width: 120)
+                    Picker("Protocol", selection: $proto) {
+                        ForEach(AllowEntry.Proto.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                }
+                TextField("Note (optional)", text: $note)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Add") {
+                    onAdd(AllowEntry(
+                        pattern: pattern,
+                        port: Int(port),
+                        proto: proto == .any ? nil : proto,
+                        note: note
+                    ))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction).disabled(pattern.isEmpty)
+            }
+        }
+        .padding(16).frame(width: 380)
     }
 }
 
@@ -1334,6 +1520,40 @@ struct PrivacyView: View {
                             .buttonStyle(.bordered).controlSize(.small)
                     }
                 }
+
+                // DNS section
+                privacySection("DNS-over-HTTPS") {
+                    Toggle("Enable DoH resolver", isOn: dnsBinding(\.enabled))
+                        .font(.caption).toggleStyle(.switch).controlSize(.small)
+                    if state.dnsSettings.enabled {
+                        Picker("Provider", selection: dnsBinding(\.provider)) {
+                            ForEach(DNSSettings.DoHProvider.allCases) {
+                                Text($0.rawValue).tag($0)
+                            }
+                        }.font(.caption)
+                        if state.dnsSettings.provider == .custom {
+                            TextField("DoH URL", text: dnsBinding(\.customURL))
+                                .textFieldStyle(.roundedBorder).font(.caption)
+                        }
+                        let dnsStats = DNSResolver.shared.stats
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading) {
+                                Text("Queries").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(dnsStats.queries)").font(.caption.weight(.bold))
+                            }
+                            VStack(alignment: .leading) {
+                                Text("Cache").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(dnsStats.cacheHits)H/\(dnsStats.cacheMisses)M").font(.caption.weight(.bold))
+                            }
+                            VStack(alignment: .leading) {
+                                Text("Errors").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(dnsStats.errors)").font(.caption.weight(.bold)).foregroundStyle(dnsStats.errors > 0 ? .red : .secondary)
+                            }
+                        }
+                    }
+                    Text("When enabled, Proxymate resolves domains via encrypted DNS to bypass ISP snooping and match resolved IPs against blacklists.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
             }
             .padding(12)
         }
@@ -1348,6 +1568,17 @@ struct PrivacyView: View {
                 var p = state.privacy
                 p[keyPath: keyPath] = newVal
                 state.updatePrivacy(p)
+            }
+        )
+    }
+
+    private func dnsBinding<T>(_ keyPath: WritableKeyPath<DNSSettings, T>) -> Binding<T> {
+        Binding(
+            get: { state.dnsSettings[keyPath: keyPath] },
+            set: { newVal in
+                var s = state.dnsSettings
+                s[keyPath: keyPath] = newVal
+                state.updateDNS(s)
             }
         )
     }
