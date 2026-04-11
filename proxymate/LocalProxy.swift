@@ -351,6 +351,17 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                                      ruleName: "AI Budget: \(reason ?? "blocked")")
                 return
             }
+            // Model allowlist/blocklist check (extract from request body in leftover)
+            if let model = AITracker.shared.extractModelFromRequest(leftover) {
+                let (modelBlocked, modelReason) = AITracker.shared.isModelBlocked(model)
+                if modelBlocked {
+                    onEvent?(.aiBlocked(host: host, provider: detection.provider.name,
+                                         reason: modelReason ?? "model blocked"))
+                    sendBlockedResponse(client: client,
+                                         ruleName: "AI Model: \(modelReason ?? "blocked")")
+                    return
+                }
+            }
         }
 
         let cacheCtx: CacheContext? = (method.uppercased() == "GET" && method.uppercased() != "CONNECT")

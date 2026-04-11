@@ -71,6 +71,36 @@ nonisolated final class AITracker: @unchecked Sendable {
         return (false, nil)
     }
 
+    /// Check if a specific model is allowed. Call with the model name
+    /// extracted from the request body.
+    func isModelBlocked(_ model: String) -> (blocked: Bool, reason: String?) {
+        let s = settings
+        let m = model.lowercased()
+
+        // Blocklist takes priority
+        if s.modelBlocklist.contains(where: { m.contains($0.lowercased()) }) {
+            return (true, "Model '\(model)' is blocklisted")
+        }
+
+        // If allowlist is non-empty, model must match at least one entry
+        if !s.modelAllowlist.isEmpty {
+            let allowed = s.modelAllowlist.contains(where: { m.contains($0.lowercased()) })
+            if !allowed {
+                return (true, "Model '\(model)' not in allowlist")
+            }
+        }
+
+        return (false, nil)
+    }
+
+    /// Extract the "model" field from a request body (JSON).
+    /// Used to check model allowlist before forwarding.
+    func extractModelFromRequest(_ body: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let model = json["model"] as? String else { return nil }
+        return model
+    }
+
     // MARK: - Token extraction from response body
 
     struct UsageResult: Sendable {

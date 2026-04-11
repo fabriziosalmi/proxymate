@@ -243,14 +243,32 @@ nonisolated final class MITMHandler: @unchecked Sendable {
     }
 
     private func pipeServerToClient(server: NWConnection, ctx: SSLContext,
-                                     ptr: UnsafeMutableRawPointer, buffer: Data) {
+                                     ptr: UnsafeMutableRawPointer, buffer: Data,
+                                     headersSent: Bool = false) {
         server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             var buf = buffer
+            var sent = headersSent
             if let data, !data.isEmpty {
                 buf.append(data)
-                // Encrypt and send to client
-                self.sendEncrypted(ctx: ctx, data: data)
+
+                if !sent, let range = buf.range(of: Data("\r\n\r\n".utf8)) {
+                    // We have full response headers — strip and send
+                    let headerData = buf.subdata(in: 0..<range.lowerBound)
+                    let afterHeaders = buf.subdata(in: range.upperBound..<buf.count)
+
+                    let stripped = self.stripResponseHeaders(headerData)
+                    var toSend = stripped
+                    toSend.append(Data("\r\n\r\n".utf8))
+                    toSend.append(afterHeaders)
+                    self.sendEncrypted(ctx: ctx, data: toSend)
+                    sent = true
+                    // Keep the full buffer for post-inspection
+                } else if sent {
+                    // Headers already sent, stream body directly
+                    self.sendEncrypted(ctx: ctx, data: data)
+                }
+                // If !sent and no \r\n\r\n yet, buffer more
             }
             if isComplete || error != nil {
                 server.cancel()
@@ -258,8 +276,27 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                 self.done(ctx: ctx, ptr: ptr)
                 return
             }
-            self.pipeServerToClient(server: server, ctx: ctx, ptr: ptr, buffer: buf)
+            self.pipeServerToClient(server: server, ctx: ctx, ptr: ptr,
+                                     buffer: buf, headersSent: sent)
         }
+    }
+
+    /// Strip Server, X-Powered-By, and other fingerprinting headers.
+    private func stripResponseHeaders(_ headerData: Data) -> Data {
+        guard privacy.stripServerHeaders,
+              let text = String(data: headerData, encoding: .utf8) else {
+            return headerData
+        }
+        let stripped = ["server", "x-powered-by", "x-aspnet-version", "x-aspnetmvc-version"]
+        let lines = text.split(separator: "\r\n", omittingEmptySubsequences: false)
+        let filtered = lines.filter { line in
+            let lower = line.lowercased()
+            return !stripped.contains(where: { lower.hasPrefix($0 + ":") })
+        }
+        if filtered.count < lines.count {
+            onEvent?(.log(.info, "MITM: stripped \(lines.count - filtered.count) response headers from \(hostname)"))
+        }
+        return Data(filtered.joined(separator: "\r\n").utf8)
     }
 
     // MARK: - Response inspection

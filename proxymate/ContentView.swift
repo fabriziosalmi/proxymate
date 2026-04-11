@@ -1369,6 +1369,12 @@ struct AIView: View {
 
                 Divider()
 
+                // Model controls
+                sectionHeader("MODEL CONTROLS")
+                modelSection
+
+                Divider()
+
                 // Actions
                 HStack {
                     Button("Reset Stats") { state.resetAIStats() }
@@ -1435,6 +1441,49 @@ struct AIView: View {
         }
     }
 
+    @State private var newAllowModel = ""
+    @State private var newBlockModel = ""
+
+    private var modelSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Allowlist (empty = allow all)").font(.caption2).foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                TextField("e.g. gpt-4o-mini", text: $newAllowModel)
+                    .textFieldStyle(.roundedBorder).font(.caption).frame(maxWidth: .infinity)
+                Button("Add") {
+                    guard !newAllowModel.isEmpty else { return }
+                    var s = state.aiSettings
+                    s.modelAllowlist.append(newAllowModel)
+                    state.updateAISettings(s)
+                    newAllowModel = ""
+                }.controlSize(.small)
+            }
+            FlowTags(items: state.aiSettings.modelAllowlist, color: .green) { model in
+                var s = state.aiSettings
+                s.modelAllowlist.removeAll { $0 == model }
+                state.updateAISettings(s)
+            }
+
+            Text("Blocklist (always block)").font(.caption2).foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                TextField("e.g. gpt-4-turbo", text: $newBlockModel)
+                    .textFieldStyle(.roundedBorder).font(.caption).frame(maxWidth: .infinity)
+                Button("Add") {
+                    guard !newBlockModel.isEmpty else { return }
+                    var s = state.aiSettings
+                    s.modelBlocklist.append(newBlockModel)
+                    state.updateAISettings(s)
+                    newBlockModel = ""
+                }.controlSize(.small)
+            }
+            FlowTags(items: state.aiSettings.modelBlocklist, color: .red) { model in
+                var s = state.aiSettings
+                s.modelBlocklist.removeAll { $0 == model }
+                state.updateAISettings(s)
+            }
+        }
+    }
+
     private func aiBinding<T>(_ keyPath: WritableKeyPath<AISettings, T>) -> Binding<T> {
         Binding(
             get: { state.aiSettings[keyPath: keyPath] },
@@ -1448,6 +1497,31 @@ struct AIView: View {
 
     private func sectionHeader(_ title: String) -> some View {
         Text(title).font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+    }
+}
+
+struct FlowTags: View {
+    let items: [String]
+    let color: Color
+    let onDelete: (String) -> Void
+    var body: some View {
+        if items.isEmpty {
+            EmptyView()
+        } else {
+            HStack(spacing: 4) {
+                ForEach(items, id: \.self) { item in
+                    HStack(spacing: 2) {
+                        Text(item).font(.caption2)
+                        Button { onDelete(item) } label: {
+                            Image(systemName: "xmark").font(.system(size: 7, weight: .bold))
+                        }.buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+                    .foregroundStyle(color)
+                }
+            }
+        }
     }
 }
 

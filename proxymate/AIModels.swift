@@ -140,4 +140,6 @@ nonisolated struct AISettings: Codable, Hashable, Sendable {
     var dailyBudgetUSD: Double = 0     // 0 = no cap
     var monthlyBudgetUSD: Double = 0   // 0 = no cap
     var blockedProviders: [String] = []
+    var modelAllowlist: [String] = []  // empty = allow all; non-empty = only these models
+    var modelBlocklist: [String] = []  // always block these models (checked first)
 }

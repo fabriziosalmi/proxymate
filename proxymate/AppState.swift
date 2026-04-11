@@ -25,6 +25,7 @@ final class AppState: ObservableObject {
     @Published var diskCacheSettings = DiskCacheSettings()
     @Published var metricsSettings = MetricsSettings()
     @Published var webhookSettings = WebhookSettings()
+    @Published var cloudSyncSettings = CloudSyncSettings()
     @Published var aiSettings = AISettings()
     @Published var aiProviderStats: [String: AIProviderStats] = [:]
     @Published var blacklistSources: [BlacklistSource] = []
@@ -62,6 +63,7 @@ final class AppState: ObservableObject {
     private let privacyKey     = "proxymate.privacy.v1"
     private let cacheKey       = "proxymate.cache.v1"
     private let mitmKey        = "proxymate.mitm.v1"
+    private let cloudSyncKey   = "proxymate.cloudsync.v1"
     private let diskCacheKey   = "proxymate.diskcache.v1"
     private let metricsKey     = "proxymate.metrics.v1"
     private let webhookKey     = "proxymate.webhook.v1"
@@ -110,6 +112,9 @@ final class AppState: ObservableObject {
         WebhookManager.shared.configure(webhookSettings)
         if metricsSettings.enabled {
             startMetrics()
+        }
+        if cloudSyncSettings.enabled {
+            startCloudSync()
         }
 
         // Check MITM CA status
@@ -393,10 +398,41 @@ final class AppState: ObservableObject {
         AppState.latestStats = stats
     }
 
+    // MARK: - Cloud sync
+
+    func updateCloudSync(_ s: CloudSyncSettings) {
+        cloudSyncSettings = s; save()
+        if s.enabled { startCloudSync() } else { CloudSync.shared.stop() }
+    }
+
+    private func startCloudSync() {
+        CloudSync.shared.onRemoteChange = { [weak self] remoteRules, remoteAllow in
+            guard let self else { return }
+            if self.cloudSyncSettings.syncRules {
+                self.rules = CloudSync.mergeRules(local: self.rules, remote: remoteRules)
+                if self.isEnabled { self.localProxy.updateRules(self.rules) }
+            }
+            if self.cloudSyncSettings.syncAllowlist {
+                self.allowlist = CloudSync.mergeAllowlist(local: self.allowlist, remote: remoteAllow)
+                if self.isEnabled { self.localProxy.updateAllowlist(self.allowlist) }
+            }
+            self.save()
+            self.log(.info, "Cloud sync: merged remote changes")
+        }
+        CloudSync.shared.start()
+    }
+
+    /// Push current rules to iCloud after changes.
+    private func pushToCloud() {
+        guard cloudSyncSettings.enabled else { return }
+        if cloudSyncSettings.syncRules { CloudSync.shared.pushRules(rules) }
+        if cloudSyncSettings.syncAllowlist { CloudSync.shared.pushAllowlist(allowlist) }
+    }
+
     // MARK: - Allowlist
 
     func addAllowEntry(_ entry: AllowEntry) {
-        allowlist.append(entry); save()
+        allowlist.append(entry); save(); pushToCloud()
         if isEnabled { localProxy.updateAllowlist(allowlist) }
         log(.info, "Allowlisted \(entry.pattern)")
     }
@@ -643,7 +679,7 @@ final class AppState: ObservableObject {
     // MARK: - Rule CRUD
 
     func addRule(_ r: WAFRule) {
-        rules.append(r); save()
+        rules.append(r); save(); pushToCloud()
         if isEnabled { localProxy.updateRules(rules) }
     }
 
@@ -665,7 +701,7 @@ final class AppState: ObservableObject {
     }
 
     func removeRule(_ id: WAFRule.ID) {
-        rules.removeAll { $0.id == id }; save()
+        rules.removeAll { $0.id == id }; save(); pushToCloud()
         if isEnabled { localProxy.updateRules(rules) }
     }
 
@@ -705,6 +741,7 @@ final class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(rules)   { d.set(data, forKey: rulesKey) }
         if let data = try? JSONEncoder().encode(privacy) { d.set(data, forKey: privacyKey) }
         if let data = try? JSONEncoder().encode(cacheSettings) { d.set(data, forKey: cacheKey) }
+        if let data = try? JSONEncoder().encode(cloudSyncSettings) { d.set(data, forKey: cloudSyncKey) }
         if let data = try? JSONEncoder().encode(diskCacheSettings) { d.set(data, forKey: diskCacheKey) }
         if let data = try? JSONEncoder().encode(metricsSettings) { d.set(data, forKey: metricsKey) }
         if let data = try? JSONEncoder().encode(webhookSettings) { d.set(data, forKey: webhookKey) }
@@ -742,6 +779,10 @@ final class AppState: ObservableObject {
         if let data = d.data(forKey: cacheKey),
            let c = try? JSONDecoder().decode(CacheSettings.self, from: data) {
             cacheSettings = c
+        }
+        if let data = d.data(forKey: cloudSyncKey),
+           let s = try? JSONDecoder().decode(CloudSyncSettings.self, from: data) {
+            cloudSyncSettings = s
         }
         if let data = d.data(forKey: diskCacheKey),
            let s = try? JSONDecoder().decode(DiskCacheSettings.self, from: data) {
