@@ -65,6 +65,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     private var mitmSnapshot = MITMSettings()
     private var beaconingSettings = BeaconingSettings()
     private var c2Settings = C2Settings()
+    private let ruleEngine = RuleEngine()
     private var upstream: Upstream?
     private var startCompletion: (@Sendable (Result<UInt16, Error>) -> Void)?
 
@@ -87,6 +88,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
             self.upstream = upstream
             self.rulesSnapshot = rules
+            self.ruleEngine.compile(rules: rules)
             self.allowlistSnapshot = allowlist
             self.privacySnapshot = privacy
             self.blacklistSourcesSnapshot = blacklistSources
@@ -123,6 +125,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     func updateRules(_ rules: [WAFRule]) {
         queue.async { [weak self] in self?.rulesSnapshot = rules }
+        ruleEngine.compile(rules: rules)
     }
 
     func updateAllowlist(_ entries: [AllowEntry]) {
@@ -225,20 +228,22 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         let target = String(parts[1])
         let host = Self.extractHost(method: method, target: target, headers: headerString)
 
-        // Allow check: allowlist entries (CIDR + domain) + allow WAF rules
-        let isAllowed = AllowlistMatcher.isAllowed(host: host, port: nil, entries: allowlistSnapshot)
-            || rulesSnapshot.contains(where: {
-                $0.enabled && $0.kind == .allowDomain && Self.matchesDomain(host: host, pattern: $0.pattern)
-            })
+        // Allow check: RuleEngine (O(1) domain) + allowlist (CIDR)
+        let isAllowed = ruleEngine.isAllowed(host: host)
+            || AllowlistMatcher.isAllowed(host: host, port: nil, entries: allowlistSnapshot)
 
-        // WAF check
-        if !isAllowed, let blocking = rulesSnapshot.first(where: {
-            $0.enabled && Self.matches(rule: $0, host: host, target: target, headers: headerString)
-        }) {
-            let label = blocking.name.isEmpty ? blocking.pattern : blocking.name
-            onEvent?(.blocked(host: host, ruleName: label))
-            sendBlockedResponse(client: client, ruleName: label)
-            return
+        // WAF check: RuleEngine fast path (Set for domains/IPs, then content)
+        if !isAllowed {
+            if let blockReason = ruleEngine.checkBlock(host: host) {
+                onEvent?(.blocked(host: host, ruleName: blockReason))
+                sendBlockedResponse(client: client, ruleName: blockReason)
+                return
+            }
+            if let contentReason = ruleEngine.checkContent(target: target, headers: headerString) {
+                onEvent?(.blocked(host: host, ruleName: contentReason))
+                sendBlockedResponse(client: client, ruleName: contentReason)
+                return
+            }
         }
 
         // Blacklist check (skipped if explicitly allowed)
@@ -548,11 +553,15 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             client.cancel()
             return
         }
-        let upstreamConn = NWConnection(
+        // Try connection pool first
+        let pooled = ConnectionPool.shared.get(host: upstream.host, port: port.rawValue)
+        let upstreamConn = pooled ?? NWConnection(
             host: NWEndpoint.Host(upstream.host),
             port: port,
             using: .tcp
         )
+        let upHost = upstream.host
+        let upPort = port.rawValue
         upstreamConn.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
@@ -594,7 +603,12 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 break
             }
         }
-        upstreamConn.start(queue: queue)
+        if pooled != nil {
+            // Already connected — trigger the handler directly
+            upstreamConn.stateUpdateHandler?(.ready)
+        } else {
+            upstreamConn.start(queue: queue)
+        }
     }
 
     private func pipe(from: NWConnection, to: NWConnection) {

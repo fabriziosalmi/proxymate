@@ -261,6 +261,7 @@ final class AppState: ObservableObject {
         localProxy.stop()
         socks5Listener.stop()
         PACServer.shared.stop()
+        ConnectionPool.shared.drain()
         if pacSettings.enabled {
             Task { try? await PACServer.clearSystemPAC() }
         }
