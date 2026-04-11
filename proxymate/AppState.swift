@@ -30,6 +30,7 @@ final class AppState: ObservableObject {
     @Published var socks5Settings = SOCKS5Settings()
     @Published var beaconingSettings = BeaconingSettings()
     @Published var c2Settings = C2Settings()
+    @Published var aiAgentSettings = AIAgentSettings()
     @Published var loopBreakerSettings = LoopBreakerSettings()
     @Published var processRules: [ProcessRule] = []
     @Published var aiSettings = AISettings()

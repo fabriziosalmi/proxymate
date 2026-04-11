@@ -939,6 +939,7 @@ struct RulesView: View {
         case allowlist    = "Allow"
         case blacklists   = "Lists"
         case exfiltration = "Secrets"
+        case threats      = "Threats"
         var id: String { rawValue }
     }
 
@@ -948,6 +949,7 @@ struct RulesView: View {
                 ForEach(RulesSection.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
+            .controlSize(.small)
             .padding(8)
 
             Divider()
@@ -957,6 +959,7 @@ struct RulesView: View {
             case .allowlist:    AllowlistSection()
             case .blacklists:   BlacklistsSection()
             case .exfiltration: ExfiltrationSection()
+            case .threats:      ThreatsSection()
             }
         }
     }
@@ -1270,6 +1273,113 @@ struct AddAllowEntrySheet: View {
             }
         }
         .padding(16).frame(width: 380)
+    }
+}
+
+// MARK: Threats sub-section (C2, Beaconing, Agent policies)
+
+struct ThreatsSection: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                // C2 Detection
+                sectionHeader("C2 FRAMEWORK DETECTION")
+                Toggle("Enable C2 detection", isOn: c2Binding(\.enabled))
+                    .font(.caption).toggleStyle(.switch).controlSize(.small)
+                if state.c2Settings.enabled {
+                    Picker("Action", selection: c2Binding(\.action)) {
+                        ForEach(C2Settings.Action.allCases) { Text($0.rawValue).tag($0) }
+                    }.font(.caption).pickerStyle(.segmented)
+                    Text("Detects Cobalt Strike, Sliver, Mythic, Empire, Havoc, Metasploit default signatures in HTTP headers and URLs.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                    if state.stats.c2Detections > 0 {
+                        HStack {
+                            Image(systemName: "exclamationmark.shield")
+                                .foregroundStyle(.red)
+                            Text(verbatim: "\(state.stats.c2Detections) C2 detections this session")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Divider()
+
+                // Beaconing
+                sectionHeader("BEACONING DETECTION")
+                Toggle("Enable beaconing detection", isOn: beaconBinding(\.enabled))
+                    .font(.caption).toggleStyle(.switch).controlSize(.small)
+                if state.beaconingSettings.enabled {
+                    Picker("Action", selection: beaconBinding(\.action)) {
+                        ForEach(BeaconingSettings.Action.allCases) { Text($0.rawValue).tag($0) }
+                    }.font(.caption).pickerStyle(.segmented)
+                    HStack {
+                        Text("Threshold").font(.caption)
+                        Spacer()
+                        TextField("", value: beaconBinding(\.minConsecutive), format: .number)
+                            .textFieldStyle(.roundedBorder).frame(width: 40).font(.caption)
+                        Text("intervals").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Jitter tolerance").font(.caption)
+                        Spacer()
+                        TextField("", value: beaconBinding(\.jitterTolerancePercent), format: .number)
+                            .textFieldStyle(.roundedBorder).frame(width: 40).font(.caption)
+                        Text("%").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Text("Detects same host+path requested at fixed intervals. Typical of malware check-ins and C2 implants.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+
+                Divider()
+
+                // Agent policies
+                sectionHeader("AI AGENT POLICIES")
+                ForEach(state.aiAgentSettings.policies) { policy in
+                    HStack {
+                        Text(policy.name).font(.caption)
+                        Spacer()
+                        Picker("", selection: agentPolicyBinding(policy.agentId)) {
+                            ForEach(AIAgentPolicy.Action.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.menu).frame(width: 100).font(.caption)
+                    }
+                }
+                Text("Controls how each AI coding agent is handled when detected by User-Agent or host pattern.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            .padding(12)
+        }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title).font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+    }
+
+    private func c2Binding<T>(_ kp: WritableKeyPath<C2Settings, T>) -> Binding<T> {
+        Binding(get: { state.c2Settings[keyPath: kp] },
+                set: { var s = state.c2Settings; s[keyPath: kp] = $0; state.c2Settings = s })
+    }
+
+    private func beaconBinding<T>(_ kp: WritableKeyPath<BeaconingSettings, T>) -> Binding<T> {
+        Binding(get: { state.beaconingSettings[keyPath: kp] },
+                set: { var s = state.beaconingSettings; s[keyPath: kp] = $0
+                       state.beaconingSettings = s
+                       BeaconingDetector.shared.configure(s) })
+    }
+
+    private func agentPolicyBinding(_ agentId: String) -> Binding<AIAgentPolicy.Action> {
+        Binding(
+            get: {
+                state.aiAgentSettings.policies.first { $0.agentId == agentId }?.action ?? .audit
+            },
+            set: { newAction in
+                if let i = state.aiAgentSettings.policies.firstIndex(where: { $0.agentId == agentId }) {
+                    state.aiAgentSettings.policies[i].action = newAction
+                }
+            }
+        )
     }
 }
 

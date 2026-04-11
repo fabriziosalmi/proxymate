@@ -298,6 +298,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
         }
 
+        // Process-aware rules (resolve source PID → bundle ID → check rules)
+        // Note: requires lsof which is slow; only called if processRules is non-empty
+        // TODO: wire processRules from AppState when UI is ready
+
         // AI Agent enforcement (Claude Code, Cursor, MCP, etc.)
         var detectedMCPMethod: String?
         if let agentDetection = AIAgentEnforcer.detectAgent(headers: headerString, host: host) {
@@ -337,6 +341,11 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 sendBlockedResponse(client: client, ruleName: "Beaconing: \(host)\(path) every \(Int(beacon.intervalSeconds))s")
                 return
             }
+        }
+
+        // WebSocket upgrade detection (log only — frame inspection requires MITM)
+        if method.uppercased() != "CONNECT" && WebSocketInspector.isUpgradeRequest(headerString) {
+            onEvent?(.log(.info, "WebSocket upgrade: \(host)"))
         }
 
         // Privacy header stripping (only for plain HTTP, not CONNECT tunnels)
@@ -676,12 +685,16 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
             if isComplete {
                 to.send(content: nil, isComplete: true, completion: .contentProcessed { _ in })
-                from.cancel()
-                // Cache store
+                // Return upstream connection to pool instead of cancelling
+                if let endpoint = from.currentPath?.remoteEndpoint,
+                   case .hostPort(let host, let port) = endpoint {
+                    ConnectionPool.shared.put(host: "\(host)", port: port.rawValue, connection: from)
+                } else {
+                    from.cancel()
+                }
                 if let ctx = cacheContext {
                     Self.storeInCache(responseData: buf, context: ctx)
                 }
-                // AI token extraction
                 if let ai = aiContext {
                     self?.extractAIUsage(responseData: buf, context: ai)
                 }
