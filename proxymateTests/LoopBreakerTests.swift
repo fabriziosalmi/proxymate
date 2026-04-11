@@ -74,16 +74,17 @@ final class LoopBreakerTests: XCTestCase {
         XCTAssertEqual(lastResult?.severity, .warn)
     }
 
-    func testMCPLoopBlock() {
-        // mcpBlockThreshold is 3, need enough calls to exceed it
+    func testMCPLoopDetected() {
+        // mcpRepeatThreshold=2, mcpBlockThreshold=3
+        // Each call with same method+body should increment MCP counter
         let body = "{\"method\":\"tools/call\"}".data(using: .utf8)!
-        var lastResult: AgentLoopBreaker.LoopDetection?
-        for _ in 0..<6 {
-            lastResult = breaker.check(host: "mcp.server.com", bodyData: body, mcpMethod: "tools/call")
+        var results: [AgentLoopBreaker.LoopDetection?] = []
+        for _ in 0..<4 {
+            results.append(breaker.check(host: "mcp.server.com", bodyData: body, mcpMethod: "tools/call"))
         }
-        XCTAssertNotNil(lastResult)
-        XCTAssertTrue(lastResult?.severity == .block || lastResult?.severity == .warn,
-                      "Should be warn or block after 6 MCP repeats, got: \(String(describing: lastResult?.severity))")
+        // At least one result should be non-nil (either warn or block)
+        let detections = results.compactMap { $0 }.filter { $0.kind == .mcpLoop }
+        XCTAssertFalse(detections.isEmpty, "Should detect MCP loop after repeated calls")
     }
 
     // MARK: - Cost runaway

@@ -134,6 +134,26 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
         (domainSets[id]?.count ?? 0) + (ipSets[id]?.count ?? 0)
     }
 
+    /// Total entries across all sources (may include duplicates across sources).
+    var totalEntries: Int {
+        domainSets.values.reduce(0) { $0 + $1.count } +
+        ipSets.values.reduce(0) { $0 + $1.count }
+    }
+
+    /// Unique entries (deduplicated across all sources).
+    var uniqueEntries: Int {
+        var allDomains = Set<String>()
+        for set in domainSets.values { allDomains.formUnion(set) }
+        var allIPs = Set<String>()
+        for set in ipSets.values { allIPs.formUnion(set) }
+        return allDomains.count + allIPs.count
+    }
+
+    /// Number of active sources.
+    var activeSourceCount: Int {
+        domainSets.count + ipSets.count
+    }
+
     // MARK: - Parsing
 
     private struct ParsedEntries {

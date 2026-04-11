@@ -260,9 +260,15 @@ nonisolated final class CacheManager: @unchecked Sendable {
         }
     }
 
-    private func remove(key: String) {
+    private func remove(key: String, demoteToL2: Bool = true) {
         if let entry = entries.removeValue(forKey: key) {
             currentSizeBytes -= entry.sizeBytes
+            // Demote to L2 disk cache before discarding
+            if demoteToL2 {
+                DiskCache.shared.store(key: key, statusLine: entry.statusLine,
+                                        headers: entry.responseHeaders, body: entry.body,
+                                        maxAge: max(0, entry.maxAge - Date().timeIntervalSince(entry.storedAt)))
+            }
         }
         accessOrder.removeAll { $0 == key }
     }

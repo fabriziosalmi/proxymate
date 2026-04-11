@@ -1105,6 +1105,7 @@ struct AddRuleSheet: View {
         case .blockIP:      return "1.2.3.4"
         case .blockDomain:  return "example.com"
         case .blockContent: return "substring"
+        case .blockRegex:   return "(?i)union\\s+select"
         }
     }
 }
@@ -1458,6 +1459,30 @@ struct BlacklistsSection: View {
                 .buttonStyle(.borderless)
             }
             .padding(8)
+
+            // Aggregate stats
+            if !state.blacklistSources.isEmpty {
+                Divider()
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading) {
+                        Text("Total").font(.system(size: 7)).foregroundStyle(.tertiary)
+                        Text(verbatim: "\(BlacklistManager.shared.totalEntries)")
+                            .font(.caption2.weight(.bold)).monospacedDigit()
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Unique").font(.system(size: 7)).foregroundStyle(.tertiary)
+                        Text(verbatim: "\(BlacklistManager.shared.uniqueEntries)")
+                            .font(.caption2.weight(.bold)).monospacedDigit()
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Sources").font(.system(size: 7)).foregroundStyle(.tertiary)
+                        Text(verbatim: "\(state.blacklistSources.filter(\.enabled).count)")
+                            .font(.caption2.weight(.bold)).monospacedDigit()
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 12).padding(.bottom, 4)
+            }
         }
         .sheet(isPresented: $showingAddCustom) {
             AddCustomBlacklistSheet { source in
@@ -1990,11 +2015,57 @@ struct CacheView: View {
                         }
                     }
 
-                    Button("Purge Cache", role: .destructive) { showPurgeConfirm = true }
+                    Button("Purge L1", role: .destructive) { showPurgeConfirm = true }
                         .buttonStyle(.bordered).controlSize(.small)
                         .confirmationDialog("Purge all cached responses?", isPresented: $showPurgeConfirm) {
-                            Button("Purge", role: .destructive) { state.purgeCache() }
+                            Button("Purge L1 + L2", role: .destructive) {
+                                state.purgeCache()
+                                DiskCache.shared.purgeAll()
+                                ToastState.shared.show("L1 + L2 cache purged", icon: "trash")
+                            }
                         }
+                }
+
+                Divider()
+
+                // L2 Disk Cache
+                privacySection("L2 DISK CACHE") {
+                    Toggle("Enable L2 disk cache", isOn: diskBinding(\.enabled))
+                        .font(.caption).toggleStyle(.switch).controlSize(.small)
+                        .help("Persists cached responses to disk. Survives app restart.")
+
+                    if state.diskCacheSettings.enabled {
+                        HStack {
+                            Text("Max size").font(.caption)
+                            Spacer()
+                            Picker("", selection: diskBinding(\.maxSizeMB)) {
+                                Text("128 MB").tag(128)
+                                Text("256 MB").tag(256)
+                                Text("512 MB").tag(512)
+                                Text("1 GB").tag(1024)
+                            }.pickerStyle(.menu).frame(width: 100)
+                        }
+
+                        let diskStats = DiskCache.shared.stats
+                        HStack(spacing: 16) {
+                            VStack(alignment: .leading) {
+                                Text("L2 Hits").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(diskStats.hits)").font(.caption.weight(.bold)).foregroundStyle(.teal)
+                            }
+                            VStack(alignment: .leading) {
+                                Text("L2 Writes").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(diskStats.writes)").font(.caption.weight(.bold))
+                            }
+                            VStack(alignment: .leading) {
+                                Text("Size").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(diskStats.sizeBytes / 1024 / 1024) MB").font(.caption.weight(.bold))
+                            }
+                            VStack(alignment: .leading) {
+                                Text("Evictions").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(diskStats.evictions)").font(.caption.weight(.bold))
+                            }
+                        }
+                    }
                 }
             }
             .padding(12)
@@ -2004,11 +2075,14 @@ struct CacheView: View {
     private func cacheBinding<T>(_ keyPath: WritableKeyPath<CacheSettings, T>) -> Binding<T> {
         Binding(
             get: { state.cacheSettings[keyPath: keyPath] },
-            set: { newVal in
-                var s = state.cacheSettings
-                s[keyPath: keyPath] = newVal
-                state.updateCache(s)
-            }
+            set: { var s = state.cacheSettings; s[keyPath: keyPath] = $0; state.updateCache(s) }
+        )
+    }
+
+    private func diskBinding<T>(_ keyPath: WritableKeyPath<DiskCacheSettings, T>) -> Binding<T> {
+        Binding(
+            get: { state.diskCacheSettings[keyPath: keyPath] },
+            set: { var s = state.diskCacheSettings; s[keyPath: keyPath] = $0; state.updateDiskCache(s) }
         )
     }
 

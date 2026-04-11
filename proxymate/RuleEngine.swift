@@ -21,6 +21,7 @@ nonisolated final class RuleEngine: @unchecked Sendable {
     private var blockSuffixes: [String] = []     // .suffix → block
     private var blockIPs = Set<String>()         // exact IP → block
     private var contentAC = AhoCorasick()        // Aho-Corasick automaton for content rules
+    private var regexRules: [(name: String, regex: NSRegularExpression)] = []
 
     // Stats
     private var _compiledRuleCount = 0
@@ -43,6 +44,7 @@ nonisolated final class RuleEngine: @unchecked Sendable {
             var bs = [String]()
             var bi = Set<String>()
             let ac = AhoCorasick()
+            var rx: [(String, NSRegularExpression)] = []
 
             for rule in rules where rule.enabled {
                 let pat = rule.pattern.lowercased()
@@ -63,6 +65,12 @@ nonisolated final class RuleEngine: @unchecked Sendable {
                 case .blockContent:
                     let name = rule.name.isEmpty ? rule.pattern : rule.name
                     ac.addPattern(name: name, pattern: pat)
+
+                case .blockRegex:
+                    let name = rule.name.isEmpty ? rule.pattern : rule.name
+                    if let regex = try? NSRegularExpression(pattern: rule.pattern, options: []) {
+                        rx.append((name, regex))
+                    }
                 }
             }
             ac.compile()
@@ -73,6 +81,7 @@ nonisolated final class RuleEngine: @unchecked Sendable {
             self.blockSuffixes = bs
             self.blockIPs = bi
             self.contentAC = ac
+            self.regexRules = rx
             self._compiledRuleCount = rules.count
             self._lastCompileTime = CFAbsoluteTimeGetCurrent() - start
         }
@@ -109,12 +118,20 @@ nonisolated final class RuleEngine: @unchecked Sendable {
         return nil
     }
 
-    /// Check if content (target URL + headers) matches any content rule.
-    /// Uses Aho-Corasick automaton: O(text_length) regardless of pattern count.
-    func checkContent(target: String, headers: String) -> String? {
-        let combined = target + "\n" + headers
+    /// Check if content (target URL + headers + body) matches any content rule.
+    /// Aho-Corasick for substrings, NSRegularExpression for regex rules.
+    func checkContent(target: String, headers: String, body: String = "") -> String? {
+        let combined = target + "\n" + headers + "\n" + body
+        // Aho-Corasick: O(text_length) for all substring patterns
         if let match = contentAC.search(combined) {
             return match.name
+        }
+        // Regex rules (compiled at load time)
+        let nsRange = NSRange(combined.startIndex..., in: combined)
+        for (name, regex) in regexRules {
+            if regex.firstMatch(in: combined, range: nsRange) != nil {
+                return name
+            }
         }
         return nil
     }

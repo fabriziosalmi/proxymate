@@ -253,7 +253,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 sendBlockedResponse(client: client, ruleName: blockReason)
                 return
             }
-            if let contentReason = ruleEngine.checkContent(target: target, headers: headerString) {
+            let bodyStr = leftover.isEmpty ? "" : (String(data: leftover.prefix(8192), encoding: .utf8) ?? "")
+            if let contentReason = ruleEngine.checkContent(target: target, headers: headerString, body: bodyStr) {
                 onEvent?(.blocked(host: host, ruleName: contentReason))
                 sendBlockedResponse(client: client, ruleName: contentReason)
                 return
@@ -812,6 +813,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             return h == pat || h.hasSuffix("." + pat)
         case .blockContent:
             return t.contains(pat) || hd.contains(pat)
+        case .blockRegex:
+            guard let regex = try? NSRegularExpression(pattern: rule.pattern, options: []) else { return false }
+            let combined = t + "\n" + hd
+            return regex.firstMatch(in: combined, range: NSRange(combined.startIndex..., in: combined)) != nil
         }
     }
 }

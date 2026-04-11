@@ -22,10 +22,11 @@ nonisolated struct WAFRule: Identifiable, Codable, Hashable, Sendable {
     var category: String = "Custom"
 
     enum Kind: String, Codable, CaseIterable, Identifiable, Sendable {
-        case allowDomain  = "Allow Domain"
-        case blockIP      = "Block IP"
-        case blockDomain  = "Block Domain"
-        case blockContent = "Block Content"
+        case allowDomain     = "Allow Domain"
+        case blockIP         = "Block IP"
+        case blockDomain     = "Block Domain"
+        case blockContent    = "Block Content"
+        case blockRegex      = "Block Regex"
         var id: String { rawValue }
     }
 
@@ -58,11 +59,25 @@ nonisolated struct WAFRule: Identifiable, Codable, Hashable, Sendable {
     }
 
     static let examples: [WAFRule] = [
+        // Tracking & Ads
         .init(name: "Google Analytics",  kind: .blockDomain, pattern: "google-analytics.com",   category: "Tracking"),
         .init(name: "Google Tag Manager",kind: .blockDomain, pattern: "googletagmanager.com",   category: "Tracking"),
         .init(name: "Facebook Pixel",    kind: .blockDomain, pattern: "connect.facebook.net",   category: "Tracking"),
         .init(name: "DoubleClick",       kind: .blockDomain, pattern: "doubleclick.net",        category: "Ads"),
         .init(name: "Coinhive",          kind: .blockDomain, pattern: "coinhive.com",           category: "Crypto Miners"),
+        // SQL Injection (outbound — detect in URLs and POST bodies)
+        .init(name: "SQL Union Select",  kind: .blockRegex, pattern: #"(?i)union\s+(all\s+)?select"#, enabled: false, category: "SQLi"),
+        .init(name: "SQL OR 1=1",        kind: .blockRegex, pattern: #"(?i)('\s*or\s+'?\d+'?\s*=\s*'?\d+|"\s*or\s+"?\d+"?\s*=\s*"?\d+)"#, enabled: false, category: "SQLi"),
+        .init(name: "SQL Comment",       kind: .blockRegex, pattern: #"(?i)(--\s|/\*|\*/|;--)"#, enabled: false, category: "SQLi"),
+        // XSS
+        .init(name: "XSS Script Tag",   kind: .blockRegex, pattern: #"(?i)<script[\s>]"#, enabled: false, category: "XSS"),
+        .init(name: "XSS Event Handler", kind: .blockRegex, pattern: #"(?i)\s+on\w+\s*=\s*[\"']"#, enabled: false, category: "XSS"),
+        .init(name: "XSS Javascript URI",kind: .blockRegex, pattern: #"(?i)javascript\s*:"#, enabled: false, category: "XSS"),
+        // Path Traversal
+        .init(name: "Path Traversal",    kind: .blockRegex, pattern: #"\.\.[/\\]"#, enabled: false, category: "Traversal"),
+        .init(name: "Null Byte",         kind: .blockRegex, pattern: #"%00"#, enabled: false, category: "Traversal"),
+        // Command Injection
+        .init(name: "Shell Command",     kind: .blockRegex, pattern: #"(?i);\s*(cat|ls|wget|curl|nc|bash|sh|python|perl)\s"#, enabled: false, category: "CmdInject"),
     ]
 }
 
