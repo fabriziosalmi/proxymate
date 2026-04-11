@@ -164,6 +164,7 @@ struct ProxiesView: View {
     enum ProxySection: String, CaseIterable, Identifiable {
         case proxies = "Quick"
         case pools   = "Pools"
+        case pac     = "PAC"
         var id: String { rawValue }
     }
 
@@ -178,6 +179,7 @@ struct ProxiesView: View {
             switch section {
             case .proxies: QuickProxiesSection()
             case .pools:   PoolsSection()
+            case .pac:     PACSection()
             }
         }
     }
@@ -363,6 +365,93 @@ struct AddOverrideSheet: View {
             }
         }
         .padding(16).frame(width: 380)
+    }
+}
+
+// MARK: PAC section
+
+struct PACSection: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle("Enable PAC Server", isOn: pacBinding(\.enabled))
+                    .font(.caption).toggleStyle(.switch).controlSize(.small)
+
+                if state.pacSettings.enabled {
+                    Text("PAC (Proxy Auto-Configuration) catches apps that ignore HTTP_PROXY env vars. Most Electron apps (Slack, VSCode), Python, and Node.js respect PAC.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+
+                    HStack {
+                        Text("PAC Port").font(.caption)
+                        Spacer()
+                        TextField("", value: pacBinding(\.port), format: .number)
+                            .textFieldStyle(.roundedBorder).frame(width: 70).font(.caption)
+                    }
+
+                    Picker("Mode", selection: pacBinding(\.mode)) {
+                        ForEach(PACSettings.PACMode.allCases) { Text($0.rawValue).tag($0) }
+                    }.font(.caption)
+
+                    if state.pacSettings.mode == .smartBypass {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("DIRECT BYPASS").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                            Text("Domains in your Allowlist (Rules → Allow tab) will bypass the proxy entirely via PAC DIRECT.")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                            let directCount = state.allowlist.filter(\.enabled).filter { !$0.pattern.contains("/") }.count
+                            Text(verbatim: "\(directCount) domains configured for DIRECT bypass")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if state.isEnabled {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            Text(verbatim: PACServer.shared.pacURL)
+                                .font(.system(.caption2, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("APP COMPATIBILITY").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                        CompatRow(app: "Safari", works: true)
+                        CompatRow(app: "Chrome / Edge", works: true)
+                        CompatRow(app: "Electron (Slack, VSCode)", works: true)
+                        CompatRow(app: "Python requests / httpx", works: true)
+                        CompatRow(app: "Node.js fetch", works: true)
+                        CompatRow(app: "curl", works: true)
+                        CompatRow(app: "gRPC (Windsurf/Codeium)", works: false)
+                    }
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    private func pacBinding<T>(_ keyPath: WritableKeyPath<PACSettings, T>) -> Binding<T> {
+        Binding(
+            get: { state.pacSettings[keyPath: keyPath] },
+            set: { newVal in
+                var s = state.pacSettings
+                s[keyPath: keyPath] = newVal
+                state.updatePAC(s)
+            }
+        )
+    }
+}
+
+struct CompatRow: View {
+    let app: String
+    let works: Bool
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: works ? "checkmark.circle.fill" : "xmark.circle")
+                .font(.caption2)
+                .foregroundStyle(works ? .green : .red)
+            Text(app).font(.caption2)
+        }
     }
 }
 

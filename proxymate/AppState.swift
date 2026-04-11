@@ -26,6 +26,7 @@ final class AppState: ObservableObject {
     @Published var metricsSettings = MetricsSettings()
     @Published var webhookSettings = WebhookSettings()
     @Published var cloudSyncSettings = CloudSyncSettings()
+    @Published var pacSettings = PACSettings()
     @Published var socks5Settings = SOCKS5Settings()
     @Published var beaconingSettings = BeaconingSettings()
     @Published var c2Settings = C2Settings()
@@ -70,6 +71,7 @@ final class AppState: ObservableObject {
     private let privacyKey     = "proxymate.privacy.v1"
     private let cacheKey       = "proxymate.cache.v1"
     private let mitmKey        = "proxymate.mitm.v1"
+    private let pacKey         = "proxymate.pac.v1"
     private let socks5Key      = "proxymate.socks5.v1"
     private let beaconingKey   = "proxymate.beaconing.v1"
     private let c2Key          = "proxymate.c2.v1"
@@ -224,6 +226,11 @@ final class AppState: ObservableObject {
         stats.enabledSince = Date()
         log(.info, "Enabled — local 127.0.0.1:\(port) → upstream \(proxy.name) (\(proxy.host):\(proxy.port))")
 
+        // Start PAC server if enabled
+        if pacSettings.enabled {
+            startPAC(proxyPort: port)
+        }
+
         // Start SOCKS5 if enabled
         if socks5Settings.enabled {
             startSOCKS5()
@@ -253,6 +260,10 @@ final class AppState: ObservableObject {
         }
         localProxy.stop()
         socks5Listener.stop()
+        PACServer.shared.stop()
+        if pacSettings.enabled {
+            Task { try? await PACServer.clearSystemPAC() }
+        }
         PoolRouter.shared.stop()
         blacklistTimer?.invalidate()
         blacklistTimer = nil
@@ -450,6 +461,40 @@ final class AppState: ObservableObject {
     /// Call after stat changes to keep the static snapshot fresh.
     private func syncMetricsSnapshot() {
         AppState.latestStats = stats
+    }
+
+    // MARK: - PAC
+
+    func updatePAC(_ s: PACSettings) {
+        pacSettings = s; save()
+        if isEnabled {
+            if s.enabled, let port = localPort {
+                startPAC(proxyPort: port)
+            } else {
+                PACServer.shared.stop()
+                Task { try? await PACServer.clearSystemPAC() }
+            }
+        }
+    }
+
+    private func startPAC(proxyPort: UInt16) {
+        // Collect direct domains from allowlist (domain entries only)
+        let directDomains = allowlist.filter(\.enabled).compactMap { entry -> String? in
+            let p = entry.pattern
+            guard !p.contains("/") else { return nil } // skip CIDR
+            return p
+        }
+        let socks5Port = socks5Settings.enabled ? UInt16(socks5Settings.port) : 0
+        PACServer.shared.start(settings: pacSettings, proxyPort: proxyPort,
+                                socks5Port: socks5Port, directDomains: directDomains)
+        Task {
+            do {
+                try await PACServer.applySystemPAC(port: pacSettings.port)
+                log(.info, "PAC enabled at \(PACServer.shared.pacURL)")
+            } catch {
+                log(.error, "PAC system apply failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: - Loop breaker
@@ -812,6 +857,7 @@ final class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(rules)   { d.set(data, forKey: rulesKey) }
         if let data = try? JSONEncoder().encode(privacy) { d.set(data, forKey: privacyKey) }
         if let data = try? JSONEncoder().encode(cacheSettings) { d.set(data, forKey: cacheKey) }
+        if let data = try? JSONEncoder().encode(pacSettings) { d.set(data, forKey: pacKey) }
         if let data = try? JSONEncoder().encode(socks5Settings) { d.set(data, forKey: socks5Key) }
         if let data = try? JSONEncoder().encode(beaconingSettings) { d.set(data, forKey: beaconingKey) }
         if let data = try? JSONEncoder().encode(c2Settings) { d.set(data, forKey: c2Key) }
@@ -855,6 +901,10 @@ final class AppState: ObservableObject {
         if let data = d.data(forKey: cacheKey),
            let c = try? JSONDecoder().decode(CacheSettings.self, from: data) {
             cacheSettings = c
+        }
+        if let data = d.data(forKey: pacKey),
+           let s = try? JSONDecoder().decode(PACSettings.self, from: data) {
+            pacSettings = s
         }
         if let data = d.data(forKey: socks5Key),
            let s = try? JSONDecoder().decode(SOCKS5Settings.self, from: data) {
