@@ -33,6 +33,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         case cacheHit(host: String, url: String)
         case cacheMiss(host: String, url: String)
         case mitmIntercepted(host: String)
+        case beaconing(host: String, path: String, intervalSec: Double, count: Int)
+        case c2Detected(host: String, framework: String, indicator: String, confidence: String)
         case aiDetected(host: String, provider: String)
         case aiBlocked(host: String, provider: String, reason: String)
         case aiUsage(provider: String, model: String, promptTokens: Int, completionTokens: Int, cost: Double)
@@ -59,6 +61,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     private var privacySnapshot = PrivacySettings()
     private var blacklistSourcesSnapshot: [BlacklistSource] = []
     private var mitmSnapshot = MITMSettings()
+    private var beaconingSettings = BeaconingSettings()
+    private var c2Settings = C2Settings()
     private var upstream: Upstream?
     private var startCompletion: (@Sendable (Result<UInt16, Error>) -> Void)?
 
@@ -261,6 +265,27 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                                    severity: hit.severity.rawValue, preview: hit.matchPreview))
             sendBlockedResponse(client: client, ruleName: "Exfiltration: \(hit.patternName)")
             return
+        }
+
+        // C2 framework detection
+        if let c2 = C2Detector.scan(headers: headerString, target: target, settings: c2Settings) {
+            onEvent?(.c2Detected(host: host, framework: c2.framework,
+                                  indicator: c2.indicator, confidence: c2.confidence.rawValue))
+            if c2Settings.action == .block {
+                sendBlockedResponse(client: client, ruleName: "C2: \(c2.framework) (\(c2.indicator))")
+                return
+            }
+        }
+
+        // Beaconing detection
+        let path = target.components(separatedBy: "?").first ?? target
+        if let beacon = BeaconingDetector.shared.record(host: host, path: path) {
+            onEvent?(.beaconing(host: host, path: beacon.path,
+                                intervalSec: beacon.intervalSeconds, count: beacon.consecutiveCount))
+            if beaconingSettings.action == .block {
+                sendBlockedResponse(client: client, ruleName: "Beaconing: \(host)\(path) every \(Int(beacon.intervalSeconds))s")
+                return
+            }
         }
 
         // Privacy header stripping (only for plain HTTP, not CONNECT tunnels)

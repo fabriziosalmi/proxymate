@@ -26,6 +26,10 @@ final class AppState: ObservableObject {
     @Published var metricsSettings = MetricsSettings()
     @Published var webhookSettings = WebhookSettings()
     @Published var cloudSyncSettings = CloudSyncSettings()
+    @Published var socks5Settings = SOCKS5Settings()
+    @Published var beaconingSettings = BeaconingSettings()
+    @Published var c2Settings = C2Settings()
+    @Published var processRules: [ProcessRule] = []
     @Published var aiSettings = AISettings()
     @Published var aiProviderStats: [String: AIProviderStats] = [:]
     @Published var blacklistSources: [BlacklistSource] = []
@@ -50,6 +54,8 @@ final class AppState: ObservableObject {
         var aiRequests: Int = 0
         var aiBlocked: Int = 0
         var aiTotalCostUSD: Double = 0
+        var beaconingAlerts: Int = 0
+        var c2Detections: Int = 0
         var enabledSince: Date?
     }
 
@@ -63,6 +69,10 @@ final class AppState: ObservableObject {
     private let privacyKey     = "proxymate.privacy.v1"
     private let cacheKey       = "proxymate.cache.v1"
     private let mitmKey        = "proxymate.mitm.v1"
+    private let socks5Key      = "proxymate.socks5.v1"
+    private let beaconingKey   = "proxymate.beaconing.v1"
+    private let c2Key          = "proxymate.c2.v1"
+    private let processRulesKey = "proxymate.processrules.v1"
     private let cloudSyncKey   = "proxymate.cloudsync.v1"
     private let diskCacheKey   = "proxymate.diskcache.v1"
     private let metricsKey     = "proxymate.metrics.v1"
@@ -113,6 +123,7 @@ final class AppState: ObservableObject {
         if metricsSettings.enabled {
             startMetrics()
         }
+        BeaconingDetector.shared.configure(beaconingSettings)
         if cloudSyncSettings.enabled {
             startCloudSync()
         }
@@ -209,6 +220,22 @@ final class AppState: ObservableObject {
         isEnabled = true
         stats.enabledSince = Date()
         log(.info, "Enabled — local 127.0.0.1:\(port) → upstream \(proxy.name) (\(proxy.host):\(proxy.port))")
+
+        // Start SOCKS5 if enabled
+        if socks5Settings.enabled {
+            startSOCKS5()
+        }
+    }
+
+    private let socks5Listener = SOCKS5Listener()
+
+    private func startSOCKS5() {
+        socks5Listener.onEvent = { [weak self] event in
+            Task { @MainActor [weak self] in self?.handle(event: event) }
+        }
+        socks5Listener.start(port: UInt16(socks5Settings.port),
+                              rules: rules, allowlist: allowlist,
+                              blacklistSources: blacklistSources)
     }
 
     func disable() async {
@@ -218,6 +245,7 @@ final class AppState: ObservableObject {
             log(.error, "System proxy disable failed: \(error.localizedDescription)")
         }
         localProxy.stop()
+        socks5Listener.stop()
         localPort = nil
         isEnabled = false
         stats.enabledSince = nil
@@ -279,6 +307,17 @@ final class AppState: ObservableObject {
         case .mitmIntercepted(let host):
             stats.mitmIntercepted += 1
             log(.info, "MITM \(host)", host: host)
+        case .beaconing(let host, let path, let interval, let count):
+            stats.beaconingAlerts += 1
+            log(.warn, "BEACONING \(host)\(path) every \(Int(interval))s (\(count)x)", host: host)
+            NotificationManager.shared.notifyBlock(host: host, ruleName: "Beaconing detected")
+            WebhookManager.shared.sendBlock(host: host, ruleName: "Beaconing: \(host)\(path) every \(Int(interval))s")
+        case .c2Detected(let host, let framework, let indicator, let confidence):
+            stats.c2Detections += 1
+            log(.error, "C2 [\(confidence)] \(framework): \(indicator) → \(host)", host: host)
+            NotificationManager.shared.notifyExfiltration(host: host, patternName: "C2: \(framework)")
+            WebhookManager.shared.sendExfiltration(host: host, patternName: "C2: \(framework)",
+                                                    severity: confidence, preview: indicator)
         case .aiDetected(let host, let provider):
             stats.aiRequests += 1
             log(.info, "AI \(provider) \(host)", host: host)
@@ -741,6 +780,10 @@ final class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(rules)   { d.set(data, forKey: rulesKey) }
         if let data = try? JSONEncoder().encode(privacy) { d.set(data, forKey: privacyKey) }
         if let data = try? JSONEncoder().encode(cacheSettings) { d.set(data, forKey: cacheKey) }
+        if let data = try? JSONEncoder().encode(socks5Settings) { d.set(data, forKey: socks5Key) }
+        if let data = try? JSONEncoder().encode(beaconingSettings) { d.set(data, forKey: beaconingKey) }
+        if let data = try? JSONEncoder().encode(c2Settings) { d.set(data, forKey: c2Key) }
+        if let data = try? JSONEncoder().encode(processRules) { d.set(data, forKey: processRulesKey) }
         if let data = try? JSONEncoder().encode(cloudSyncSettings) { d.set(data, forKey: cloudSyncKey) }
         if let data = try? JSONEncoder().encode(diskCacheSettings) { d.set(data, forKey: diskCacheKey) }
         if let data = try? JSONEncoder().encode(metricsSettings) { d.set(data, forKey: metricsKey) }
@@ -779,6 +822,22 @@ final class AppState: ObservableObject {
         if let data = d.data(forKey: cacheKey),
            let c = try? JSONDecoder().decode(CacheSettings.self, from: data) {
             cacheSettings = c
+        }
+        if let data = d.data(forKey: socks5Key),
+           let s = try? JSONDecoder().decode(SOCKS5Settings.self, from: data) {
+            socks5Settings = s
+        }
+        if let data = d.data(forKey: beaconingKey),
+           let s = try? JSONDecoder().decode(BeaconingSettings.self, from: data) {
+            beaconingSettings = s
+        }
+        if let data = d.data(forKey: c2Key),
+           let s = try? JSONDecoder().decode(C2Settings.self, from: data) {
+            c2Settings = s
+        }
+        if let data = d.data(forKey: processRulesKey),
+           let arr = try? JSONDecoder().decode([ProcessRule].self, from: data) {
+            processRules = arr
         }
         if let data = d.data(forKey: cloudSyncKey),
            let s = try? JSONDecoder().decode(CloudSyncSettings.self, from: data) {
