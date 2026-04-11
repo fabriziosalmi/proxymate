@@ -30,9 +30,8 @@ struct proxymateApp: App {
             ContentView()
                 .environmentObject(state)
         } label: {
-            Image(systemName: state.isEnabled
-                  ? "shield.lefthalf.filled.trianglebadge.exclamationmark"
-                  : "shield.lefthalf.filled")
+            Image("MenuBarIcon")
+                .renderingMode(.template)
         }
         .menuBarExtraStyle(.window)
     }
