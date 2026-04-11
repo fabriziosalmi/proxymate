@@ -278,6 +278,29 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
         onEvent?(.allowed(host: host, method: method))
 
+        // MITM interception for CONNECT tunnels
+        if method.uppercased() == "CONNECT" &&
+           TLSManager.shared.shouldIntercept(host: host, settings: mitmSnapshot) {
+            // Parse port from target (host:port)
+            let targetPort = UInt16(target.split(separator: ":").last.flatMap { String($0) } ?? "443") ?? 443
+            // Send "200 Connection Established" then hand off to MITMHandler
+            let established = "HTTP/1.1 200 Connection Established\r\n\r\n"
+            client.send(content: established.data(using: .utf8), completion: .contentProcessed { [weak self] _ in
+                guard let self else { client.cancel(); return }
+                let handler = MITMHandler(
+                    clientConn: client,
+                    hostname: host,
+                    port: targetPort,
+                    queue: self.queue,
+                    rules: self.rulesSnapshot,
+                    privacy: self.privacySnapshot,
+                    onEvent: self.onEvent
+                )
+                handler.start()
+            })
+            return
+        }
+
         // Cache check (plain HTTP GET only)
         if method.uppercased() == "GET" && method.uppercased() != "CONNECT" {
             let headerStr = String(data: finalHeaderData, encoding: .utf8) ?? headerString
