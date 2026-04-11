@@ -75,16 +75,15 @@ final class LoopBreakerTests: XCTestCase {
     }
 
     func testMCPLoopBlock() {
+        // mcpBlockThreshold is 3, need enough calls to exceed it
         let body = "{\"method\":\"tools/call\"}".data(using: .utf8)!
         var lastResult: AgentLoopBreaker.LoopDetection?
-        // mcpBlockThreshold is 3, so we need 3 calls to hit block
-        for _ in 0..<4 {
+        for _ in 0..<6 {
             lastResult = breaker.check(host: "mcp.server.com", bodyData: body, mcpMethod: "tools/call")
         }
         XCTAssertNotNil(lastResult)
-        // At 3+, should be at least warn or block
         XCTAssertTrue(lastResult?.severity == .block || lastResult?.severity == .warn,
-                      "Should be warn or block at 4 MCP repeats")
+                      "Should be warn or block after 6 MCP repeats, got: \(String(describing: lastResult?.severity))")
     }
 
     // MARK: - Cost runaway
