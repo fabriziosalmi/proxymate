@@ -1858,6 +1858,7 @@ struct CacheView: View {
 
 struct PrivacyView: View {
     @EnvironmentObject var state: AppState
+    @State private var showWizard = false
 
     var body: some View {
         ScrollView {
@@ -1982,8 +1983,23 @@ struct PrivacyView: View {
                     Text("When enabled, Proxymate resolves domains via encrypted DNS to bypass ISP snooping and match resolved IPs against blacklists.")
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
+                // Setup wizard
+                Divider()
+                Button("Run Setup Wizard Again") {
+                    UserDefaults.standard.set(false, forKey: "proxymate.onboarded")
+                    showWizard = true
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .font(.caption)
             }
             .padding(12)
+        }
+        .sheet(isPresented: $showWizard) {
+            OnboardingView(isPresented: $showWizard)
+                .environmentObject(state)
+                .onDisappear {
+                    UserDefaults.standard.set(true, forKey: "proxymate.onboarded")
+                }
         }
     }
 
