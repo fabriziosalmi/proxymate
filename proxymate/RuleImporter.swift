@@ -92,7 +92,10 @@ nonisolated enum RuleImporter {
             completion(.failure(ImportError.invalidURL))
             return
         }
-        let task = URLSession.shared.dataTask(with: url) { data, _, error in
+        let config = URLSessionConfiguration.default
+        config.connectionProxyDictionary = [:]
+        let session = URLSession(configuration: config)
+        let task = session.dataTask(with: url) { data, _, error in
             if let error {
                 completion(.failure(error))
                 return

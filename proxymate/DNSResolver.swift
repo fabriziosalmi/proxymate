@@ -174,7 +174,9 @@ nonisolated final class DNSResolver: @unchecked Sendable {
         var request = URLRequest(url: url, timeoutInterval: 5)
         request.setValue("application/dns-json", forHTTPHeaderField: "Accept")
 
-        let task = URLSession.shared.dataTask(with: request) { data, _, error in
+        let config = URLSessionConfiguration.default
+        config.connectionProxyDictionary = [:]
+        let task = URLSession(configuration: config).dataTask(with: request) { data, _, error in
             if let error {
                 completion(.failure(error))
                 return

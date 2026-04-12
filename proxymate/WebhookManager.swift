@@ -83,7 +83,9 @@ nonisolated final class WebhookManager: @unchecked Sendable {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue("Proxymate/1.0", forHTTPHeaderField: "User-Agent")
                 request.httpBody = body
-                URLSession.shared.dataTask(with: request).resume()
+                let config = URLSessionConfiguration.default
+                config.connectionProxyDictionary = [:]
+                URLSession(configuration: config).dataTask(with: request).resume()
             }
         }
     }

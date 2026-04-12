@@ -21,6 +21,14 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
     /// IP → set of source IDs that block it
     private var ipSets: [UUID: Set<String>] = [:]
 
+    /// URLSession that bypasses system proxy (avoids circular dependency).
+    private let directSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.connectionProxyDictionary = [:]  // empty = no proxy
+        config.timeoutIntervalForRequest = 30
+        return URLSession(configuration: config)
+    }()
+
     private init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -74,7 +82,7 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
                 completion(.failure(BLError.invalidURL))
                 return
             }
-            let task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+            let task = self.directSession.dataTask(with: url) { [weak self] data, response, error in
                 guard let self else { return }
                 self.queue.async {
                     if let error {
