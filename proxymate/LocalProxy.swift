@@ -406,12 +406,16 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 guard let self else { return }
                 switch state {
                 case .ready:
-                    // NIO side ready — now tell client tunnel is established
-                    let established = Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8)
-                    client.send(content: established, completion: .contentProcessed { _ in
-                        // Bidirectional pipe: client ↔ NIO MITM proxy
-                        self.pipe(from: client, to: nioConn)
-                        self.pipe(from: nioConn, to: client)
+                    // Send hostname header to NIO so it can forge the cert
+                    let header = Data("\(host)\n".utf8)
+                    nioConn.send(content: header, completion: .contentProcessed { _ in
+                        // Now tell client tunnel is established
+                        let established = Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8)
+                        client.send(content: established, completion: .contentProcessed { _ in
+                            // Bidirectional pipe: client ↔ NIO MITM proxy
+                            self.pipe(from: client, to: nioConn)
+                            self.pipe(from: nioConn, to: client)
+                        })
                     })
                 case .failed:
                     self.onEvent?(.log(.error, "MITM NIO connect failed for \(host)"))

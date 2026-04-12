@@ -92,14 +92,15 @@ nonisolated final class NIOTLSProxy: @unchecked Sendable {
 
 // MARK: - Step 1: Receive raw bytes from client, detect hostname, start TLS
 
-/// First handler in the pipeline. Reads the initial bytes from the tunneled
-/// client connection. Since LocalProxy already sent "200 Connection Established",
-/// the first bytes from the client are a TLS ClientHello.
-/// We extract the SNI hostname, forge a cert, and inject NIOSSLServerHandler.
+/// First handler in the pipeline. Reads a hostname header sent by LocalProxy
+/// ("MITM hostname\n") before the client's TLS ClientHello arrives.
+/// Configures TLS server handler with forged cert, then lets NIO handle TLS.
 private final class ConnectReceiver: ChannelInboundHandler, RemovableChannelHandler {
     typealias InboundIn = ByteBuffer
 
     weak var proxy: NIOTLSProxy?
+    private var hostnameBuffer = ""
+    private var configured = false
 
     init(proxy: NIOTLSProxy?) {
         self.proxy = proxy
@@ -108,22 +109,31 @@ private final class ConnectReceiver: ChannelInboundHandler, RemovableChannelHand
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         var buf = unwrapInboundIn(data)
 
-        // Extract SNI from ClientHello (first byte 0x16 = TLS handshake)
-        let hostname: String
-        if let bytes = buf.getBytes(at: buf.readerIndex, length: buf.readableBytes) {
-            hostname = extractSNI(from: bytes) ?? "unknown"
-        } else {
-            hostname = "unknown"
-        }
+        // First message: "MITM hostname\n" from LocalProxy
+        if !configured {
+            if let str = buf.readString(length: buf.readableBytes) {
+                hostnameBuffer += str
+            }
+            guard let newlineIdx = hostnameBuffer.firstIndex(of: "\n") else { return }
+            let hostname = String(hostnameBuffer[hostnameBuffer.startIndex..<newlineIdx])
+                .trimmingCharacters(in: .whitespaces)
+            // Any bytes after the newline are the ClientHello
+            let afterNewline = hostnameBuffer.index(after: newlineIdx)
+            let remainder = String(hostnameBuffer[afterNewline...])
 
-        guard let proxy else {
-            context.close(promise: nil)
+            configured = true
+            setupTLS(context: context, hostname: hostname, remainder: remainder)
             return
         }
 
+        // After configuration, forward to pipeline
+        context.fireChannelRead(data)
+    }
+
+    private func setupTLS(context: ChannelHandlerContext, hostname: String, remainder: String) {
+        guard let proxy else { context.close(promise: nil); return }
         let config = proxy.currentConfig()
 
-        // Forge cert for this hostname
         let serverTLSContext: NIOSSLContext
         do {
             let pem = try TLSManager.shared.pemForHost(hostname)
@@ -145,10 +155,9 @@ private final class ConnectReceiver: ChannelInboundHandler, RemovableChannelHand
 
         config.onEvent?(.mitmIntercepted(host: hostname))
 
-        // Insert TLS server handler at the front of the pipeline
+        // Build pipeline: SSL → HTTP decode → Inspect
         let sslHandler = NIOSSLServerHandler(context: serverTLSContext)
         context.pipeline.addHandler(sslHandler, position: .first).flatMap {
-            // Add HTTP decoders after TLS
             context.pipeline.addHandler(ByteToMessageHandler(HTTPRequestDecoder()))
         }.flatMap {
             context.pipeline.addHandler(HTTPResponseEncoder())
@@ -156,69 +165,21 @@ private final class ConnectReceiver: ChannelInboundHandler, RemovableChannelHand
             context.pipeline.addHandler(
                 MITMInspectHandler(hostname: hostname, config: config, group: context.eventLoop))
         }.flatMap {
-            // Remove ourselves
             context.pipeline.removeHandler(self)
         }.whenComplete { result in
             switch result {
             case .success:
-                // Re-fire ClientHello from the HEAD of the pipeline so
-                // NIOSSLServerHandler (at position .first) processes it.
-                context.channel.pipeline.fireChannelRead(data)
+                // If we have leftover bytes (ClientHello), feed them in
+                if !remainder.isEmpty {
+                    var buf = context.channel.allocator.buffer(capacity: remainder.utf8.count)
+                    buf.writeString(remainder)
+                    context.channel.pipeline.fireChannelRead(NIOAny(buf))
+                }
             case .failure(let err):
-                config.onEvent?(.log(.error, "NIO MITM pipeline setup failed \(hostname): \(err)"))
+                config.onEvent?(.log(.error, "NIO MITM pipeline failed \(hostname): \(err)"))
                 context.close(promise: nil)
             }
         }
-    }
-
-    /// Extract SNI hostname from TLS ClientHello.
-    private func extractSNI(from bytes: [UInt8]) -> String? {
-        guard bytes.count > 43,
-              bytes[0] == 0x16,        // Handshake
-              bytes[5] == 0x01 else {  // ClientHello
-            return nil
-        }
-
-        var offset = 43 // past fixed fields
-        guard offset < bytes.count else { return nil }
-
-        // Session ID
-        let sessionLen = Int(bytes[offset])
-        offset += 1 + sessionLen
-        guard offset + 2 <= bytes.count else { return nil }
-
-        // Cipher suites
-        let cipherLen = Int(bytes[offset]) << 8 | Int(bytes[offset + 1])
-        offset += 2 + cipherLen
-        guard offset + 1 <= bytes.count else { return nil }
-
-        // Compression methods
-        let compLen = Int(bytes[offset])
-        offset += 1 + compLen
-        guard offset + 2 <= bytes.count else { return nil }
-
-        // Extensions
-        let extLen = Int(bytes[offset]) << 8 | Int(bytes[offset + 1])
-        offset += 2
-        let extEnd = min(offset + extLen, bytes.count)
-
-        while offset + 4 <= extEnd {
-            let extType = Int(bytes[offset]) << 8 | Int(bytes[offset + 1])
-            let extDataLen = Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
-            offset += 4
-
-            if extType == 0x0000 { // SNI extension
-                guard offset + 5 <= extEnd else { break }
-                // Skip SNI list length (2) + type (1)
-                let nameLen = Int(bytes[offset + 3]) << 8 | Int(bytes[offset + 4])
-                let nameStart = offset + 5
-                guard nameStart + nameLen <= extEnd else { break }
-                return String(bytes: bytes[nameStart..<(nameStart + nameLen)], encoding: .utf8)
-            }
-
-            offset += extDataLen
-        }
-        return nil
     }
 }
 
