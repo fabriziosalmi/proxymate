@@ -395,27 +395,31 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
         }
 
-        // MITM interception for CONNECT tunnels (via NIO-SSL proxy)
+        // MITM interception for CONNECT tunnels (NIO-SSL)
         if method.uppercased() == "CONNECT" &&
            TLSManager.shared.shouldIntercept(host: host, settings: mitmSnapshot) &&
            NIOTLSProxy.shared.port > 0 {
-            // Send "200 Connection Established" then pipe client to NIO MITM proxy
-            let established = "HTTP/1.1 200 Connection Established\r\n\r\n"
-            client.send(content: established.data(using: .utf8), completion: .contentProcessed { [weak self] _ in
-                guard let self else { client.cancel(); return }
-                // Connect to local NIO proxy and pipe bidirectionally
-                let nioPort = NWEndpoint.Port(rawValue: UInt16(NIOTLSProxy.shared.port))!
-                let nioConn = NWConnection(host: .ipv4(.loopback), port: nioPort, using: .tcp)
-                nioConn.stateUpdateHandler = { [weak self] state in
-                    if case .ready = state {
-                        self?.pipe(from: client, to: nioConn)
-                        self?.pipe(from: nioConn, to: client)
-                    } else if case .failed = state {
-                        client.cancel()
-                    }
+            // First connect to NIO MITM proxy, THEN tell client "200 OK"
+            let nioPort = NWEndpoint.Port(rawValue: UInt16(NIOTLSProxy.shared.port))!
+            let nioConn = NWConnection(host: .ipv4(.loopback), port: nioPort, using: .tcp)
+            nioConn.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    // NIO side ready — now tell client tunnel is established
+                    let established = Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8)
+                    client.send(content: established, completion: .contentProcessed { _ in
+                        // Bidirectional pipe: client ↔ NIO MITM proxy
+                        self.pipe(from: client, to: nioConn)
+                        self.pipe(from: nioConn, to: client)
+                    })
+                case .failed:
+                    self.onEvent?(.log(.error, "MITM NIO connect failed for \(host)"))
+                    client.cancel()
+                default: break
                 }
-                nioConn.start(queue: self.queue)
-            })
+            }
+            nioConn.start(queue: self.queue)
             return
         }
 
