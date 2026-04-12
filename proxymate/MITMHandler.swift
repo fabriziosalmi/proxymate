@@ -13,8 +13,14 @@ import Network
 
 // MARK: - Global concurrency control
 
-/// Max simultaneous MITM handshakes/sessions. Prevents resource exhaustion.
-nonisolated(unsafe) private var mitmSemaphore = DispatchSemaphore(value: 20)
+/// Max simultaneous MITM handshakes. Released after handshake completes
+/// (success or failure), NOT held for the full session lifetime.
+/// This prevents persistent connections (WebSocket, SSE) from starving
+/// new handshakes.
+nonisolated(unsafe) private var mitmHandshakeSemaphore = DispatchSemaphore(value: 20)
+
+/// Active session count — no hard cap, but tracked for diagnostics.
+nonisolated(unsafe) private var activeSessionCount: Int = 0
 
 /// Registry of active MITM handlers. SSLContext callbacks use the handler ID
 /// (stored as the SSLConnectionRef) to look up the handler safely.
@@ -94,9 +100,9 @@ nonisolated final class MITMHandler: @unchecked Sendable {
     // MARK: - Start
 
     func start() {
-        // Acquire semaphore (non-blocking check, blocking with short timeout)
-        if mitmSemaphore.wait(timeout: .now() + 2) == .timedOut {
-            onEvent?(.log(.warn, "MITM: too many concurrent sessions, skipping \(hostname)"))
+        // Acquire handshake semaphore — released after handshake, not session end.
+        if mitmHandshakeSemaphore.wait(timeout: .now() + 2) == .timedOut {
+            onEvent?(.log(.warn, "MITM: too many concurrent handshakes, skipping \(hostname)"))
             passthrough()
             return
         }
@@ -114,7 +120,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                 return
             }
 
-            guard let ctxUnmanaged = Self.createSSLContext() else {
+            guard let ctxUnmanaged = MITMCreateSSLContext(.serverSide, .streamType) else {
                 onEvent?(.log(.error, "MITM SSLCreateContext failed for \(hostname)"))
                 cleanup()
                 return
@@ -180,16 +186,24 @@ nonisolated final class MITMHandler: @unchecked Sendable {
 
     // MARK: - TLS handshake
 
+    /// Release the handshake semaphore. Called once after handshake completes
+    /// (success or failure). The session continues without holding the slot.
+    private func releaseHandshakeSemaphore() {
+        if acquiredSemaphore {
+            acquiredSemaphore = false
+            mitmHandshakeSemaphore.signal()
+        }
+    }
+
     private func handshake(ssl: SSLBox) {
-        // All handshake calls are already on handlerQueue (called from start() or recursion)
         guard !checkDone() else { return }
 
         if Date().timeIntervalSince(startTime) > handshakeTimeout {
             onEvent?(.log(.warn, "MITM handshake timeout for \(hostname) after \(handshakeRetries) retries"))
+            releaseHandshakeSemaphore()
             done(ssl: ssl); return
         }
 
-        // Small delay to let client bytes arrive
         handlerQueue.asyncAfter(deadline: .now() + 0.01) { [weak self] in
             guard let self, !self.checkDone() else { return }
 
@@ -198,6 +212,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
 
             switch Int32(status) {
             case errSecSuccess:
+                self.releaseHandshakeSemaphore()
                 self.onEvent?(.log(.info, "MITM TLS OK: \(self.hostname) (\(self.handshakeRetries) retries)"))
                 self.readDecrypted(ssl: ssl)
 
@@ -250,8 +265,17 @@ nonisolated final class MITMHandler: @unchecked Sendable {
 
     // MARK: - Decrypted traffic
 
+    /// Max session duration (5 min). Prevents zombie MITM connections from
+    /// holding resources indefinitely (e.g., WebSocket/SSE streams).
+    private static let maxSessionDuration: TimeInterval = 300
+
     private func readDecrypted(ssl: SSLBox) {
         guard !checkDone() else { return }
+        // Session timeout — close stale connections
+        if Date().timeIntervalSince(startTime) > Self.maxSessionDuration {
+            onEvent?(.log(.info, "MITM: session timeout for \(hostname) after \(Int(Self.maxSessionDuration))s"))
+            done(ssl: ssl); return
+        }
         handlerQueue.asyncAfter(deadline: .now() + 0.01) { [weak self] in
             guard let self, !self.checkDone() else { return }
             var buf = [UInt8](repeating: 0, count: 16384)
@@ -604,18 +628,11 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         activeHandlers.removeValue(forKey: handlerID)
         handlersLock.unlock()
 
-        if acquiredSemaphore {
-            acquiredSemaphore = false
-            mitmSemaphore.signal()
-        }
+        releaseHandshakeSemaphore()
     }
 
-    /// Wrapper to suppress deprecation warnings for SSLContext APIs.
-    /// SSLContext is deprecated since macOS 10.15 but still functional on macOS 26.
-    @available(macOS, deprecated: 10.15, message: "SSLContext deprecated — migrate to SwiftNIO-SSL")
-    private static func createSSLContext() -> Unmanaged<SSLContext>? {
-        MITMCreateSSLContext(.serverSide, .streamType)
-    }
+    // SSLContext deprecated since macOS 10.15 but still functional on macOS 26.
+    // .serverSide/.streamType deprecation warnings are Apple SDK, not our code.
 }
 
 // MARK: - SSLContext IO callbacks (use handler registry, no Unmanaged)

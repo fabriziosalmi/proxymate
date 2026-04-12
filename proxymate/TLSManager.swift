@@ -19,9 +19,6 @@ nonisolated struct MITMSettings: Codable, Hashable, Sendable {
         "*.apple.com", "*.icloud.com",
         "*.googleapis.com",
         "*.banking.*", "*.bank.*",
-        // WebSocket-heavy services (MITM breaks persistent connections)
-        "*.intercom.io", "*.pusher.com", "*.socket.io",
-        "*.websocket.org", "*.slack-msgs.com",
         // Mozilla services
         "*.firefox.com", "*.mozilla.com", "*.mozilla.org",
         // Cert-pinned apps (crash or reject MITM certs)
