@@ -109,7 +109,17 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 self.listener = listener
                 listener.start(queue: self.queue)
 
-                // NIOTLSProxy reserved for v2.0 (requires full NIO listener rewrite)
+                // Start mitmproxy sidecar if MITM enabled
+                if mitm.enabled, let up = self.upstream {
+                    MITMProxySidecar.shared.onEvent = self.onEvent
+                    do {
+                        let mitmPort = try MITMProxySidecar.shared.start(
+                            upstreamHost: up.host, upstreamPort: up.port)
+                        self.onEvent?(.log(.info, "mitmproxy sidecar on port \(mitmPort)"))
+                    } catch {
+                        self.onEvent?(.log(.error, "mitmproxy failed: \(error.localizedDescription)"))
+                    }
+                }
             } catch {
                 self.startCompletion = nil
                 completion(.failure(error))
@@ -123,7 +133,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             self.listener?.cancel()
             self.listener = nil
             self.upstream = nil
-            // NIOTLSProxy.shared.stop() // v2.0
+            MITMProxySidecar.shared.stop()
             self.onEvent?(.stopped)
         }
     }
@@ -393,23 +403,27 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
         }
 
-        // MITM interception for CONNECT tunnels
+        // MITM interception via mitmproxy sidecar
         if method.uppercased() == "CONNECT" &&
+           mitmSnapshot.enabled &&
+           MITMProxySidecar.shared.isRunning &&
            TLSManager.shared.shouldIntercept(host: host, settings: mitmSnapshot) {
-            let targetPort = UInt16(target.split(separator: ":").last.flatMap { String($0) } ?? "443") ?? 443
-            let established = Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8)
-            client.send(content: established, completion: .contentProcessed { [weak self] _ in
-                guard let self else { client.cancel(); return }
-                let handler = MITMHandler(
-                    clientConn: client,
-                    hostname: host,
-                    port: targetPort,
-                    rules: self.rulesSnapshot,
-                    privacy: self.privacySnapshot,
-                    onEvent: self.onEvent
-                )
-                handler.start()
-            })
+            // Chain through mitmproxy — it handles TLS, we get decrypted events via socket
+            let mitmPort = MITMProxySidecar.shared.port
+            sessionCounter += 1
+            let sessionID = sessionCounter
+            let session = ProxySession(client: client, sessionID: sessionID, onEvent: onEvent)
+            activeSessions[sessionID] = session
+            // Forward the raw CONNECT to mitmproxy (it acts as upstream proxy)
+            session.connectAndForward(
+                headerData: headerData,
+                leftover: leftover,
+                upstreamHost: "127.0.0.1",
+                upstreamPort: mitmPort
+            )
+            queue.asyncAfter(deadline: .now() + 300) { [weak self] in
+                if let s = self?.activeSessions.removeValue(forKey: sessionID) { s.finish() }
+            }
             return
         }
 
