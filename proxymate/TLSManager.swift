@@ -24,6 +24,10 @@ nonisolated struct MITMSettings: Codable, Hashable, Sendable {
         "*.websocket.org", "*.slack-msgs.com",
         // Mozilla services
         "*.firefox.com", "*.mozilla.com", "*.mozilla.org",
+        // Cert-pinned apps (crash or reject MITM certs)
+        "*.whatsapp.net", "*.whatsapp.com",
+        "*.signal.org", "*.signal.com",
+        "*.telegram.org",
     ]
     var caInstalled: Bool = false
 }
@@ -159,12 +163,31 @@ nonisolated final class TLSManager: @unchecked Sendable {
 
     // MARK: - Leaf Cert Forging
 
-    /// Returns a SecIdentity for the given hostname. Uses openssl with disk-based CA key.
+    /// Persistent leaf cert cache directory.
+    private var leafCacheDir: URL {
+        caDir.appendingPathComponent("leaves", isDirectory: true)
+    }
+
+    /// Returns a SecIdentity for the given hostname. Uses disk-cached P12 if available.
     func identityForHost(_ hostname: String) throws -> SecIdentity {
         try queue.sync {
+            // 1. Memory cache
             if let cached = leafCache[hostname] { return cached }
 
+            // 2. Disk cache — check for existing P12
+            let safeHostname = hostname.replacingOccurrences(of: "*", with: "_")
+                .replacingOccurrences(of: "/", with: "_")
+            let diskP12 = leafCacheDir.appendingPathComponent("\(safeHostname).p12")
+            if let p12Data = try? Data(contentsOf: diskP12),
+               let identity = importP12(p12Data) {
+                leafCache[hostname] = identity
+                return identity
+            }
+
+            // 3. Generate new leaf cert
             guard isCAInstalled else { throw TLSError.noCA }
+
+            try? FileManager.default.createDirectory(at: leafCacheDir, withIntermediateDirectories: true)
 
             let leafDir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("proxymate-leaf-\(hostname.hashValue)", isDirectory: true)
@@ -228,16 +251,14 @@ nonisolated final class TLSManager: @unchecked Sendable {
                 try? FileManager.default.removeItem(at: leafDir)
                 throw TLSError.certCreationFailed
             }
-            var items: CFArray?
-            let opts: [String: Any] = [kSecImportExportPassphrase as String: "proxymate"]
-            guard SecPKCS12Import(p12Data as CFData, opts as CFDictionary, &items) == errSecSuccess,
-                  let arr = items as? [[String: Any]],
-                  let identityRef = arr.first?[kSecImportItemIdentity as String] else {
+
+            // Save P12 to disk cache for next time
+            try? p12Data.write(to: diskP12, options: .atomic)
+
+            guard let identity = importP12(p12Data) else {
                 try? FileManager.default.removeItem(at: leafDir)
                 throw TLSError.identityNotFound
             }
-
-            let identity = identityRef as! SecIdentity
             leafCache[hostname] = identity
 
             // Cleanup temp files
@@ -245,6 +266,18 @@ nonisolated final class TLSManager: @unchecked Sendable {
 
             return identity
         }
+    }
+
+    /// Import a PKCS12 blob and return the SecIdentity.
+    private func importP12(_ data: Data) -> SecIdentity? {
+        var items: CFArray?
+        let opts: [String: Any] = [kSecImportExportPassphrase as String: "proxymate"]
+        guard SecPKCS12Import(data as CFData, opts as CFDictionary, &items) == errSecSuccess,
+              let arr = items as? [[String: Any]],
+              let ref = arr.first?[kSecImportItemIdentity as String] else {
+            return nil
+        }
+        return (ref as! SecIdentity)
     }
 
     // MARK: - Interception Decision

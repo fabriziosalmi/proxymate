@@ -135,7 +135,6 @@ nonisolated final class MITMHandler: @unchecked Sendable {
 
         queue.asyncAfter(deadline: .now() + 0.02) { [weak self] in
             guard let self else {
-                Unmanaged<MITMHandler>.fromOpaque(session.ptr).release()
                 return
             }
 
@@ -181,7 +180,6 @@ nonisolated final class MITMHandler: @unchecked Sendable {
     private func readDecrypted(session: TLSSession) {
         queue.asyncAfter(deadline: .now() + 0.01) { [weak self] in
             guard let self else {
-                Unmanaged<MITMHandler>.fromOpaque(session.ptr).release()
                 return
             }
             var buf = [UInt8](repeating: 0, count: 16384)
