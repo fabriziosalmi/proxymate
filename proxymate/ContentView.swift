@@ -1068,17 +1068,27 @@ struct WAFRulesSection: View {
             } else {
                 List {
                     ForEach(state.rules) { rule in
-                        RuleRow(rule: rule)
-                            .contextMenu {
-                                Button(rule.enabled ? "Disable" : "Enable") {
-                                    state.toggleRule(rule.id)
-                                }
-                                Divider()
-                                Button("Delete", role: .destructive) {
-                                    state.removeRule(rule.id)
-                                }
+                        HStack(spacing: 0) {
+                            RuleRow(rule: rule)
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { rule.enabled },
+                                set: { _ in state.toggleRule(rule.id) }
+                            ))
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .labelsHidden()
+                        }
+                        .contextMenu {
+                            Button(rule.enabled ? "Disable" : "Enable") {
+                                state.toggleRule(rule.id)
                             }
-                            .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
+                            Divider()
+                            Button("Delete", role: .destructive) {
+                                state.removeRule(rule.id)
+                            }
+                        }
+                        .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 8))
                     }
                     .onMove { state.moveRule(from: $0, to: $1) }
                     .onDelete { state.deleteRules(at: $0) }
@@ -1121,10 +1131,7 @@ struct RuleRow: View {
                 Text("\(rule.kind.rawValue) • \(rule.pattern)")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            Spacer()
-            if !rule.enabled {
-                Text("OFF").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-            }
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
     }
