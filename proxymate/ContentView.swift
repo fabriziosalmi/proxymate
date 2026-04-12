@@ -1737,14 +1737,29 @@ struct AIView: View {
 
                 Divider()
 
-                // Provider grid
-                sectionHeader("PROVIDERS")
-                LazyVStack(spacing: 4) {
-                    ForEach(AIProvider.builtIn) { provider in
-                        AIProviderRow(
-                            provider: provider,
-                            stats: state.aiProviderStats[provider.id]
-                        )
+                // Provider grid — only show providers with activity
+                let activeProviders = AIProvider.builtIn.filter { state.aiProviderStats[$0.id] != nil }
+                if activeProviders.isEmpty {
+                    VStack(spacing: 6) {
+                        Image(systemName: "brain")
+                            .font(.title3).foregroundStyle(.tertiary)
+                        Text("No AI traffic detected yet")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("Providers will appear here when API calls are intercepted.")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                } else {
+                    sectionHeader("PROVIDERS")
+                    LazyVStack(spacing: 4) {
+                        ForEach(activeProviders) { provider in
+                            AIProviderRow(
+                                provider: provider,
+                                stats: state.aiProviderStats[provider.id]
+                            )
+                        }
                     }
                 }
 
