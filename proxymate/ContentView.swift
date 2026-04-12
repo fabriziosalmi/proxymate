@@ -907,6 +907,32 @@ struct StatsView: View {
                             .font(.caption2).foregroundStyle(.red)
                     }
                 }
+
+                // Host profiling
+                let topHosts = HostMemory.shared.topHosts(limit: 5)
+                if !topHosts.isEmpty {
+                    Divider()
+                    Text("TOP HOSTS").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                    ForEach(topHosts, id: \.host) { item in
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(item.profile.isUnhealthy ? Color.red : .green)
+                                .frame(width: 6, height: 6)
+                            Text(item.host)
+                                .font(.system(.caption2, design: .monospaced))
+                                .lineLimit(1)
+                            Spacer()
+                            Text(verbatim: "\(item.profile.requestCount)")
+                                .font(.caption2.weight(.bold)).monospacedDigit()
+                            if item.profile.errorRate > 0 {
+                                Text(verbatim: "\(Int(item.profile.errorRate * 100))%err")
+                                    .font(.system(size: 8)).foregroundStyle(.red)
+                            }
+                        }
+                    }
+                    Text(verbatim: "\(HostMemory.shared.totalHosts) unique hosts")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
             }
             .padding(12)
         }
