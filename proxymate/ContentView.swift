@@ -47,10 +47,10 @@ struct ContentView: View {
             tabBar
             Divider()
             content
-                .frame(height: 340)
+                .frame(minHeight: 380, maxHeight: 500)
             CommunityBar()
         }
-        .frame(width: 400)
+        .frame(width: 420)
         .animation(.easeInOut(duration: 0.15), value: tab)
         .background(shortcuts)
         .sheet(isPresented: $showAbout) {
@@ -404,9 +404,7 @@ struct AddOverrideSheet: View {
                 .disabled(pattern.isEmpty || selectedPoolId == nil)
             }
         }
-        .padding(16).frame(width: 380)
-        .onAppear { NSApp.activate(ignoringOtherApps: true) }
-    }
+        .padding(16).frame(width: 380)    }
 }
 
 // MARK: PAC section
@@ -577,9 +575,7 @@ struct AddPoolSheet: View {
                 .keyboardShortcut(.defaultAction).disabled(host.isEmpty)
             }
         }
-        .padding(16).frame(width: 340)
-        .onAppear { NSApp.activate(ignoringOtherApps: true) }
-    }
+        .padding(16).frame(width: 340)    }
 }
 
 struct ProxyRow: View {
@@ -659,9 +655,7 @@ struct AddProxySheet: View {
             }
         }
         .padding(16)
-        .frame(width: 320)
-        .onAppear { NSApp.activate(ignoringOtherApps: true) }
-    }
+        .frame(width: 320)    }
 }
 
 // MARK: - Logs tab (search, filter, click-to-rule)
@@ -1183,9 +1177,7 @@ struct AddRuleSheet: View {
                 .keyboardShortcut(.defaultAction).disabled(pattern.isEmpty)
             }
         }
-        .padding(16).frame(width: 340)
-        .onAppear { NSApp.activate(ignoringOtherApps: true) }
-    }
+        .padding(16).frame(width: 340)    }
 
     private var placeholder: String {
         switch kind {
@@ -1252,9 +1244,7 @@ struct ImportRulesSheet: View {
                 .disabled(source == .url ? urlText.isEmpty : pasteText.isEmpty)
             }
         }
-        .padding(16).frame(width: 400)
-        .onAppear { NSApp.activate(ignoringOtherApps: true) }
-    }
+        .padding(16).frame(width: 400)    }
 }
 
 // MARK: Allowlist sub-section
@@ -1387,9 +1377,7 @@ struct AddAllowEntrySheet: View {
                 .keyboardShortcut(.defaultAction).disabled(pattern.isEmpty)
             }
         }
-        .padding(16).frame(width: 380)
-        .onAppear { NSApp.activate(ignoringOtherApps: true) }
-    }
+        .padding(16).frame(width: 380)    }
 }
 
 // MARK: Threats sub-section (C2, Beaconing, Agent policies)
@@ -1643,9 +1631,7 @@ struct AddCustomBlacklistSheet: View {
                 .keyboardShortcut(.defaultAction).disabled(url.isEmpty)
             }
         }
-        .padding(16).frame(width: 380)
-        .onAppear { NSApp.activate(ignoringOtherApps: true) }
-    }
+        .padding(16).frame(width: 380)    }
 }
 
 struct BlacklistRow: View {

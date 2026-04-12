@@ -2,8 +2,9 @@
 //  proxymateApp.swift
 //  proxymate
 //
-//  Menu bar app: no Dock icon, no main window. The popover lives in
-//  ContentView and is presented by MenuBarExtra.
+//  Menu bar app using NSStatusItem + floating NSPanel.
+//  No Dock icon (LSUIElement). Click menu bar icon to toggle panel.
+//  The panel is a proper window — sheets, TextFields, focus all work.
 //
 
 import SwiftUI
@@ -11,11 +12,22 @@ import AppKit
 
 @main
 struct proxymateApp: App {
-    @StateObject private var state = AppState()
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
-    init() {
-        // Single-instance: kill stale copies from previous Xcode runs
+    var body: some Scene {
+        Settings { EmptyView() }
+    }
+}
+
+// MARK: - AppDelegate (StatusItem + Panel + Cleanup)
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+
+    private var statusItem: NSStatusItem!
+    private let state = AppState()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Single-instance
         let me = ProcessInfo.processInfo.processIdentifier
         let bid = Bundle.main.bundleIdentifier ?? ""
         for app in NSRunningApplication.runningApplications(withBundleIdentifier: bid)
@@ -23,8 +35,7 @@ struct proxymateApp: App {
             app.forceTerminate()
         }
 
-        // Startup cleanup: if previous run crashed with proxy enabled,
-        // clear system proxy to restore internet connectivity
+        // Startup cleanup
         if UserDefaults.standard.bool(forKey: "proxymate.wasEnabled") {
             UserDefaults.standard.set(false, forKey: "proxymate.wasEnabled")
             Task {
@@ -32,30 +43,31 @@ struct proxymateApp: App {
                 try? await PACServer.clearSystemPAC()
             }
         }
-    }
 
-    var body: some Scene {
-        MenuBarExtra {
-            ContentView()
-                .environmentObject(state)
-        } label: {
-            Image("MenuBarIcon")
-                .renderingMode(.template)
+        // Create status bar item
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+
+        if let button = statusItem.button {
+            if let img = NSImage(named: "MenuBarIcon") {
+                img.isTemplate = true
+                button.image = img
+            } else {
+                button.image = NSImage(systemSymbolName: "shield.lefthalf.filled",
+                                        accessibilityDescription: "Proxymate")
+            }
+            button.action = #selector(togglePanel)
+            button.target = self
         }
-        .menuBarExtraStyle(.window)
     }
-}
 
-/// AppDelegate handles termination to clean up system proxy settings.
-final class AppDelegate: NSObject, NSApplicationDelegate {
+    @objc private func togglePanel() {
+        PanelManager.shared.toggle(relativeTo: statusItem.button, state: state)
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Synchronous cleanup: clear system proxy + stop all listeners before
-        // process exits. Runs on SIGTERM, Cmd+Q, normal quit. Does NOT run on
-        // SIGKILL (kill -9), which is why we also have startup cleanup.
-
-        // Stop network listeners (NWListener, SOCKS5, Metrics)
+        // Stop network listeners
         MetricsServer.shared.stop()
+        MITMProxySidecar.shared.stop()
 
         if UserDefaults.standard.bool(forKey: "proxymate.wasEnabled") {
             UserDefaults.standard.set(false, forKey: "proxymate.wasEnabled")
@@ -65,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? await PACServer.clearSystemPAC()
                 sem.signal()
             }
-            _ = sem.wait(timeout: .now() + 3) // max 3s for cleanup
+            _ = sem.wait(timeout: .now() + 3)
         }
     }
 }
