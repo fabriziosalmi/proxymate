@@ -76,9 +76,15 @@ nonisolated final class DiskCache: @unchecked Sendable {
                 return nil
             }
 
-            let statusLine = String(cString: sqlite3_column_text(stmt, 0))
-            let headers = String(cString: sqlite3_column_text(stmt, 1))
-            let bodyHash = String(cString: sqlite3_column_text(stmt, 2))
+            guard let cStatus = sqlite3_column_text(stmt, 0),
+                  let cHeaders = sqlite3_column_text(stmt, 1),
+                  let cHash = sqlite3_column_text(stmt, 2) else {
+                _stats.misses += 1
+                return nil
+            }
+            let statusLine = String(cString: cStatus)
+            let headers = String(cString: cHeaders)
+            let bodyHash = String(cString: cHash)
 
             guard let body = readBody(hash: bodyHash) else {
                 _stats.misses += 1
@@ -253,8 +259,10 @@ nonisolated final class DiskCache: @unchecked Sendable {
 
         var keysToDelete: [(String, String, Int64)] = []
         while sqlite3_step(stmt) == SQLITE_ROW && currentSizeBytes > maxBytes {
-            let key = String(cString: sqlite3_column_text(stmt, 0))
-            let hash = String(cString: sqlite3_column_text(stmt, 1))
+            guard let cKey = sqlite3_column_text(stmt, 0),
+                  let cHash = sqlite3_column_text(stmt, 1) else { continue }
+            let key = String(cString: cKey)
+            let hash = String(cString: cHash)
             let size = sqlite3_column_int64(stmt, 2)
             keysToDelete.append((key, hash, size))
             currentSizeBytes -= size

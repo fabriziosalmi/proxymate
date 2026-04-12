@@ -141,9 +141,9 @@ nonisolated final class DNSResolver: @unchecked Sendable {
     /// Non-blocking cache-only lookup. Returns cached IPs or empty array.
     /// Never blocks, never makes network calls. Safe for the hot path.
     func lookupCacheOnly(_ domain: String) -> [String] {
-        guard settings.enabled else { return [] }
         let key = domain.lowercased()
         return queue.sync {
+            guard settings.enabled else { return [] }
             guard let cached = cache[key], !cached.isExpired else { return [] }
             touchLRU(key)
             return cached.ips

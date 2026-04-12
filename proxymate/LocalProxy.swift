@@ -667,6 +667,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + 300) { [weak self] in
             if let s = self?.activeSessions.removeValue(forKey: sessionID) {
                 s.finish()
+                if let mid = memberId { PoolRouter.shared.connectionEnded(memberId: mid) }
             }
         }
     }
@@ -735,22 +736,20 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     /// Tarpit: hold the connection open indefinitely instead of returning 403.
     /// Malicious apps won't detect they've been blocked — they'll just hang.
     private func sendTarpitResponse(client: NWConnection) {
-        // Send a minimal HTTP header that keeps the connection alive, then never finish
         let partial = Data("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n".utf8)
-        client.send(content: partial, completion: .contentProcessed { _ in
-            // Schedule a 1-byte drip every 30 seconds to keep connection alive
-            self.tarpitDrip(client: client)
+        client.send(content: partial, completion: .contentProcessed { [weak self] _ in
+            self?.tarpitDrip(client: client)
         })
     }
 
     private func tarpitDrip(client: NWConnection) {
-        DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 30) {
-            let drip = Data("1\r\n \r\n".utf8) // 1-byte chunked transfer
-            client.send(content: drip, completion: .contentProcessed { error in
+        DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard self != nil else { client.cancel(); return }
+            let drip = Data("1\r\n \r\n".utf8)
+            client.send(content: drip, completion: .contentProcessed { [weak self] error in
                 if error == nil {
-                    self.tarpitDrip(client: client) // keep dripping
+                    self?.tarpitDrip(client: client)
                 }
-                // If send fails, connection was closed by the client — let it go
             })
         }
     }

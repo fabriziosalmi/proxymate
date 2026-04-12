@@ -183,6 +183,11 @@ nonisolated final class SOCKS5Listener: @unchecked Sendable {
                     self?.pipe(from: client, to: target)
                     self?.pipe(from: target, to: client)
                 })
+                // Timeout: cancel zombie SOCKS5 sessions after 10 minutes
+                self.queue.asyncAfter(deadline: .now() + 600) {
+                    client.cancel()
+                    target.cancel()
+                }
             case .failed:
                 self.sendReply(client, rep: 0x05)
                 target.cancel()

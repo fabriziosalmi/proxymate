@@ -93,9 +93,8 @@ nonisolated final class AgentLoopBreaker: @unchecked Sendable {
     /// Returns nil if everything looks normal.
     func check(host: String, bodyData: Data?, mcpMethod: String? = nil,
                cost: Double = 0) -> LoopDetection? {
-        guard settings.enabled else { return nil }
-
         return queue.sync { () -> LoopDetection? in
+            guard settings.enabled else { return nil }
             let now = Date()
             let h = host.lowercased()
 

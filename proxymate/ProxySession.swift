@@ -234,10 +234,13 @@ final class ProxySession: @unchecked Sendable {
         isDone = true
         os_unfair_lock_unlock(&doneLock)
         guard !alreadyDone else { return }
+        // Cancel connections (thread-safe) then nil-out state on session queue
         client.cancel()
         upstream?.cancel()
-        upstream = nil
-        responseBuffer = nil
+        queue.async { [weak self] in
+            self?.upstream = nil
+            self?.responseBuffer = nil
+        }
     }
 
     deinit {

@@ -55,12 +55,11 @@ nonisolated final class BeaconingDetector: @unchecked Sendable {
     /// Record a request and check for beaconing. Returns a detection if
     /// the threshold is met.
     func record(host: String, path: String) -> Detection? {
-        guard settings.enabled else { return nil }
-
         let key = "\(host.lowercased())|\(path)"
         let now = Date()
 
         return queue.sync { () -> Detection? in
+            guard settings.enabled else { return nil }
             // Prune if trackers grow too large (prevent unbounded memory)
             if trackers.count > 10_000 { pruneTrackers() }
 

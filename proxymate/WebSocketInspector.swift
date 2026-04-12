@@ -72,6 +72,7 @@ nonisolated enum WebSocketInspector {
             offset += 4
         }
 
+        guard payloadLength <= UInt64(Int.max - offset) else { return nil }
         let totalLength = offset + Int(payloadLength)
         guard data.count >= totalLength else { return nil }
 
