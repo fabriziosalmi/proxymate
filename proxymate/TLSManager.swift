@@ -239,9 +239,9 @@ nonisolated final class TLSManager: @unchecked Sendable {
                 throw TLSError.certCreationFailed
             }
 
-            // Create PKCS12 bundle (-legacy for macOS SecPKCS12Import compatibility)
+            // Create PKCS12 bundle (LibreSSL on macOS, no -legacy flag needed)
             guard shell("/usr/bin/openssl", args: [
-                "pkcs12", "-export", "-legacy",
+                "pkcs12", "-export", "-des3",
                 "-inkey", leafKeyPath, "-in", leafCertPath,
                 "-certfile", caCertPath, "-out", leafP12Path, "-passout", "pass:proxymate"
             ]) == 0 else {
