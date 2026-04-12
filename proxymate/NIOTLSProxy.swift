@@ -159,10 +159,11 @@ private final class ConnectReceiver: ChannelInboundHandler, RemovableChannelHand
             // Remove ourselves
             context.pipeline.removeHandler(self)
         }.whenComplete { result in
-            // Re-fire the buffered ClientHello so NIOSSLServerHandler processes it
             switch result {
             case .success:
-                context.fireChannelRead(data)
+                // Re-fire ClientHello from the HEAD of the pipeline so
+                // NIOSSLServerHandler (at position .first) processes it.
+                context.channel.pipeline.fireChannelRead(data)
             case .failure(let err):
                 config.onEvent?(.log(.error, "NIO MITM pipeline setup failed \(hostname): \(err)"))
                 context.close(promise: nil)
