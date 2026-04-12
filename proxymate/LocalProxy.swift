@@ -330,8 +330,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         ) {
             switch loop.severity {
             case .warn:
-                // Log + notify but DO NOT block — zero false positive policy
-                onEvent?(.log(.warn, "LOOP WARNING [\(loop.kind.rawValue)] \(host): \(loop.detail)"))
+                // Log first warning only, suppress repeats (count changes each time)
+                if loop.count == AgentLoopBreaker.shared.settings.rapidFireThreshold {
+                    onEvent?(.log(.warn, "LOOP WARNING [\(loop.kind.rawValue)] \(host): \(loop.detail)"))
+                }
             case .block:
                 // Actually block — threshold far exceeded, definitely a loop
                 onEvent?(.log(.error, "LOOP BLOCKED [\(loop.kind.rawValue)] \(host): \(loop.detail)"))

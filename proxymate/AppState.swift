@@ -43,6 +43,8 @@ final class AppState: ObservableObject {
     @Published var localPort: UInt16?
     @Published var logs: [LogEntry] = []
     @Published var stats = Stats()
+    /// Tracks already-logged agent/AI detections to suppress repeats.
+    private var seenAgents = Set<String>()
     let timeSeries = StatsTimeSeries()
 
     nonisolated struct Stats: Sendable {
@@ -76,7 +78,7 @@ final class AppState: ObservableObject {
     private let socks5Key      = "proxymate.socks5.v1"
     private let beaconingKey   = "proxymate.beaconing.v1"
     private let c2Key          = "proxymate.c2.v1"
-    private let loopBreakerKey = "proxymate.loopbreaker.v1"
+    private let loopBreakerKey = "proxymate.loopbreaker.v2"  // v2: raised thresholds
     private let processRulesKey = "proxymate.processrules.v1"
     private let cloudSyncKey   = "proxymate.cloudsync.v1"
     private let diskCacheKey   = "proxymate.diskcache.v1"
@@ -330,7 +332,12 @@ final class AppState: ObservableObject {
         case .cacheMiss(_, _):
             stats.cacheMisses += 1
         case .agentDetected(let host, let agent, let indicator):
-            log(.info, "AGENT \(agent) \(host) [\(indicator)]", host: host)
+            // Log only first detection per agent+host (suppress repeats)
+            let key = "\(agent)|\(host)"
+            if !seenAgents.contains(key) {
+                seenAgents.insert(key)
+                log(.info, "AGENT \(agent) \(host) [\(indicator)]", host: host)
+            }
         case .mcpDetected(let host, let method):
             log(.info, "MCP \(method) → \(host)", host: host)
         case .mitmIntercepted(_):
@@ -349,7 +356,11 @@ final class AppState: ObservableObject {
                                                     severity: confidence, preview: indicator)
         case .aiDetected(let host, let provider):
             stats.aiRequests += 1
-            log(.info, "AI \(provider) \(host)", host: host)
+            let aiKey = "\(provider)|\(host)"
+            if !seenAgents.contains(aiKey) {
+                seenAgents.insert(aiKey)
+                log(.info, "AI \(provider) \(host)", host: host)
+            }
         case .aiBlocked(let host, let provider, let reason):
             stats.aiBlocked += 1
             log(.warn, "AI BLOCKED \(provider) \(host) — \(reason)", host: host)
