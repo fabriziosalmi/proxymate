@@ -10,6 +10,7 @@
 //
 
 import Foundation
+import os
 
 nonisolated final class RuleEngine: @unchecked Sendable {
 
@@ -38,22 +39,16 @@ nonisolated final class RuleEngine: @unchecked Sendable {
         )
     }
 
-    /// The current compiled snapshot. Protected by snapshotLock for atomic swap.
-    private var snapshot = Snapshot.empty
-    private let snapshotLock = NSLock()
+    /// The current compiled snapshot. Protected by lock for atomic swap.
+    /// OSAllocatedUnfairLock: fastest lock on Apple Silicon, no priority inversion.
+    private let _snapshot = OSAllocatedUnfairLock(initialState: Snapshot.empty)
 
     var compiledRuleCount: Int {
-        snapshotLock.lock()
-        let n = snapshot.ruleCount
-        snapshotLock.unlock()
-        return n
+        _snapshot.withLock { $0.ruleCount }
     }
 
     var lastCompileTimeMs: Double {
-        snapshotLock.lock()
-        let t = snapshot.compileTime * 1000
-        snapshotLock.unlock()
-        return t
+        _snapshot.withLock { $0.compileTime * 1000 }
     }
 
     // MARK: - Compile
@@ -65,15 +60,20 @@ nonisolated final class RuleEngine: @unchecked Sendable {
             guard let self else { return }
             let start = CFAbsoluteTimeGetCurrent()
 
-            var ad = Set<String>()
+            let count = rules.count
+            var ad = Set<String>(minimumCapacity: count)
             var as_ = [String]()
-            var bd = Set<String>()
+            as_.reserveCapacity(count)
+            var bd = Set<String>(minimumCapacity: count)
             var bs = [String]()
-            var bi = Set<String>()
-            var md = Set<String>()
+            bs.reserveCapacity(count)
+            var bi = Set<String>(minimumCapacity: count)
+            var md = Set<String>(minimumCapacity: count)
             var ms = [String]()
+            ms.reserveCapacity(count)
             let ac = AhoCorasick()
             var rx: [(String, NSRegularExpression)] = []
+            rx.reserveCapacity(count)
 
             for rule in rules where rule.enabled {
                 let pat = rule.pattern.lowercased()
@@ -117,9 +117,7 @@ nonisolated final class RuleEngine: @unchecked Sendable {
                 ruleCount: rules.count, compileTime: elapsed
             )
 
-            self.snapshotLock.lock()
-            self.snapshot = newSnapshot
-            self.snapshotLock.unlock()
+            self._snapshot.withLock { $0 = newSnapshot }
 
             completion?()
         }
@@ -129,10 +127,7 @@ nonisolated final class RuleEngine: @unchecked Sendable {
 
     /// Grab current snapshot for reads. Lock held only during pointer copy.
     private func current() -> Snapshot {
-        snapshotLock.lock()
-        let s = snapshot
-        snapshotLock.unlock()
-        return s
+        _snapshot.withLock { $0 }
     }
 
     /// Check if a host is allowed. O(1) for exact match, O(N) for suffix.
@@ -177,11 +172,42 @@ nonisolated final class RuleEngine: @unchecked Sendable {
         return false
     }
 
+    /// Contextual score multiplier: localhost/dev traffic gets low weight,
+    /// sensitive destinations (banks, payment) get high weight (#18).
+    private static func contextMultiplier(for host: String) -> Double {
+        let h = host.lowercased()
+        // Development / local — suppress false positives
+        if h == "localhost" || h.hasSuffix(".local") || h.hasPrefix("127.") || h.hasPrefix("192.168.") || h.hasPrefix("10.") {
+            return 0.0
+        }
+        // High-value targets — amplify detections
+        let sensitive = ["bank", "pay", "finance", "trade", "invest", "wallet", "crypto"]
+        for keyword in sensitive {
+            if h.contains(keyword) { return 2.0 }
+        }
+        return 1.0
+    }
+
     /// Check if content (target URL + headers + body) matches any content rule.
     /// Aho-Corasick for substrings, NSRegularExpression for regex rules.
-    func checkContent(target: String, headers: String, body: String = "") -> String? {
+    /// Applies double URL decoding to defeat encoding evasion attacks (#14).
+    /// Uses contextual scoring (#18): local/dev traffic suppressed, sensitive targets amplified.
+    func checkContent(target: String, headers: String, body: String = "", host: String = "") -> String? {
+        // Skip content checks entirely for local development traffic
+        if !host.isEmpty && Self.contextMultiplier(for: host) == 0.0 { return nil }
         let s = current()
-        let combined = target + "\n" + headers + "\n" + body
+        guard !s.contentAC.isEmpty || !s.regexRules.isEmpty else { return nil }
+        // Double URL-decode to catch %25-encoded attacks (e.g. %253Cscript%253E → <script>)
+        let decodedTarget = target.removingPercentEncoding?.removingPercentEncoding ?? target
+        let decodedBody = body.removingPercentEncoding?.removingPercentEncoding ?? body
+        // Single allocation: pre-compute total size, build combined string once
+        var combined = String()
+        combined.reserveCapacity(decodedTarget.count + headers.count + decodedBody.count + 2)
+        combined.append(decodedTarget)
+        combined.append("\n")
+        combined.append(headers)
+        combined.append("\n")
+        combined.append(decodedBody)
         // Aho-Corasick: O(text_length) for all substring patterns
         if let match = s.contentAC.search(combined) {
             return match.name

@@ -60,7 +60,8 @@ struct OnboardingView: View {
         }
     }
 
-    private let totalSteps = 5
+    @State private var certInstalled = false
+    private let totalSteps = 6
 
     var body: some View {
         VStack(spacing: 0) {
@@ -81,6 +82,7 @@ struct OnboardingView: View {
                 case 1: stepProxy
                 case 2: stepPrivacy
                 case 3: stepAI
+                case 4: stepCertificate
                 default: stepSummary
                 }
             }
@@ -251,7 +253,44 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Step 5: Summary
+    // MARK: - Step 5: Certificate (#37)
+
+    private var stepCertificate: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "lock.shield.fill")
+                .font(.title2).foregroundStyle(.orange)
+            Text("HTTPS Inspection").font(.headline)
+            Text("To inspect encrypted HTTPS traffic (TLS interception), Proxymate needs to install a local CA certificate. Your admin password will be requested once.")
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                .padding(.horizontal)
+
+            if certInstalled || TLSManager.shared.isCAInstalled {
+                Label("Certificate installed", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green).font(.caption)
+            } else {
+                Button("Install Certificate") {
+                    Task {
+                        do {
+                            _ = try TLSManager.shared.generateCA()
+                            TLSManager.shared.promptUserToTrust()
+                            certInstalled = true
+                        } catch {
+                            // Will be logged by TLSManager
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+            }
+
+            Text("This is optional — HTTP-only monitoring works without it. You can always set this up later in Settings.")
+                .font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center)
+                .padding(.horizontal)
+            Spacer()
+        }
+        .padding(.horizontal, 20).padding(.top, 16)
+    }
+
+    // MARK: - Step 6: Summary
 
     private var stepSummary: some View {
         VStack(spacing: 14) {

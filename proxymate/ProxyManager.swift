@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import SystemConfiguration
 
 enum ProxyManagerError: LocalizedError {
     case scriptFailed(String)
@@ -55,43 +56,16 @@ enum ProxyManager {
         try await runPrivileged(shell)
     }
 
-    /// Reads the current HTTP proxy state from the first enabled network service.
-    /// Returns nil if no proxy is set. Doesn't require admin.
+    /// Reads current HTTP proxy state via SystemConfiguration (no shell, instant).
     nonisolated static func currentProxy() async -> (host: String, port: Int)? {
         await Task.detached(priority: .utility) { () -> (String, Int)? in
-            let p = Process()
-            p.launchPath = "/bin/sh"
-            p.arguments = ["-c", "networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | head -n 1"]
-            let out = Pipe()
-            p.standardOutput = out
-            p.standardError = Pipe()
-            do { try p.run() } catch { return nil }
-            p.waitUntilExit()
-            guard let svc = String(data: out.fileHandleForReading.readDataToEndOfFile(),
-                                   encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !svc.isEmpty else { return nil }
-
-            let q = Process()
-            q.launchPath = "/usr/sbin/networksetup"
-            q.arguments = ["-getwebproxy", svc]
-            let qout = Pipe()
-            q.standardOutput = qout
-            q.standardError = Pipe()
-            do { try q.run() } catch { return nil }
-            q.waitUntilExit()
-            let raw = String(data: qout.fileHandleForReading.readDataToEndOfFile(),
-                             encoding: .utf8) ?? ""
-            var enabled = false
-            var host = ""
-            var port = 0
-            for line in raw.split(separator: "\n") {
-                let s = line.trimmingCharacters(in: .whitespaces)
-                if s.hasPrefix("Enabled:") { enabled = s.contains("Yes") }
-                else if s.hasPrefix("Server:") { host = String(s.dropFirst("Server:".count)).trimmingCharacters(in: .whitespaces) }
-                else if s.hasPrefix("Port:") { port = Int(s.dropFirst("Port:".count).trimmingCharacters(in: .whitespaces)) ?? 0 }
-            }
-            return enabled && !host.isEmpty ? (host, port) : nil
+            guard let store = SCDynamicStoreCreate(nil, "Proxymate" as CFString, nil, nil),
+                  let proxies = SCDynamicStoreCopyProxies(store) as? [String: Any] else { return nil }
+            let enabled = proxies[kSCPropNetProxiesHTTPEnable as String] as? Int ?? 0
+            guard enabled == 1 else { return nil }
+            let host = proxies[kSCPropNetProxiesHTTPProxy as String] as? String ?? ""
+            let port = proxies[kSCPropNetProxiesHTTPPort as String] as? Int ?? 0
+            return host.isEmpty ? nil : (host, port)
         }.value
     }
 

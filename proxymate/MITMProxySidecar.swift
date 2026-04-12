@@ -13,6 +13,7 @@
 
 import Foundation
 import Network
+import CommonCrypto
 
 nonisolated final class MITMProxySidecar: @unchecked Sendable {
 
@@ -23,6 +24,9 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
     private var socketListener: Int32 = -1
     private(set) var port: UInt16 = 0
     private(set) var isRunning = false
+    private var heartbeatTimer: DispatchSourceTimer?
+    /// Known SHA-256 hash of the trusted mitmdump binary (set on first verified launch).
+    private var trustedHash: String?
 
     private let socketPath: String = {
         let dir = FileManager.default.homeDirectoryForCurrentUser
@@ -46,6 +50,13 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
                 throw SidecarError.notInstalled
             }
 
+            // Verify binary integrity (supply-chain protection)
+            let currentHash = Self.sha256OfFile(atPath: path)
+            if let trusted = trustedHash, trusted != currentHash {
+                throw SidecarError.integrityFailed
+            }
+            trustedHash = currentHash
+
             // Find addon script
             let addonPath = Bundle.main.path(forResource: "proxymate_addon",
                                               ofType: "py",
@@ -66,6 +77,8 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
                 "--listen-port", "\(listenPort)",
                 "--set", "confdir=\(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".proxymate/mitmproxy-conf").path)",
                 "--ssl-insecure",  // don't verify upstream (Squid) certs
+                "--set", "connection_strategy=lazy",
+                "--set", "flow_detail=0",
                 "--quiet",
             ]
             if let addon = addonPath {
@@ -99,6 +112,7 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             process = p
             port = listenPort
             isRunning = true
+            startHeartbeat()
 
             onEvent?(.log(.info, "mitmproxy sidecar on port \(listenPort) (PID \(p.processIdentifier))"))
             return listenPort
@@ -108,6 +122,7 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
     func stop() {
         queue.async { [weak self] in
             guard let self else { return }
+            self.stopHeartbeat()
             self.process?.terminate()
             self.process = nil
             self.isRunning = false
@@ -115,6 +130,30 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             self.stopSocketListener()
             try? FileManager.default.removeItem(atPath: self.socketPath)
         }
+    }
+
+    // MARK: - Heartbeat (process liveness check)
+
+    private func startHeartbeat() {
+        stopHeartbeat()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.setEventHandler { [weak self] in
+            guard let self, let p = self.process else { return }
+            if !p.isRunning {
+                self.onEvent?(.log(.error, "mitmproxy heartbeat: process died unexpectedly"))
+                self.isRunning = false
+                self.port = 0
+                self.stopHeartbeat()
+            }
+        }
+        timer.resume()
+        heartbeatTimer = timer
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTimer?.cancel()
+        heartbeatTimer = nil
     }
 
     // MARK: - Find mitmdump
@@ -189,10 +228,12 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             }
         }
         Darwin.listen(fd, 5)
+        // Restrict socket to owner only — prevent other apps/users from sniffing IPC
+        chmod(socketPath, 0o600)
         socketListener = fd
 
-        // Accept connections in background
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        // Accept connections on high-priority thread — IPC must never compete with UI
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             self?.acceptLoop(fd: fd)
         }
     }
@@ -208,7 +249,7 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
         while true {
             let client = Darwin.accept(fd, nil, nil)
             guard client >= 0 else { break }
-            DispatchQueue.global(qos: .utility).async { [weak self] in
+            DispatchQueue.global(qos: .userInteractive).async { [weak self] in
                 self?.readEvents(fd: client)
             }
         }
@@ -233,6 +274,28 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
         }
     }
 
+    // AI provider detection table — authoritative source in Swift (#3)
+    private static let aiProviders: [(domain: String, name: String)] = [
+        ("api.openai.com", "OpenAI"),
+        ("api.anthropic.com", "Anthropic"),
+        ("generativelanguage.googleapis.com", "Google AI"),
+        ("api.mistral.ai", "Mistral"),
+        ("api.cohere.ai", "Cohere"),
+        ("api.together.xyz", "Together"),
+        ("api.groq.com", "Groq"),
+        ("api.fireworks.ai", "Fireworks"),
+        ("api.perplexity.ai", "Perplexity"),
+        ("api.deepseek.com", "DeepSeek"),
+    ]
+
+    private static func detectAI(host: String) -> String? {
+        let h = host.lowercased()
+        for (domain, name) in aiProviders {
+            if h == domain || h.hasSuffix("." + domain) { return name }
+        }
+        return nil
+    }
+
     private func processEvent(data: Data) {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = json["type"] as? String else { return }
@@ -241,26 +304,25 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
 
         switch type {
         case "request":
-            if let provider = json["ai_provider"] as? String {
+            // Swift-side AI detection: Python may or may not have detected it
+            let provider = (json["ai_provider"] as? String) ?? Self.detectAI(host: host)
+            if let provider {
                 onEvent?(.aiDetected(host: host, provider: provider))
             }
 
         case "response":
             if let usage = json["ai_usage"] as? [String: Any] {
-                let provider = usage["provider"] as? String ?? ""
+                let provider = usage["provider"] as? String ?? Self.detectAI(host: host) ?? ""
                 let model = usage["model"] as? String ?? "unknown"
                 let prompt = usage["prompt_tokens"] as? Int ?? 0
                 let completion = usage["completion_tokens"] as? Int ?? 0
-                // Simple cost estimate
                 let cost = Double(prompt + completion) * 0.000003
                 onEvent?(.aiUsage(provider: provider, model: model,
                                    promptTokens: prompt, completionTokens: completion,
                                    cost: cost))
             }
 
-            // WAF on response body
             if let preview = json["body_preview"] as? String, !preview.isEmpty {
-                // Will be checked by AppState against rules
                 onEvent?(.log(.info, "MITM response: \(host) (\(json["status"] ?? 0))"))
             }
 
@@ -271,14 +333,25 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
 
     // MARK: - Errors
 
+    // MARK: - Binary integrity
+
+    private static func sha256OfFile(atPath path: String) -> String? {
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes { CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash) }
+        return hash.map { String(format: "%02x", $0) }.joined()
+    }
+
     enum SidecarError: LocalizedError {
         case notInstalled
         case launchFailed(String)
+        case integrityFailed
 
         var errorDescription: String? {
             switch self {
             case .notInstalled: return "mitmdump not found. Install: brew install mitmproxy"
             case .launchFailed(let m): return "mitmproxy launch failed: \(m)"
+            case .integrityFailed: return "mitmdump binary hash changed — possible tampering"
             }
         }
     }

@@ -32,6 +32,7 @@ nonisolated final class DiskCache: @unchecked Sendable {
     private var settings = DiskCacheSettings()
     private var currentSizeBytes: Int64 = 0
     private var _stats = Stats()
+    private var cleanupTimer: DispatchSourceTimer?
 
     struct Stats: Sendable {
         var hits: Int = 0
@@ -156,6 +157,17 @@ nonisolated final class DiskCache: @unchecked Sendable {
         let dbPath = dir.appendingPathComponent("cache.db").path
         guard sqlite3_open(dbPath, &db) == SQLITE_OK else { return }
 
+        // Performance pragmas: WAL mode enables concurrent reads/writes,
+        // synchronous=NORMAL is safe with WAL and much faster than FULL.
+        let pragmas = """
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA wal_autocheckpoint = 1000;
+        PRAGMA mmap_size = 67108864;
+        PRAGMA page_size = 4096;
+        """
+        sqlite3_exec(db, pragmas, nil, nil, nil)
+
         let createTable = """
         CREATE TABLE IF NOT EXISTS cache (
             key TEXT PRIMARY KEY,
@@ -171,11 +183,33 @@ nonisolated final class DiskCache: @unchecked Sendable {
         """
         sqlite3_exec(db, createTable, nil, nil, nil)
         computeCurrentSize()
+        startCleanupTimer()
     }
 
     private func closeDB() {
+        cleanupTimer?.cancel()
+        cleanupTimer = nil
         if let db { sqlite3_close(db) }
         db = nil
+    }
+
+    /// Periodic cleanup: purge expired entries every hour, reclaim space.
+    private func startCleanupTimer() {
+        cleanupTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 3600, repeating: 3600)
+        timer.setEventHandler { [weak self] in
+            guard let self, self.db != nil else { return }
+            // Delete entries expired or older than 3 days
+            sqlite3_exec(self.db,
+                "DELETE FROM cache WHERE expires_at < strftime('%s','now') OR last_accessed < strftime('%s','now','-3 days')",
+                nil, nil, nil)
+            self.computeCurrentSize()
+            // Incremental vacuum to reclaim space without blocking
+            sqlite3_exec(self.db, "PRAGMA incremental_vacuum(100)", nil, nil, nil)
+        }
+        timer.resume()
+        cleanupTimer = timer
     }
 
     private func computeCurrentSize() {

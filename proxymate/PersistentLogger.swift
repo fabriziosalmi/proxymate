@@ -24,6 +24,8 @@ nonisolated final class PersistentLogger: @unchecked Sendable {
     private let maxFiles: Int = 5                      // keep 5 rotations → 10 MB total
     private var fileHandle: FileHandle?
     private var currentFileSize: Int = 0
+    private var buffer: [LogEntry] = []
+    private var flushTimer: DispatchSourceTimer?
 
     init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -33,31 +35,55 @@ nonisolated final class PersistentLogger: @unchecked Sendable {
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
         openCurrentFile()
+        startFlushTimer()
     }
 
-    // MARK: - Write
+    // MARK: - Write (batched)
 
     func write(_ entry: LogEntry) {
         queue.async { [weak self] in
             guard let self else { return }
 
-            // OSLog mirror
+            // OSLog mirror (immediate — survives crashes)
             switch entry.level {
             case .info:  self.osLog.info("\(entry.message, privacy: .public)")
             case .warn:  self.osLog.warning("\(entry.message, privacy: .public)")
             case .error: self.osLog.error("\(entry.message, privacy: .public)")
             }
 
-            // JSONL
-            guard var data = try? self.encoder.encode(entry) else { return }
-            data.append(contentsOf: "\n".utf8)
-            self.fileHandle?.write(data)
-            self.currentFileSize += data.count
+            // Buffer for batch JSONL write
+            self.buffer.append(entry)
 
-            if self.currentFileSize >= self.maxFileSize {
-                self.rotate()
+            // Flush immediately on errors or when buffer is large
+            if entry.level == .error || self.buffer.count >= 50 {
+                self.flushBuffer()
             }
         }
+    }
+
+    private func flushBuffer() {
+        // Must be called on self.queue
+        guard !buffer.isEmpty else { return }
+        var batchData = Data()
+        batchData.reserveCapacity(buffer.count * 200) // ~200 bytes per entry estimate
+        for entry in buffer {
+            if var data = try? encoder.encode(entry) {
+                data.append(contentsOf: "\n".utf8)
+                batchData.append(data)
+            }
+        }
+        buffer.removeAll(keepingCapacity: true)
+        fileHandle?.write(batchData)
+        currentFileSize += batchData.count
+        if currentFileSize >= maxFileSize { rotate() }
+    }
+
+    private func startFlushTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 0.5, repeating: 0.5)
+        timer.setEventHandler { [weak self] in self?.flushBuffer() }
+        timer.resume()
+        flushTimer = timer
     }
 
     // MARK: - Read persisted logs (called from MainActor, executes on queue)

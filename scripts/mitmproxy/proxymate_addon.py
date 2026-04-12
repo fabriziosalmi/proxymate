@@ -12,19 +12,26 @@ Events sent:
 
 import json
 import os
+import signal
 import socket
+import sys
 import threading
 from mitmproxy import http, ctx
 
 SOCKET_PATH = os.path.expanduser("~/.proxymate/mitm.sock")
 MAX_BODY_SIZE = 2 * 1024 * 1024  # 2 MB max for body inspection
+# Full packet capture: set via env var or config file. Default OFF to save storage.
+FULL_CAPTURE = os.environ.get("PROXYMATE_FULL_CAPTURE", "0") == "1"
+BODY_PREVIEW_SIZE = MAX_BODY_SIZE if FULL_CAPTURE else 4096
 
 
 class ProxymateAddon:
     def __init__(self):
         self.sock = None
         self.lock = threading.Lock()
+        self._parent_pid = os.getppid()
         self._connect()
+        self._start_orphan_watchdog()
 
     def _connect(self):
         """Connect to Proxymate Unix socket."""
@@ -40,6 +47,19 @@ class ProxymateAddon:
         except Exception as e:
             ctx.log.warn(f"[proxymate] Socket connect failed: {e}")
             self.sock = None
+
+    def _start_orphan_watchdog(self):
+        """Kill ourselves if parent (Proxymate.app) dies — avoid orphaned proxy."""
+        def _watch():
+            while True:
+                threading.Event().wait(timeout=3)
+                try:
+                    os.kill(self._parent_pid, 0)  # signal 0 = check existence
+                except OSError:
+                    ctx.log.warn("[proxymate] Parent process gone — shutting down")
+                    os._exit(0)
+        t = threading.Thread(target=_watch, daemon=True)
+        t.start()
 
     def _send(self, event: dict):
         """Send event to Proxymate (fire-and-forget)."""
@@ -105,9 +125,9 @@ class ProxymateAddon:
             if usage:
                 event["ai_usage"] = usage
 
-        # WAF content inspection on response body
+        # WAF content inspection on response body (size controlled by FULL_CAPTURE)
         if resp.content and len(resp.content) < MAX_BODY_SIZE:
-            event["body_preview"] = resp.content[:4096].decode("utf-8", errors="replace")
+            event["body_preview"] = resp.content[:BODY_PREVIEW_SIZE].decode("utf-8", errors="replace")
 
         self._send(event)
 

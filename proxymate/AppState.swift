@@ -6,6 +6,7 @@
 import Foundation
 import Combine
 import SwiftUI
+import IOKit.ps
 
 @MainActor
 final class AppState: ObservableObject {
@@ -38,6 +39,8 @@ final class AppState: ObservableObject {
     @Published var blacklistSources: [BlacklistSource] = []
     @Published var exfiltrationPacks: [ExfiltrationPack] = []
     @Published var selectedProxyID: ProxyConfig.ID?
+    @Published var wafShadowMode: Bool = false
+    @Published var isLowPowerMode: Bool = false
     @Published var isEnabled: Bool = false
     @Published var isBusy: Bool = false
     @Published var localPort: UInt16?
@@ -112,7 +115,19 @@ final class AppState: ObservableObject {
             exfiltrationPacks = ExfiltrationPack.builtIn
         }
         log(.info, "Proxymate ready")
+
+        // Check CA certificate expiry (#43)
+        if let days = TLSManager.shared.caExpiryDays(), days < 30 {
+            if days <= 0 {
+                log(.error, "CA certificate has EXPIRED — regenerate to continue MITM interception")
+            } else {
+                log(.warn, "CA certificate expires in \(days) days — consider regenerating soon")
+            }
+        }
+
         NotificationManager.shared.setup()
+        startBatteryMonitor()
+        registerMemoryPressureHandler()
 
         // Configure pool router
         PoolRouter.shared.configure(pools: pools, overrides: poolOverrides)
@@ -384,6 +399,50 @@ final class AppState: ObservableObject {
             log(level, message)
         }
         syncMetricsSnapshot()
+    }
+
+    // MARK: - Memory Pressure (#40)
+
+    private func registerMemoryPressureHandler() {
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.log(.warn, "Memory pressure detected — flushing caches")
+            CacheManager.shared.purgeAll()
+            DiskCache.shared.purgeAll()
+        }
+        source.resume()
+    }
+
+    // MARK: - Battery Monitor (#41)
+
+    private func startBatteryMonitor() {
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkBattery() }
+        }
+    }
+
+    private func checkBattery() {
+        let ps = IOPSCopyPowerSourcesInfo()?.takeRetainedValue()
+        let sources = IOPSCopyPowerSourcesList(ps)?.takeRetainedValue() as? [CFTypeRef] ?? []
+        for source in sources {
+            guard let desc = IOPSGetPowerSourceDescription(ps, source)?.takeUnretainedValue() as? [String: Any],
+                  let capacity = desc[kIOPSCurrentCapacityKey] as? Int,
+                  let isCharging = desc[kIOPSIsChargingKey] as? Bool else { continue }
+            let wasLow = isLowPowerMode
+            isLowPowerMode = capacity < 10 && !isCharging
+            if isLowPowerMode && !wasLow {
+                log(.warn, "Low battery (\(capacity)%) — suspending heavy logging and process resolution")
+            } else if !isLowPowerMode && wasLow {
+                log(.info, "Battery OK — resuming full operation")
+            }
+        }
+    }
+
+    // MARK: - Shadow Mode
+
+    func syncShadowMode() {
+        if isEnabled { localProxy.updateShadowMode(wafShadowMode) }
     }
 
     // MARK: - Privacy
@@ -716,6 +775,7 @@ final class AppState: ObservableObject {
         localProxy.updateRules(rules)
         localProxy.updateAllowlist(allowlist)
         localProxy.updateBlacklistSources(blacklistSources)
+        localProxy.updateShadowMode(wafShadowMode)
         socks5Listener.updateRules(rules)
         socks5Listener.updateAllowlist(allowlist)
         socks5Listener.updateBlacklists(blacklistSources)

@@ -8,6 +8,46 @@
 //
 
 import Foundation
+import os
+
+/// Probabilistic set for O(1) domain pre-filtering. False positives OK (verified by Set),
+/// false negatives impossible. Uses ~1.2 MB for 1M entries at 1% FP rate.
+private struct BloomFilter: Sendable {
+    private var bits: [UInt64]
+    private let bitCount: Int
+    private let hashCount: Int
+
+    init(expectedCount: Int, fpRate: Double = 0.01) {
+        let m = max(64, Int(Double(-expectedCount) * log(fpRate) / (log(2) * log(2))))
+        bitCount = m
+        bits = [UInt64](repeating: 0, count: (m + 63) / 64)
+        hashCount = max(1, Int(Double(m) / Double(max(1, expectedCount)) * log(2)))
+    }
+
+    mutating func insert(_ item: String) {
+        for i in 0..<hashCount {
+            let idx = hash(item, seed: UInt64(i)) % bitCount
+            bits[idx / 64] |= 1 << (idx % 64)
+        }
+    }
+
+    func mightContain(_ item: String) -> Bool {
+        for i in 0..<hashCount {
+            let idx = hash(item, seed: UInt64(i)) % bitCount
+            if bits[idx / 64] & (1 << (idx % 64)) == 0 { return false }
+        }
+        return true
+    }
+
+    private func hash(_ s: String, seed: UInt64) -> Int {
+        var h = seed &+ 0xcbf29ce484222325
+        for byte in s.utf8 {
+            h ^= UInt64(byte)
+            h = h &* 0x100000001b3
+        }
+        return Int(h & 0x7FFFFFFFFFFFFFFF)
+    }
+}
 
 nonisolated final class BlacklistManager: @unchecked Sendable {
 
@@ -20,8 +60,10 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
     private var domainSets: [UUID: Set<String>] = [:]
     /// IP → set of source IDs that block it
     private var ipSets: [UUID: Set<String>] = [:]
-    /// Lock for reading domainSets/ipSets from non-queue threads.
-    private let setsLock = NSLock()
+    /// Bloom filter for fast negative lookups across all domain sets
+    private var bloomFilter = BloomFilter(expectedCount: 1024)
+    /// os_unfair_lock: fastest lock on Apple Silicon, no priority inversion.
+    private var setsLock = os_unfair_lock()
 
     /// URLSession that bypasses system proxy (avoids circular dependency).
     private let directSession: URLSession = {
@@ -46,12 +88,16 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
     }
 
     /// Check if a host (domain or IP) is in any enabled blacklist.
+    /// Bloom filter provides O(1) fast-reject for the common case (not blocked).
     func lookup(host: String, enabledSources: [BlacklistSource]) -> BlockResult? {
         let h = host.lowercased()
-        setsLock.lock()
+        os_unfair_lock_lock(&setsLock)
+        let bloom = bloomFilter
         let domains = domainSets
         let ips = ipSets
-        setsLock.unlock()
+        os_unfair_lock_unlock(&setsLock)
+        // Fast path: bloom filter says "definitely not in any list"
+        if !bloom.mightContain(h) { return nil }
         for source in enabledSources where source.enabled {
             if let d = domains[source.id] {
                 if d.contains(h) || Self.matchesParentDomain(h, in: d) {
@@ -106,14 +152,15 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
                     let entries = Self.parse(text: text, format: source.format)
                     let count = entries.domains.count + entries.ips.count
 
-                    self.setsLock.lock()
+                    os_unfair_lock_lock(&self.setsLock)
                     if !entries.domains.isEmpty {
                         self.domainSets[source.id] = entries.domains
                     }
                     if !entries.ips.isEmpty {
                         self.ipSets[source.id] = entries.ips
                     }
-                    self.setsLock.unlock()
+                    self.rebuildBloomFilter()
+                    os_unfair_lock_unlock(&self.setsLock)
 
                     // Cache to disk
                     self.saveToDisk(source: source, entries: entries)
@@ -135,28 +182,39 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
         }
     }
 
+    /// Rebuild bloom filter from all domain sets. Must be called with setsLock held.
+    private func rebuildBloomFilter() {
+        let totalCount = domainSets.values.reduce(0) { $0 + $1.count }
+        var bloom = BloomFilter(expectedCount: max(1024, totalCount))
+        for set in domainSets.values {
+            for domain in set { bloom.insert(domain) }
+        }
+        bloomFilter = bloom
+    }
+
     func clearSource(_ id: UUID) {
         queue.async { [weak self] in
-            self?.setsLock.lock()
-            self?.domainSets.removeValue(forKey: id)
-            self?.ipSets.removeValue(forKey: id)
-            self?.setsLock.unlock()
+            guard let self else { return }
+            os_unfair_lock_lock(&self.setsLock)
+            self.domainSets.removeValue(forKey: id)
+            self.ipSets.removeValue(forKey: id)
+            os_unfair_lock_unlock(&self.setsLock)
         }
     }
 
     func entryCount(for id: UUID) -> Int {
-        setsLock.lock()
+        os_unfair_lock_lock(&setsLock)
         let n = (domainSets[id]?.count ?? 0) + (ipSets[id]?.count ?? 0)
-        setsLock.unlock()
+        os_unfair_lock_unlock(&setsLock)
         return n
     }
 
     /// Total entries across all sources (may include duplicates across sources).
     var totalEntries: Int {
-        setsLock.lock()
+        os_unfair_lock_lock(&setsLock)
         let n = domainSets.values.reduce(0) { $0 + $1.count } +
                 ipSets.values.reduce(0) { $0 + $1.count }
-        setsLock.unlock()
+        os_unfair_lock_unlock(&setsLock)
         return n
     }
 
@@ -254,10 +312,11 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
         let entries = Self.parse(text: text, format: .plainDomains) // cached as plain list
         // Also try IPs
         let ipEntries = Self.parse(text: text, format: .plainIPs)
-        setsLock.lock()
+        os_unfair_lock_lock(&setsLock)
         if !entries.domains.isEmpty { domainSets[source.id] = entries.domains }
         if !ipEntries.ips.isEmpty { ipSets[source.id] = ipEntries.ips }
-        setsLock.unlock()
+        rebuildBloomFilter()
+        os_unfair_lock_unlock(&setsLock)
         return entries.domains.count + ipEntries.ips.count
     }
 

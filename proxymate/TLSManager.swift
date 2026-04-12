@@ -64,6 +64,28 @@ nonisolated final class TLSManager: @unchecked Sendable {
         FileManager.default.fileExists(atPath: caCertPath)
     }
 
+    /// Check CA cert expiry. Returns days until expiration, or nil if cert not found.
+    func caExpiryDays() -> Int? {
+        guard isCAInstalled else { return nil }
+        let pipe = Pipe()
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/openssl")
+        p.arguments = ["x509", "-enddate", "-noout", "-in", caCertPath]
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do { try p.run() } catch { return nil }
+        p.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        // Format: notAfter=Mar 15 12:00:00 2035 GMT
+        guard let dateStr = output.split(separator: "=").last?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "MMM dd HH:mm:ss yyyy 'GMT'"
+        fmt.timeZone = TimeZone(identifier: "GMT")
+        guard let expiry = fmt.date(from: dateStr) ?? fmt.date(from: String(dateStr)) else { return nil }
+        return Calendar.current.dateComponents([.day], from: Date(), to: expiry).day
+    }
+
     /// Generate a new root CA. Key stays on disk, cert goes to Keychain for trust.
     func generateCA() throws -> SecCertificate {
         try queue.sync {

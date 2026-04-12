@@ -123,6 +123,20 @@ struct ContentView: View {
             if state.isBusy {
                 ProgressView().controlSize(.small)
             }
+            // Emergency killswitch: instantly stops everything (#38)
+            if state.isEnabled {
+                Button {
+                    Task { await state.disable() }
+                } label: {
+                    Image(systemName: "power")
+                        .font(.caption.bold())
+                        .foregroundStyle(.white)
+                        .frame(width: 22, height: 22)
+                        .background(Color.red, in: RoundedRectangle(cornerRadius: 5))
+                }
+                .buttonStyle(.plain)
+                .help("KILLSWITCH — immediately stop proxy and restore network")
+            }
             Toggle("", isOn: Binding(
                 get: { state.isEnabled },
                 set: { _ in Task { await state.toggle() } }
@@ -663,13 +677,14 @@ struct AddProxySheet: View {
 struct LogsView: View {
     @EnvironmentObject var state: AppState
     @State private var search = ""
+    @State private var debouncedSearch = ""
     @State private var levelFilter: LogEntry.Level?
 
     private var filteredLogs: [LogEntry] {
         state.logs.filter { entry in
             if let lf = levelFilter, entry.level != lf { return false }
-            if search.isEmpty { return true }
-            let q = search.lowercased()
+            if debouncedSearch.isEmpty { return true }
+            let q = debouncedSearch.lowercased()
             return entry.message.lowercased().contains(q) ||
                    entry.host.lowercased().contains(q)
         }
@@ -729,7 +744,7 @@ struct LogsView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(filteredLogs.reversed()) { entry in
-                            LogRow(entry: entry)
+                            EquatableView(content: LogRow(entry: entry))
                                 .contextMenu {
                                     if !entry.host.isEmpty {
                                         Button("Block \(entry.host)") {
@@ -752,6 +767,19 @@ struct LogsView: View {
                                         NSPasteboard.general.clearContents()
                                         NSPasteboard.general.setString(entry.message, forType: .string)
                                     }
+                                    Button("Copy as JSON") {
+                                        let obj: [String: Any] = [
+                                            "timestamp": ISO8601DateFormatter().string(from: entry.timestamp),
+                                            "level": entry.level.rawValue,
+                                            "host": entry.host,
+                                            "message": entry.message,
+                                        ]
+                                        if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
+                                           let str = String(data: data, encoding: .utf8) {
+                                            NSPasteboard.general.clearContents()
+                                            NSPasteboard.general.setString(str, forType: .string)
+                                        }
+                                    }
                                 }
                         }
                     }
@@ -771,16 +799,25 @@ struct LogsView: View {
             }
             .padding(8)
         }
+        .task(id: search) {
+            try? await Task.sleep(for: .milliseconds(300))
+            if !Task.isCancelled { debouncedSearch = search }
+        }
     }
 }
 
-struct LogRow: View {
+struct LogRow: View, Equatable {
     let entry: LogEntry
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
         return f
     }()
+
+    static func == (lhs: LogRow, rhs: LogRow) -> Bool {
+        lhs.entry.id == rhs.entry.id
+    }
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(Self.formatter.string(from: entry.timestamp))
@@ -1102,6 +1139,12 @@ struct WAFRulesSection: View {
                 Button("Import") { showingImport = true }
                     .buttonStyle(.borderless).foregroundStyle(.secondary)
                 Spacer()
+                Toggle("Shadow", isOn: Binding(
+                    get: { state.wafShadowMode },
+                    set: { state.wafShadowMode = $0; state.syncShadowMode() }
+                ))
+                .toggleStyle(.switch).controlSize(.mini)
+                .help("Shadow mode: log blocks without enforcing (dry run)")
                 Text(verbatim: "\(state.rules.filter(\.enabled).count) / \(state.rules.count)")
                     .font(.caption).foregroundStyle(.secondary)
             }

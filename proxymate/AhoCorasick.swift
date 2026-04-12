@@ -20,6 +20,7 @@ nonisolated final class AhoCorasick: @unchecked Sendable {
 
     private var nodes: [Node] = [Node()]  // index 0 = root
     private var compiled = false
+    var isEmpty: Bool { patternCount == 0 }
 
     // MARK: - Build
 

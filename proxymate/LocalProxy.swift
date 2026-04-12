@@ -65,6 +65,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     private var privacySnapshot = PrivacySettings()
     private var blacklistSourcesSnapshot: [BlacklistSource] = []
     private var mitmSnapshot = MITMSettings()
+    private var wafShadowMode = false
     private var beaconingSettings = BeaconingSettings()
     private var c2Settings = C2Settings()
     private let ruleEngine = RuleEngine()
@@ -163,6 +164,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     func updateMITM(_ settings: MITMSettings) {
         queue.async { [weak self] in self?.mitmSnapshot = settings }
+    }
+
+    func updateShadowMode(_ enabled: Bool) {
+        queue.async { [weak self] in self?.wafShadowMode = enabled }
     }
 
     private func handleListenerState(_ state: NWListener.State, listener: NWListener) {
@@ -276,25 +281,38 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         }
 
         // WAF check: RuleEngine fast path (Set for domains/IPs, then content)
+        // In shadow mode, log detections but allow traffic through (dry run / audit).
         if !isAllowed {
             if let blockReason = ruleEngine.checkBlock(host: host) {
-                onEvent?(.blocked(host: host, ruleName: blockReason))
-                sendBlockedResponse(client: client, ruleName: blockReason)
-                return
+                if wafShadowMode {
+                    onEvent?(.log(.warn, "SHADOW block: \(host) — \(blockReason)"))
+                } else {
+                    onEvent?(.blocked(host: host, ruleName: blockReason))
+                    sendBlockedResponse(client: client, ruleName: blockReason)
+                    return
+                }
             }
             let bodyStr = leftover.isEmpty ? "" : (String(data: leftover.prefix(8192), encoding: .utf8) ?? "")
-            if let contentReason = ruleEngine.checkContent(target: target, headers: headerString, body: bodyStr) {
-                onEvent?(.blocked(host: host, ruleName: contentReason))
-                sendBlockedResponse(client: client, ruleName: contentReason)
-                return
+            if let contentReason = ruleEngine.checkContent(target: target, headers: headerString, body: bodyStr, host: host) {
+                if wafShadowMode {
+                    onEvent?(.log(.warn, "SHADOW content: \(host) — \(contentReason)"))
+                } else {
+                    onEvent?(.blocked(host: host, ruleName: contentReason))
+                    sendBlockedResponse(client: client, ruleName: contentReason)
+                    return
+                }
             }
         }
 
         // Blacklist check (skipped if explicitly allowed)
         if !isAllowed, let hit = BlacklistManager.shared.lookup(host: host, enabledSources: blacklistSourcesSnapshot) {
-            onEvent?(.blacklisted(host: host, sourceName: hit.sourceName, category: hit.category.rawValue))
-            sendBlockedResponse(client: client, ruleName: "\(hit.sourceName) [\(hit.category.rawValue)]")
-            return
+            if wafShadowMode {
+                onEvent?(.log(.warn, "SHADOW blacklist: \(host) — \(hit.sourceName) [\(hit.category.rawValue)]"))
+            } else {
+                onEvent?(.blacklisted(host: host, sourceName: hit.sourceName, category: hit.category.rawValue))
+                sendBlockedResponse(client: client, ruleName: "\(hit.sourceName) [\(hit.category.rawValue)]")
+                return
+            }
         }
 
         // DNS-level blocking: check cached DNS only (never blocks).
@@ -316,7 +334,12 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         if let hit = ExfiltrationScanner.shared.scan(headers: headerString, target: target) {
             onEvent?(.exfiltration(host: host, patternName: hit.patternName,
                                    severity: hit.severity.rawValue, preview: hit.matchPreview))
-            sendBlockedResponse(client: client, ruleName: "Exfiltration: \(hit.patternName)")
+            // Tarpit high-severity exfiltration — hold connection indefinitely
+            if hit.severity == .critical || hit.severity == .high {
+                sendTarpitResponse(client: client)
+            } else {
+                sendBlockedResponse(client: client, ruleName: "Exfiltration: \(hit.patternName)")
+            }
             return
         }
 
@@ -707,6 +730,29 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         client.send(content: data, completion: .contentProcessed { _ in
             client.cancel()
         })
+    }
+
+    /// Tarpit: hold the connection open indefinitely instead of returning 403.
+    /// Malicious apps won't detect they've been blocked — they'll just hang.
+    private func sendTarpitResponse(client: NWConnection) {
+        // Send a minimal HTTP header that keeps the connection alive, then never finish
+        let partial = Data("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n".utf8)
+        client.send(content: partial, completion: .contentProcessed { _ in
+            // Schedule a 1-byte drip every 30 seconds to keep connection alive
+            self.tarpitDrip(client: client)
+        })
+    }
+
+    private func tarpitDrip(client: NWConnection) {
+        DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 30) {
+            let drip = Data("1\r\n \r\n".utf8) // 1-byte chunked transfer
+            client.send(content: drip, completion: .contentProcessed { error in
+                if error == nil {
+                    self.tarpitDrip(client: client) // keep dripping
+                }
+                // If send fails, connection was closed by the client — let it go
+            })
+        }
     }
 
     /// Stealth mock: return fake 200 OK so the tracker thinks it succeeded.
