@@ -47,9 +47,10 @@ nonisolated final class MITMHandler: @unchecked Sendable {
     fileprivate let handlerID: Int
 
     /// Dedicated serial queue — ALL SSLContext operations happen here.
-    /// Each handler gets its own queue so concurrent MITM sessions never
-    /// interleave SSLContext calls.
     private let handlerQueue: DispatchQueue
+
+    /// Server-side NWConnection (to real upstream). Stored for cleanup.
+    private var serverConn: NWConnection?
 
     fileprivate var readBuffer = Data()
     fileprivate let readLock = NSLock()
@@ -358,6 +359,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { done(ssl: ssl); return }
 
         let server = NWConnection(host: .init(hostname), port: nwPort, using: params)
+        self.serverConn = server
         server.stateUpdateHandler = { [weak self] state in
             guard let self, !self.checkDone() else { server.cancel(); return }
             switch state {
@@ -640,6 +642,8 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         // takeUnretainedValue so Swift ARC won't double-release).
         MITMClose(ssl.ctx)
         clientConn.cancel()
+        serverConn?.cancel()
+        serverConn = nil
         releaseHandshakeSemaphore()
     }
 
@@ -654,6 +658,8 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         handlersLock.unlock()
 
         clientConn.cancel()
+        serverConn?.cancel()
+        serverConn = nil
         releaseHandshakeSemaphore()
     }
 

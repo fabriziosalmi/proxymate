@@ -16,8 +16,8 @@ nonisolated struct MITMSettings: Codable, Hashable, Sendable {
     var enabled: Bool = false
     var interceptHosts: [String] = []
     var excludeHosts: [String] = [
-        "*.apple.com", "*.icloud.com",
-        "*.googleapis.com",
+        "*.apple.com", "*.icloud.com", "*.apple-cloudkit.com",
+        "*.googleapis.com", "*.gstatic.com", "*.googleusercontent.com",
         "*.banking.*", "*.bank.*",
         // Mozilla services
         "*.firefox.com", "*.mozilla.com", "*.mozilla.org",
@@ -25,6 +25,8 @@ nonisolated struct MITMSettings: Codable, Hashable, Sendable {
         "*.whatsapp.net", "*.whatsapp.com",
         "*.signal.org", "*.signal.com",
         "*.telegram.org",
+        // Analytics/CDN (cert-pinned, no value in intercepting)
+        "*.datadoghq.com",
     ]
     // WebSocket hosts are auto-excluded at runtime when detected
     // (see MITMHandler.processRequest WebSocket upgrade detection)
