@@ -125,7 +125,9 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                 cleanup()
                 return
             }
-            let ctx = ctxUnmanaged.takeRetainedValue()
+            // takeUnretainedValue: MITMClose owns the CFRelease, not Swift ARC.
+            // Using takeRetainedValue caused double-free (ARC + MITMClose both release).
+            let ctx = ctxUnmanaged.takeUnretainedValue()
 
             var cert: SecCertificate?
             SecIdentityCopyCertificate(identity, &cert)
@@ -628,19 +630,17 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         isDone = true
         doneLock.unlock()
 
-        // Unregister from handler registry FIRST — this makes IO callbacks
-        // return errSSLClosedAbort instead of accessing the SSLContext.
-        // Must happen before MITMClose to prevent use-after-free.
+        // Unregister from handler registry FIRST — IO callbacks will
+        // find no handler and return errSSLClosedAbort.
         handlersLock.lock()
         activeHandlers.removeValue(forKey: handlerID)
         handlersLock.unlock()
 
-        // Small delay to let in-flight IO callbacks drain before CFRelease.
-        handlerQueue.asyncAfter(deadline: .now() + 0.05) { [self] in
-            MITMClose(ssl.ctx)
-            clientConn.forceCancel()
-            releaseHandshakeSemaphore()
-        }
+        // MITMClose does SSLClose + CFRelease (single owner — we used
+        // takeUnretainedValue so Swift ARC won't double-release).
+        MITMClose(ssl.ctx)
+        clientConn.forceCancel()
+        releaseHandshakeSemaphore()
     }
 
     /// Cleanup for early exit paths (before SSLContext is created).
