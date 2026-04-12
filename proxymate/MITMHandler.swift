@@ -213,7 +213,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             switch Int32(status) {
             case errSecSuccess:
                 self.releaseHandshakeSemaphore()
-                self.onEvent?(.log(.info, "MITM TLS OK: \(self.hostname) (\(self.handshakeRetries) retries)"))
+                // TLS OK — no log needed, success is the norm
                 self.readDecrypted(ssl: ssl)
 
             case errSSLWouldBlock:
@@ -234,7 +234,10 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                     self.onEvent?(.log(.warn, "MITM: cert pinning detected for \(self.hostname), auto-excluding"))
                     TLSManager.shared.addRuntimeExclude(host: self.hostname)
                 } else {
-                    self.onEvent?(.log(.info, "MITM: handshake failed for \(self.hostname) (status: \(status), count: \(TLSManager.shared.failureCount(for: self.hostname)))"))
+                    // Only log on first failure, not every retry
+                    if TLSManager.shared.failureCount(for: self.hostname) == 1 {
+                        self.onEvent?(.log(.info, "MITM: handshake failed for \(self.hostname) (status: \(status))"))
+                    }
                 }
                 self.done(ssl: ssl)
 
@@ -300,6 +303,17 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         let parts = (text.split(separator: "\r\n").first ?? "").split(separator: " ", maxSplits: 2)
         let method = parts.count > 0 ? String(parts[0]) : "?"
         let target = parts.count > 1 ? String(parts[1]) : "/"
+
+        // WebSocket upgrade — log the FQDN but don't keep MITM active
+        // (SSLContext crashes on long-lived bidirectional streams)
+        if WebSocketInspector.isUpgradeRequest(text) {
+            onEvent?(.log(.info, "WebSocket upgrade: \(hostname)\(target)"))
+            // Auto-exclude from future MITM to avoid repeated handshake overhead
+            TLSManager.shared.addRuntimeExclude(host: hostname)
+            // Forward the upgrade request then close MITM gracefully
+            forwardToServer(requestData: data, ssl: ssl)
+            return
+        }
 
         if let hit = rules.first(where: {
             $0.enabled && LocalProxy.matches(rule: $0, host: hostname, target: target, headers: text)
@@ -392,7 +406,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
 
                     // Switch to streaming if buffer exceeds cap
                     if responseBuffer.count > Self.maxResponseBuffer {
-                        self.onEvent?(.log(.info, "MITM: response too large for \(self.hostname), streaming without inspection"))
+                        // Large response — stream without WAF. No log (routine for media/downloads).
                         // Flush what we have (headers already parsed, send as-is)
                         self.sendEncrypted(ssl: ssl, data: responseBuffer)
                         responseBuffer = Data()
@@ -485,7 +499,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         if let encoding = BodyDecompressor.extractContentEncoding(headerString) {
             let (decompressed, wasCompressed) = BodyDecompressor.decompress(Data(bodyData), encoding: encoding)
             if wasCompressed {
-                onEvent?(.log(.info, "MITM: decompressed \(encoding) body for \(hostname) (\(bodyData.count) -> \(decompressed.count) bytes)"))
+                // Decompression succeeded — no log (routine)
             }
             inspectionBody = decompressed
         } else {

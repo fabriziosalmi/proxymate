@@ -301,10 +301,10 @@ final class AppState: ObservableObject {
             log(.info, "Local proxy listening on 127.0.0.1:\(port)")
         case .stopped:
             log(.info, "Local proxy stopped")
-        case .allowed(let host, let method):
+        case .allowed(_, _):
             stats.requestsAllowed += 1
             timeSeries.recordAllowed()
-            log(.info, "\(method) \(host)", host: host)
+            // No log — allowed requests are the norm, not worth logging individually
         case .blocked(let host, let ruleName):
             stats.requestsBlocked += 1
             timeSeries.recordBlocked()
@@ -322,21 +322,20 @@ final class AppState: ObservableObject {
             log(.error, "EXFILTRATION [\(severity)] \(patternName) → \(host) | \(preview)", host: host)
             NotificationManager.shared.notifyExfiltration(host: host, patternName: patternName)
             WebhookManager.shared.sendExfiltration(host: host, patternName: patternName, severity: severity, preview: preview)
-        case .privacyStripped(let host, let actions):
+        case .privacyStripped(_, _):
             stats.privacyActions += 1
-            log(.info, "Privacy [\(actions.joined(separator: ", "))] \(host)", host: host)
-        case .cacheHit(let host, _):
+            // No log — privacy stripping is routine
+        case .cacheHit(_, _):
             stats.cacheHits += 1
-            log(.info, "CACHE HIT \(host)", host: host)
         case .cacheMiss(_, _):
             stats.cacheMisses += 1
         case .agentDetected(let host, let agent, let indicator):
             log(.info, "AGENT \(agent) \(host) [\(indicator)]", host: host)
         case .mcpDetected(let host, let method):
             log(.info, "MCP \(method) → \(host)", host: host)
-        case .mitmIntercepted(let host):
+        case .mitmIntercepted(_):
             stats.mitmIntercepted += 1
-            log(.info, "MITM \(host)", host: host)
+            // No log — MITM interception is routine when enabled
         case .beaconing(let host, let path, let interval, let count):
             stats.beaconingAlerts += 1
             log(.warn, "BEACONING \(host)\(path) every \(Int(interval))s (\(count)x)", host: host)

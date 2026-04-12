@@ -21,11 +21,13 @@ nonisolated struct MITMSettings: Codable, Hashable, Sendable {
         "*.banking.*", "*.bank.*",
         // Mozilla services
         "*.firefox.com", "*.mozilla.com", "*.mozilla.org",
-        // Cert-pinned apps (crash or reject MITM certs)
+        // Cert-pinned apps
         "*.whatsapp.net", "*.whatsapp.com",
         "*.signal.org", "*.signal.com",
         "*.telegram.org",
     ]
+    // WebSocket hosts are auto-excluded at runtime when detected
+    // (see MITMHandler.processRequest WebSocket upgrade detection)
     var caInstalled: Bool = false
 }
 
