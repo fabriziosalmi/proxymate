@@ -53,6 +53,10 @@ nonisolated final class MITMHandler: @unchecked Sendable {
     /// Whether we acquired the semaphore (must release exactly once).
     private var acquiredSemaphore = false
 
+    /// Request features for threat scoring (set in processRequest, used in inspectResponse).
+    private var requestFeatures: FeatureExtractor.RequestFeatures?
+    private var requestStartTime = Date()
+
     init(clientConn: NWConnection, hostname: String, port: UInt16,
          rules: [WAFRule], privacy: PrivacySettings,
          onEvent: (@Sendable (LocalProxy.Event) -> Void)?) {
@@ -281,6 +285,11 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             done(ctx: ctx); return
         }
 
+        // Extract request features for threat scoring
+        requestFeatures = FeatureExtractor.extractRequest(
+            host: hostname, target: target, headers: text, bodySize: data.count)
+        requestStartTime = Date()
+
         var finalData = data
         let (rewritten, actions) = LocalProxy.applyPrivacy(headerString: text, settings: privacy)
         if !actions.isEmpty {
@@ -424,7 +433,9 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         receiveChunk()
     }
 
-    /// Inspect response body for WAF rules (Block Content on responses)
+    /// Inspect response body for WAF rules (Block Content on responses).
+    /// Decompresses gzip/deflate bodies for inspection, but forwards the
+    /// original compressed body to the client (no re-compression needed).
     private func inspectResponse(_ responseData: Data) -> Data {
         guard let headerEnd = responseData.range(of: Data("\r\n\r\n".utf8)) else {
             return responseData
@@ -437,8 +448,20 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             return responseData
         }
 
-        // Check content WAF rules on response body
-        if let bodyString = String(data: bodyData, encoding: .utf8) {
+        // Decompress body if Content-Encoding is present
+        let inspectionBody: Data
+        if let encoding = BodyDecompressor.extractContentEncoding(headerString) {
+            let (decompressed, wasCompressed) = BodyDecompressor.decompress(Data(bodyData), encoding: encoding)
+            if wasCompressed {
+                onEvent?(.log(.info, "MITM: decompressed \(encoding) body for \(hostname) (\(bodyData.count) -> \(decompressed.count) bytes)"))
+            }
+            inspectionBody = decompressed
+        } else {
+            inspectionBody = Data(bodyData)
+        }
+
+        // Check content WAF rules on (decompressed) response body
+        if let bodyString = String(data: inspectionBody, encoding: .utf8) {
             for rule in rules where rule.enabled && rule.kind == .blockContent {
                 let pattern = rule.pattern.lowercased()
                 if bodyString.lowercased().contains(pattern) {
@@ -449,6 +472,38 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                     return Data("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".utf8)
                 }
             }
+
+            // Extract AI usage from SSE streaming responses
+            if bodyString.contains("data: ") {
+                let aiResult = AITracker.shared.detect(host: hostname)
+                if let provider = aiResult?.provider {
+                    let _ = AITracker.shared.extractUsage(provider: provider, responseBody: inspectionBody)
+                }
+            }
+        }
+
+        // Feature extraction: combine request + response for threat scoring
+        if let reqFeatures = requestFeatures {
+            let statusCode = parseStatusCode(headerString)
+            let latencyMs = Date().timeIntervalSince(requestStartTime) * 1000
+            let contentType = BodyDecompressor.extractContentEncoding(headerString) ?? ""
+            let hasSetCookie = headerString.lowercased().contains("set-cookie:")
+
+            let respFeatures = FeatureExtractor.extractResponse(
+                statusCode: statusCode, headers: headerString,
+                bodySize: bodyData.count, latencyMs: latencyMs)
+            let combined = FeatureExtractor.combine(request: reqFeatures, response: respFeatures)
+
+            if combined.threatScore >= 0.6 {
+                onEvent?(.log(.warn, "MITM threat score \(String(format: "%.2f", combined.threatScore)) for \(hostname)"
+                    + (combined.isBeaconLike ? " [beacon]" : "")
+                    + (combined.isExfilLike ? " [exfil]" : "")))
+            }
+
+            // Record response in host memory
+            HostMemory.shared.recordResponse(
+                host: hostname, statusCode: statusCode,
+                latency: latencyMs / 1000, bytes: bodyData.count)
         }
 
         // Strip response headers if privacy settings require
@@ -480,6 +535,14 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         }
 
         return responseData
+    }
+
+    /// Parse HTTP status code from first line (e.g. "HTTP/1.1 200 OK" -> 200).
+    private func parseStatusCode(_ headers: String) -> Int {
+        let firstLine = headers.split(separator: "\r\n").first ?? ""
+        let parts = firstLine.split(separator: " ", maxSplits: 2)
+        guard parts.count >= 2 else { return 0 }
+        return Int(parts[1]) ?? 0
     }
 
     // MARK: - SSL helpers
