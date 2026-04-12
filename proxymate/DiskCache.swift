@@ -265,8 +265,8 @@ nonisolated final class DiskCache: @unchecked Sendable {
 
     private static func sha256Hex(_ data: Data) -> String {
         var hash = [UInt8](repeating: 0, count: 32)
-        _ = data.withUnsafeBytes { buf in
-            CC_SHA256(buf.baseAddress, CC_LONG(data.count), &hash)
+        data.withUnsafeBytes { buf in
+            _ = CC_SHA256(buf.baseAddress, CC_LONG(data.count), &hash)
         }
         return hash.map { String(format: "%02x", $0) }.joined()
     }

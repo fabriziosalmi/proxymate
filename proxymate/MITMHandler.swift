@@ -22,6 +22,13 @@ nonisolated(unsafe) private var activeHandlers: [Int: MITMHandler] = [:]
 nonisolated(unsafe) private var handlersLock = NSLock()
 nonisolated(unsafe) private var nextHandlerID: Int = 1
 
+/// Sendable wrapper for SSLContext (C pointer, not Sendable by default).
+/// Safety: all access serialized on MITMHandler's dedicated handlerQueue.
+private struct SSLBox: @unchecked Sendable {
+    let ctx: SSLContext
+    let idPtr: UnsafeMutableRawPointer
+}
+
 nonisolated final class MITMHandler: @unchecked Sendable {
 
     fileprivate let clientConn: NWConnection
@@ -121,7 +128,6 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             let chain: NSArray = [identity, cert]
             guard MITMSetCertificate(ctx, chain) == errSecSuccess else { cleanup(); return }
 
-            // Pass handler ID as connection ref (cast Int to pointer)
             guard let idPtr = UnsafeMutableRawPointer(bitPattern: handlerID) else {
                 cleanup(); return
             }
@@ -131,9 +137,11 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                 return
             }
 
+            let ssl = SSLBox(ctx: ctx, idPtr: idPtr)
+
             // Start receiving client bytes on OUR queue (not LocalProxy's)
             self.pumpClient()
-            self.handshake(ctx: ctx)
+            self.handshake(ssl: ssl)
         }
     }
 
@@ -172,36 +180,36 @@ nonisolated final class MITMHandler: @unchecked Sendable {
 
     // MARK: - TLS handshake
 
-    private func handshake(ctx: SSLContext) {
+    private func handshake(ssl: SSLBox) {
         // All handshake calls are already on handlerQueue (called from start() or recursion)
         guard !checkDone() else { return }
 
         if Date().timeIntervalSince(startTime) > handshakeTimeout {
             onEvent?(.log(.warn, "MITM handshake timeout for \(hostname) after \(handshakeRetries) retries"))
-            done(ctx: ctx); return
+            done(ssl: ssl); return
         }
 
         // Small delay to let client bytes arrive
         handlerQueue.asyncAfter(deadline: .now() + 0.01) { [weak self] in
             guard let self, !self.checkDone() else { return }
 
-            let status = MITMHandshake(ctx)
+            let status = MITMHandshake(ssl.ctx)
             self.flushWrites()
 
             switch Int32(status) {
             case errSecSuccess:
                 self.onEvent?(.log(.info, "MITM TLS OK: \(self.hostname) (\(self.handshakeRetries) retries)"))
-                self.readDecrypted(ctx: ctx)
+                self.readDecrypted(ssl: ssl)
 
             case errSSLWouldBlock:
                 self.handshakeRetries += 1
                 if self.handshakeRetries >= self.maxHandshakeRetries {
                     self.onEvent?(.log(.error, "MITM handshake max retries for \(self.hostname)"))
-                    self.done(ctx: ctx)
+                    self.done(ssl: ssl)
                 } else {
                     let delay = min(0.1, 0.01 * Double(self.handshakeRetries / 10 + 1))
                     self.handlerQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-                        self?.handshake(ctx: ctx)
+                        self?.handshake(ssl: ssl)
                     }
                 }
 
@@ -213,14 +221,14 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                 } else {
                     self.onEvent?(.log(.info, "MITM: handshake failed for \(self.hostname) (status: \(status), count: \(TLSManager.shared.failureCount(for: self.hostname)))"))
                 }
-                self.done(ctx: ctx)
+                self.done(ssl: ssl)
 
             case errSSLClosedGraceful, errSSLClosedAbort:
-                self.done(ctx: ctx)
+                self.done(ssl: ssl)
 
             default:
                 self.onEvent?(.log(.warn, "MITM error \(self.hostname): OSStatus \(status) (\(self.errorCodeDescription(status)))"))
-                self.done(ctx: ctx)
+                self.done(ssl: ssl)
             }
         }
     }
@@ -242,28 +250,28 @@ nonisolated final class MITMHandler: @unchecked Sendable {
 
     // MARK: - Decrypted traffic
 
-    private func readDecrypted(ctx: SSLContext) {
+    private func readDecrypted(ssl: SSLBox) {
         guard !checkDone() else { return }
         handlerQueue.asyncAfter(deadline: .now() + 0.01) { [weak self] in
             guard let self, !self.checkDone() else { return }
             var buf = [UInt8](repeating: 0, count: 16384)
             var processed = 0
-            let status = MITMRead(ctx, &buf, buf.count, &processed)
+            let status = MITMRead(ssl.ctx, &buf, buf.count, &processed)
             if processed > 0 {
-                self.processRequest(Data(buf[0..<processed]), ctx: ctx)
+                self.processRequest(Data(buf[0..<processed]), ssl: ssl)
                 return
             }
             if Int32(status) == errSSLWouldBlock {
-                self.readDecrypted(ctx: ctx)
+                self.readDecrypted(ssl: ssl)
                 return
             }
-            self.done(ctx: ctx)
+            self.done(ssl: ssl)
         }
     }
 
-    private func processRequest(_ data: Data, ctx: SSLContext) {
+    private func processRequest(_ data: Data, ssl: SSLBox) {
         guard let text = String(data: data, encoding: .utf8) else {
-            done(ctx: ctx); return
+            done(ssl: ssl); return
         }
         let parts = (text.split(separator: "\r\n").first ?? "").split(separator: " ", maxSplits: 2)
         let method = parts.count > 0 ? String(parts[0]) : "?"
@@ -274,15 +282,15 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         }) {
             let label = hit.name.isEmpty ? hit.pattern : hit.name
             onEvent?(.blocked(host: hostname, ruleName: "MITM: \(label)"))
-            sendEncrypted(ctx: ctx, text: "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-            done(ctx: ctx); return
+            sendEncrypted(ssl: ssl, text: "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            done(ssl: ssl); return
         }
 
         if let hit = ExfiltrationScanner.shared.scan(headers: text, target: target) {
             onEvent?(.exfiltration(host: hostname, patternName: hit.patternName,
                                    severity: hit.severity.rawValue, preview: hit.matchPreview))
-            sendEncrypted(ctx: ctx, text: "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-            done(ctx: ctx); return
+            sendEncrypted(ssl: ssl, text: "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            done(ssl: ssl); return
         }
 
         // Extract request features for threat scoring
@@ -298,16 +306,16 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         }
 
         onEvent?(.allowed(host: hostname, method: method))
-        forwardToServer(requestData: finalData, ctx: ctx)
+        forwardToServer(requestData: finalData, ssl: ssl)
     }
 
     // MARK: - Forward to server
 
-    private func forwardToServer(requestData: Data, ctx: SSLContext) {
+    private func forwardToServer(requestData: Data, ssl: SSLBox) {
         let tls = NWProtocolTLS.Options()
         sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, _, cb in cb(true) }, handlerQueue)
         let params = NWParameters(tls: tls)
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else { done(ctx: ctx); return }
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else { done(ssl: ssl); return }
 
         let server = NWConnection(host: .init(hostname), port: nwPort, using: params)
         server.stateUpdateHandler = { [weak self] state in
@@ -316,11 +324,11 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             case .ready:
                 server.send(content: requestData, completion: .contentProcessed { [weak self] err in
                     guard let self, !self.checkDone() else { server.cancel(); return }
-                    if err != nil { self.done(ctx: ctx); server.cancel(); return }
-                    self.bufferServerResponse(server: server, ctx: ctx)
+                    if err != nil { self.done(ssl: ssl); server.cancel(); return }
+                    self.bufferServerResponse(server: server, ssl: ssl)
                 })
             case .failed:
-                self.done(ctx: ctx)
+                self.done(ssl: ssl)
             default: break
             }
         }
@@ -332,7 +340,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
     private static let maxResponseBuffer = 10 * 1024 * 1024 // 10 MB
 
     /// Buffer complete server response, apply WAF on body, then send encrypted to client
-    private func bufferServerResponse(server: NWConnection, ctx: SSLContext) {
+    private func bufferServerResponse(server: NWConnection, ssl: SSLBox) {
         var responseBuffer = Data()
         var headersComplete = false
         var contentLength: Int?
@@ -346,10 +354,10 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                 if let data, !data.isEmpty {
                     // If already in streaming mode, send chunks directly
                     if streamingMode {
-                        self.sendEncrypted(ctx: ctx, data: data)
+                        self.sendEncrypted(ssl: ssl, data: data)
                         if isComplete || error != nil {
                             server.cancel()
-                            self.done(ctx: ctx)
+                            self.done(ssl: ssl)
                         } else {
                             receiveChunk()
                         }
@@ -362,12 +370,12 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                     if responseBuffer.count > Self.maxResponseBuffer {
                         self.onEvent?(.log(.info, "MITM: response too large for \(self.hostname), streaming without inspection"))
                         // Flush what we have (headers already parsed, send as-is)
-                        self.sendEncrypted(ctx: ctx, data: responseBuffer)
+                        self.sendEncrypted(ssl: ssl, data: responseBuffer)
                         responseBuffer = Data()
                         streamingMode = true
                         if isComplete || error != nil {
                             server.cancel()
-                            self.done(ctx: ctx)
+                            self.done(ssl: ssl)
                         } else {
                             receiveChunk()
                         }
@@ -412,8 +420,8 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                         if complete {
                             server.cancel()
                             let finalResponse = self.inspectResponse(responseBuffer)
-                            self.sendEncrypted(ctx: ctx, data: finalResponse)
-                            self.done(ctx: ctx)
+                            self.sendEncrypted(ssl: ssl, data: finalResponse)
+                            self.done(ssl: ssl)
                             return
                         }
                     }
@@ -422,8 +430,8 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                 if isComplete || error != nil {
                     server.cancel()
                     let finalResponse = self.inspectResponse(responseBuffer)
-                    self.sendEncrypted(ctx: ctx, data: finalResponse)
-                    self.done(ctx: ctx)
+                    self.sendEncrypted(ssl: ssl, data: finalResponse)
+                    self.done(ssl: ssl)
                 } else {
                     receiveChunk()
                 }
@@ -544,11 +552,11 @@ nonisolated final class MITMHandler: @unchecked Sendable {
 
     // MARK: - SSL helpers
 
-    private func sendEncrypted(ctx: SSLContext, text: String) {
-        sendEncrypted(ctx: ctx, data: Data(text.utf8))
+    private func sendEncrypted(ssl: SSLBox, text: String) {
+        sendEncrypted(ssl: ssl, data: Data(text.utf8))
     }
 
-    private func sendEncrypted(ctx: SSLContext, data: Data) {
+    private func sendEncrypted(ssl: SSLBox, data: Data) {
         guard !checkDone() else { return }
         data.withUnsafeBytes { buf in
             guard let base = buf.baseAddress else { return }
@@ -557,7 +565,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             while offset < data.count && maxIter > 0 {
                 maxIter -= 1
                 var processed = 0
-                let s = MITMWrite(ctx, base.advanced(by: offset), data.count - offset, &processed)
+                let s = MITMWrite(ssl.ctx, base.advanced(by: offset), data.count - offset, &processed)
                 if processed == 0 { break }
                 offset += processed
                 if Int32(s) != errSecSuccess && Int32(s) != errSSLWouldBlock { break }
@@ -576,13 +584,13 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         return d
     }
 
-    private func done(ctx: SSLContext) {
+    private func done(ssl: SSLBox) {
         doneLock.lock()
         if isDone { doneLock.unlock(); return }
         isDone = true
         doneLock.unlock()
 
-        MITMClose(ctx)
+        MITMClose(ssl.ctx)
         clientConn.cancel()
         cleanup()
     }

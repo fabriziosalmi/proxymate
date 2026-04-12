@@ -47,8 +47,8 @@ nonisolated struct AIAgentSettings: Codable, Hashable, Sendable {
     var logFullPrompts: Bool = false        // log full prompt text (privacy concern)
 }
 
-extension AIAgentPolicy {
-    nonisolated static let defaults: [AIAgentPolicy] = [
+nonisolated extension AIAgentPolicy {
+    static let defaults: [AIAgentPolicy] = [
         .init(agentId: "claude-code",  name: "Claude Code",     action: .audit),
         .init(agentId: "cursor",       name: "Cursor",          action: .audit),
         .init(agentId: "windsurf",     name: "Windsurf",        action: .audit),

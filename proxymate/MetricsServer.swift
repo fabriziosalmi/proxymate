@@ -18,6 +18,8 @@ nonisolated final class MetricsServer: @unchecked Sendable {
 
     static let shared = MetricsServer()
 
+    private nonisolated init() {}
+
     private let queue = DispatchQueue(label: "proxymate.metrics", qos: .utility)
     private var listener: NWListener?
     var statsProvider: (@Sendable () -> String)?
@@ -65,9 +67,9 @@ nonisolated final class MetricsServer: @unchecked Sendable {
 
 // MARK: - Prometheus text format generator
 
-extension MetricsServer {
+nonisolated extension MetricsServer {
 
-    nonisolated static func generatePrometheusMetrics(state: AppState.Stats,
+    static func generatePrometheusMetrics(state: AppState.Stats,
                                            cache: CacheManager.Stats,
                                            disk: DiskCache.Stats,
                                            dns: DNSResolver.DNSStats) -> String {
