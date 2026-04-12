@@ -48,8 +48,17 @@ final class AppState: ObservableObject {
     @Published var localPort: UInt16?
     @Published var logs: [LogEntry] = []
     @Published var stats = Stats()
-    /// Tracks already-logged agent/AI detections to suppress repeats.
+    /// Tracks already-logged agent/AI detections to suppress repeats. Capped to prevent unbounded growth.
     private var seenAgents = Set<String>()
+    private let seenAgentsMaxSize = 10_000
+
+    /// Returns true if the key was already seen. Caps set size to prevent unbounded growth.
+    private func markSeen(_ key: String) -> Bool {
+        if seenAgents.contains(key) { return true }
+        if seenAgents.count >= seenAgentsMaxSize { seenAgents.removeAll() }
+        seenAgents.insert(key)
+        return false
+    }
     let timeSeries = StatsTimeSeries()
 
     nonisolated struct Stats: Sendable {
@@ -298,6 +307,7 @@ final class AppState: ObservableObject {
         isEnabled = false
         UserDefaults.standard.set(false, forKey: "proxymate.wasEnabled")
         stats.enabledSince = nil
+        seenAgents.removeAll()  // free memory on disable
         log(.info, "Disabled")
     }
 
@@ -332,8 +342,7 @@ final class AppState: ObservableObject {
             stats.requestsBlocked += 1
             timeSeries.recordBlocked()
             let wafKey = "WAF|\(host)|\(ruleName)"
-            if !seenAgents.contains(wafKey) {
-                seenAgents.insert(wafKey)
+            if !markSeen(wafKey) {
                 log(.warn, "BLOCKED \(host) — \(ruleName)", host: host)
                 NotificationManager.shared.notifyBlock(host: host, ruleName: ruleName)
                 WebhookManager.shared.sendBlock(host: host, ruleName: ruleName)
@@ -343,8 +352,7 @@ final class AppState: ObservableObject {
             timeSeries.recordBlocked()
             // Log only first block per host (suppress repeats like exp-tas.com x30)
             let blKey = "BL|\(host)"
-            if !seenAgents.contains(blKey) {
-                seenAgents.insert(blKey)
+            if !markSeen(blKey) {
                 log(.warn, "BLACKLIST \(host) — \(sourceName) [\(category)]", host: host)
                 NotificationManager.shared.notifyBlock(host: host, ruleName: "\(sourceName) [\(category)]")
                 WebhookManager.shared.sendBlock(host: host, ruleName: "\(sourceName) [\(category)]")
@@ -364,8 +372,7 @@ final class AppState: ObservableObject {
         case .agentDetected(let host, let agent, let indicator):
             // Log only first detection per agent+host (suppress repeats)
             let key = "\(agent)|\(host)"
-            if !seenAgents.contains(key) {
-                seenAgents.insert(key)
+            if !markSeen(key) {
                 log(.info, "AGENT \(agent) \(host) [\(indicator)]", host: host)
             }
         case .mcpDetected(let host, let method):
@@ -387,8 +394,7 @@ final class AppState: ObservableObject {
         case .aiDetected(let host, let provider):
             stats.aiRequests += 1
             let aiKey = "\(provider)|\(host)"
-            if !seenAgents.contains(aiKey) {
-                seenAgents.insert(aiKey)
+            if !markSeen(aiKey) {
                 log(.info, "AI \(provider) \(host)", host: host)
             }
         case .aiBlocked(let host, let provider, let reason):

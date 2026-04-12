@@ -226,10 +226,13 @@ nonisolated final class CacheManager: @unchecked Sendable {
     // MARK: - Purge
 
     func purgeAll() {
-        entries.removeAll()
-        accessOrder.removeAll()
-        currentSizeBytes = 0
-        _stats = Stats()
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.entries.removeAll()
+            self.accessOrder.removeAll()
+            self.currentSizeBytes = 0
+            self._stats = Stats()
+        }
     }
 
     func purgeHost(_ host: String) {

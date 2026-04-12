@@ -201,14 +201,17 @@ nonisolated final class SOCKS5Listener: @unchecked Sendable {
 
     private func pipe(from: NWConnection, to: NWConnection) {
         from.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
+            if let error { from.cancel(); to.cancel(); return }
+            if isComplete { to.send(content: nil, isComplete: true, completion: .contentProcessed { _ in }); from.cancel(); return }
             if let data, !data.isEmpty {
                 to.send(content: data, completion: .contentProcessed { [weak self] err in
                     if err != nil { from.cancel(); to.cancel(); return }
                     self?.pipe(from: from, to: to)
                 })
+            } else {
+                // Empty data but not complete — keep piping
+                self?.pipe(from: from, to: to)
             }
-            if isComplete { to.send(content: nil, isComplete: true, completion: .contentProcessed { _ in }); from.cancel(); return }
-            if error != nil { from.cancel(); to.cancel() }
         }
     }
 }

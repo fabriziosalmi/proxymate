@@ -90,11 +90,13 @@ nonisolated final class ExfiltrationScanner: @unchecked Sendable {
 
             // Budget check: 50µs = 50_000ns
             if elapsed > 50_000 {
+                let patternName = patterns[i].name
                 queue.async { [weak self] in
-                    guard let self, i < self.compiled.count else { return }
-                    self.compiled[i].failureCount += 1
-                    if self.compiled[i].failureCount >= self.maxFailures {
-                        self.compiled[i].disabled = true
+                    guard let self,
+                          let idx = self.compiled.firstIndex(where: { $0.name == patternName }) else { return }
+                    self.compiled[idx].failureCount += 1
+                    if self.compiled[idx].failureCount >= self.maxFailures {
+                        self.compiled[idx].disabled = true
                     }
                 }
             }

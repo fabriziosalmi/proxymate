@@ -25,6 +25,14 @@ nonisolated final class WebhookManager: @unchecked Sendable {
     private var settings = WebhookSettings()
     private var lastSent: [String: Date] = [:]  // event key → last sent time
 
+    /// Shared URLSession that bypasses system proxy.
+    private let directSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.connectionProxyDictionary = [:]
+        config.timeoutIntervalForRequest = 10
+        return URLSession(configuration: config)
+    }()
+
     func configure(_ s: WebhookSettings) {
         queue.async { [weak self] in self?.settings = s }
     }
@@ -69,10 +77,14 @@ nonisolated final class WebhookManager: @unchecked Sendable {
             guard self.settings.enabled else { return }
             if let flag, !self.settings[keyPath: flag] { return }
 
-            // Debounce
+            // Debounce + prune stale entries to prevent unbounded growth
             let debounce = TimeInterval(self.settings.debounceSeconds)
             if let last = self.lastSent[key], Date().timeIntervalSince(last) < debounce { return }
             self.lastSent[key] = Date()
+            if self.lastSent.count > 1000 {
+                let cutoff = Date().addingTimeInterval(-debounce * 2)
+                self.lastSent = self.lastSent.filter { $0.value > cutoff }
+            }
 
             guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
 
@@ -83,9 +95,7 @@ nonisolated final class WebhookManager: @unchecked Sendable {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue("Proxymate/1.0", forHTTPHeaderField: "User-Agent")
                 request.httpBody = body
-                let config = URLSessionConfiguration.default
-                config.connectionProxyDictionary = [:]
-                URLSession(configuration: config).dataTask(with: request).resume()
+                self.directSession.dataTask(with: request).resume()
             }
         }
     }

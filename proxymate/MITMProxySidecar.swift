@@ -22,8 +22,10 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
     private let queue = DispatchQueue(label: "proxymate.mitmproxy", qos: .userInitiated)
     private var process: Process?
     private var socketListener: Int32 = -1
-    private(set) var port: UInt16 = 0
-    private(set) var isRunning = false
+    private var _port: UInt16 = 0
+    private var _isRunning = false
+    var port: UInt16 { queue.sync { _port } }
+    var isRunning: Bool { queue.sync { _isRunning } }
     private var heartbeatTimer: DispatchSourceTimer?
     /// Known SHA-256 hash of the trusted mitmdump binary (set on first verified launch).
     private var trustedHash: String?
@@ -42,7 +44,7 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
     func start(upstreamHost: String, upstreamPort: UInt16,
                listenPort: UInt16 = 18080) throws -> UInt16 {
         try queue.sync {
-            guard !isRunning else { return port }
+            guard !_isRunning else { return _port }
 
             // Find mitmdump
             let mitmdumpPath = findMitmdump()
@@ -92,8 +94,8 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
                 let stderrData = stderrPipe.fileHandleForReading.availableData
                 let stderr = String(data: stderrData, encoding: .utf8) ?? ""
                 self?.queue.async {
-                    self?.isRunning = false
-                    self?.port = 0
+                    self?._isRunning = false
+                    self?._port = 0
                     if proc.terminationStatus != 0 && !stderr.isEmpty {
                         self?.onEvent?(.log(.error, "mitmproxy error: \(stderr.prefix(200))"))
                     }
@@ -109,8 +111,8 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             }
 
             process = p
-            port = listenPort
-            isRunning = true
+            _port = listenPort
+            _isRunning = true
             startHeartbeat()
 
             onEvent?(.log(.info, "mitmproxy sidecar on port \(listenPort) (PID \(p.processIdentifier))"))
@@ -124,8 +126,8 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             self.stopHeartbeat()
             self.process?.terminate()
             self.process = nil
-            self.isRunning = false
-            self.port = 0
+            self._isRunning = false
+            self._port = 0
             self.stopSocketListener()
             try? FileManager.default.removeItem(atPath: self.socketPath)
         }
@@ -141,8 +143,8 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             guard let self, let p = self.process else { return }
             if !p.isRunning {
                 self.onEvent?(.log(.error, "mitmproxy heartbeat: process died unexpectedly"))
-                self.isRunning = false
-                self.port = 0
+                self._isRunning = false
+                self._port = 0
                 self.stopHeartbeat()
             }
         }

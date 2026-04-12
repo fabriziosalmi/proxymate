@@ -50,6 +50,14 @@ nonisolated final class DNSResolver: @unchecked Sendable {
     private var settings = DNSSettings()
     private var _stats = DNSStats()
 
+    /// Shared URLSession that bypasses system proxy (reused across queries).
+    private let directSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.connectionProxyDictionary = [:]
+        config.timeoutIntervalForRequest = 5
+        return URLSession(configuration: config)
+    }()
+
     struct CacheEntry {
         let ips: [String]
         let storedAt: Date
@@ -174,9 +182,7 @@ nonisolated final class DNSResolver: @unchecked Sendable {
         var request = URLRequest(url: url, timeoutInterval: 5)
         request.setValue("application/dns-json", forHTTPHeaderField: "Accept")
 
-        let config = URLSessionConfiguration.default
-        config.connectionProxyDictionary = [:]
-        let task = URLSession(configuration: config).dataTask(with: request) { data, _, error in
+        let task = directSession.dataTask(with: request) { data, _, error in
             if let error {
                 completion(.failure(error))
                 return

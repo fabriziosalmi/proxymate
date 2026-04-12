@@ -224,11 +224,16 @@ final class ProxySession: @unchecked Sendable {
         })
     }
 
+    private var doneLock = os_unfair_lock()
+
     // MARK: - Cleanup (atomic, once only)
 
     func finish() {
-        guard !isDone else { return }
+        os_unfair_lock_lock(&doneLock)
+        let alreadyDone = isDone
         isDone = true
+        os_unfair_lock_unlock(&doneLock)
+        guard !alreadyDone else { return }
         client.cancel()
         upstream?.cancel()
         upstream = nil

@@ -49,19 +49,25 @@ nonisolated final class TLSManager: @unchecked Sendable {
     private var caKeyPath: String { caDir.appendingPathComponent("ca.key").path }
     private var caCertPath: String { caDir.appendingPathComponent("ca.pem").path }
 
-    // Cached leaf identities
+    // Cached leaf identities (capped to prevent unbounded memory growth)
     private var leafCache: [String: SecIdentity] = [:]
+    private let leafCacheMaxSize = 500
 
-    // Pinning detection
+    // Pinning detection (capped to prevent unbounded growth over long sessions)
     private var pinningFailures: [String: Int] = [:]
     private var runtimeExcludes: Set<String> = []
+    private let pinningMaxEntries = 5_000
     private let pinningAutoExcludeThreshold = 3
 
     // MARK: - CA Lifecycle
 
+    /// Thread-safe: filesystem check is inherently racy, but synchronized
+    /// with queue to prevent reading mid-generate/delete.
     var isCAInstalled: Bool {
-        FileManager.default.fileExists(atPath: caKeyPath) &&
-        FileManager.default.fileExists(atPath: caCertPath)
+        queue.sync {
+            FileManager.default.fileExists(atPath: caKeyPath) &&
+            FileManager.default.fileExists(atPath: caCertPath)
+        }
     }
 
     /// Check CA cert expiry. Returns days until expiration, or nil if cert not found.
@@ -287,6 +293,7 @@ nonisolated final class TLSManager: @unchecked Sendable {
                 try? FileManager.default.removeItem(at: leafDir)
                 throw TLSError.identityNotFound
             }
+            if leafCache.count >= leafCacheMaxSize { leafCache.removeAll() }
             leafCache[hostname] = identity
 
             // Cleanup temp files
@@ -382,7 +389,7 @@ nonisolated final class TLSManager: @unchecked Sendable {
               let ref = arr.first?[kSecImportItemIdentity as String] else {
             return nil
         }
-        // SecIdentity is a CF type — cast from Any is safe after the guard above.
+        // SecIdentity is a CF type — the guard above validates the PKCS12 import succeeded.
         return (ref as! SecIdentity)
     }
 
@@ -421,6 +428,7 @@ nonisolated final class TLSManager: @unchecked Sendable {
     func recordHandshakeFailure(host: String) -> Bool {
         queue.sync {
             let h = host.lowercased()
+            if pinningFailures.count >= pinningMaxEntries { pinningFailures.removeAll() }
             let count = (pinningFailures[h] ?? 0) + 1
             pinningFailures[h] = count
             return count >= pinningAutoExcludeThreshold
