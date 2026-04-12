@@ -73,7 +73,7 @@ final class AppState: ObservableObject {
     private let selectedKey    = "proxymate.selected.v1"
     private let privacyKey     = "proxymate.privacy.v1"
     private let cacheKey       = "proxymate.cache.v1"
-    private let mitmKey        = "proxymate.mitm.v1"
+    private let mitmKey        = "proxymate.mitm.v2"  // v2: expanded excludes
     private let pacKey         = "proxymate.pac.v1"
     private let socks5Key      = "proxymate.socks5.v1"
     private let beaconingKey   = "proxymate.beaconing.v1"
