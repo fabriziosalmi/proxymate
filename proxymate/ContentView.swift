@@ -405,6 +405,7 @@ struct AddOverrideSheet: View {
             }
         }
         .padding(16).frame(width: 380)
+        .onAppear { NSApp.activate(ignoringOtherApps: true) }
     }
 }
 
@@ -577,6 +578,7 @@ struct AddPoolSheet: View {
             }
         }
         .padding(16).frame(width: 340)
+        .onAppear { NSApp.activate(ignoringOtherApps: true) }
     }
 }
 
@@ -658,6 +660,7 @@ struct AddProxySheet: View {
         }
         .padding(16)
         .frame(width: 320)
+        .onAppear { NSApp.activate(ignoringOtherApps: true) }
     }
 }
 
@@ -1181,6 +1184,7 @@ struct AddRuleSheet: View {
             }
         }
         .padding(16).frame(width: 340)
+        .onAppear { NSApp.activate(ignoringOtherApps: true) }
     }
 
     private var placeholder: String {
@@ -1249,6 +1253,7 @@ struct ImportRulesSheet: View {
             }
         }
         .padding(16).frame(width: 400)
+        .onAppear { NSApp.activate(ignoringOtherApps: true) }
     }
 }
 
@@ -1383,6 +1388,7 @@ struct AddAllowEntrySheet: View {
             }
         }
         .padding(16).frame(width: 380)
+        .onAppear { NSApp.activate(ignoringOtherApps: true) }
     }
 }
 
@@ -1638,6 +1644,7 @@ struct AddCustomBlacklistSheet: View {
             }
         }
         .padding(16).frame(width: 380)
+        .onAppear { NSApp.activate(ignoringOtherApps: true) }
     }
 }
 
