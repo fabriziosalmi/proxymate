@@ -164,8 +164,9 @@ nonisolated final class MITMHandler: @unchecked Sendable {
     /// Receives raw bytes from the client NWConnection and appends to readBuffer.
     /// The NWConnection receive callback is dispatched on handlerQueue.
     private func pumpClient() {
+        guard !checkDone() else { return }
         clientConn.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
+            guard let self, !self.checkDone() else { return }
             if let data, !data.isEmpty {
                 self.readLock.lock()
                 self.readBuffer.append(data)
@@ -641,6 +642,8 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         // MITMClose does SSLClose + CFRelease (single owner — we used
         // takeUnretainedValue so Swift ARC won't double-release).
         MITMClose(ssl.ctx)
+        clientConn.stateUpdateHandler = nil
+        serverConn?.stateUpdateHandler = nil
         clientConn.cancel()
         serverConn?.cancel()
         serverConn = nil
@@ -657,6 +660,9 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         activeHandlers.removeValue(forKey: handlerID)
         handlersLock.unlock()
 
+        // Break retain cycles: nil handlers before cancel
+        clientConn.stateUpdateHandler = nil
+        serverConn?.stateUpdateHandler = nil
         clientConn.cancel()
         serverConn?.cancel()
         serverConn = nil
