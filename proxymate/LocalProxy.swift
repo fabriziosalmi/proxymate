@@ -390,7 +390,6 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                     clientConn: client,
                     hostname: host,
                     port: targetPort,
-                    queue: self.queue,
                     rules: self.rulesSnapshot,
                     privacy: self.privacySnapshot,
                     onEvent: self.onEvent

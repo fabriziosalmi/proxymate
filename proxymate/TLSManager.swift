@@ -13,7 +13,7 @@ import Security
 import AppKit
 
 nonisolated struct MITMSettings: Codable, Hashable, Sendable {
-    var enabled: Bool = false  // EXPERIMENTAL: SSLContext crashes under load. Use at own risk.
+    var enabled: Bool = false
     var interceptHosts: [String] = []
     var excludeHosts: [String] = [
         "*.apple.com", "*.icloud.com",
@@ -53,6 +53,7 @@ nonisolated final class TLSManager: @unchecked Sendable {
 
     // Pinning detection
     private var pinningFailures: [String: Int] = [:]
+    private var runtimeExcludes: Set<String> = []
     private let pinningAutoExcludeThreshold = 3
 
     // MARK: - CA Lifecycle
@@ -289,6 +290,9 @@ nonisolated final class TLSManager: @unchecked Sendable {
         // HSTS preload
         if HSTSPreload.isPreloaded(h) { return false }
 
+        // Runtime excludes (auto-detected cert pinning)
+        if runtimeExcludes.contains(h) { return false }
+
         // Auto-excluded by cert pinning detection
         if (pinningFailures[h] ?? 0) >= pinningAutoExcludeThreshold { return false }
 
@@ -316,9 +320,31 @@ nonisolated final class TLSManager: @unchecked Sendable {
             return count >= pinningAutoExcludeThreshold
         }
     }
+    
+    /// Get failure count for a host (for logging)
+    func failureCount(for host: String) -> Int {
+        queue.sync {
+            pinningFailures[host.lowercased()] ?? 0
+        }
+    }
+    
+    /// Add host to runtime excludes (triggered by cert pinning detection)
+    func addRuntimeExclude(host: String) {
+        queue.sync {
+            runtimeExcludes.insert(host.lowercased())
+        }
+    }
+    
+    /// Get current runtime excludes (for UI display)
+    func getRuntimeExcludes() -> [String] {
+        queue.sync { Array(runtimeExcludes).sorted() }
+    }
 
     func resetPinningHistory() {
-        queue.sync { pinningFailures.removeAll() }
+        queue.sync { 
+            pinningFailures.removeAll()
+            runtimeExcludes.removeAll()
+        }
     }
 
     // MARK: - Helpers
