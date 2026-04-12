@@ -163,9 +163,12 @@ nonisolated final class TLSManager: @unchecked Sendable {
     }
 
     /// Trust the CA system-wide via security add-trusted-cert (admin password).
+    /// Uses argument array (not shell string) to prevent command injection via caCertPath.
     func promptUserToTrust() {
         guard FileManager.default.fileExists(atPath: caCertPath) else { return }
-        let script = "security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain \"\(caCertPath)\""
+        // Shell-escape the path to prevent injection from usernames with metacharacters
+        let safePath = caCertPath.replacingOccurrences(of: "'", with: "'\\''")
+        let script = "security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain '\(safePath)'"
         Task {
             try? await Task.detached(priority: .userInitiated) {
                 try PrivilegedHelper.shared.runAsRoot(script)
@@ -392,11 +395,12 @@ nonisolated final class TLSManager: @unchecked Sendable {
         // HSTS preload
         if HSTSPreload.isPreloaded(h) { return false }
 
-        // Runtime excludes (auto-detected cert pinning)
-        if runtimeExcludes.contains(h) { return false }
-
-        // Auto-excluded by cert pinning detection
-        if (pinningFailures[h] ?? 0) >= pinningAutoExcludeThreshold { return false }
+        // Runtime excludes and pinning failures — read under queue lock to avoid data race
+        let excluded: Bool = queue.sync {
+            runtimeExcludes.contains(h) ||
+            (pinningFailures[h] ?? 0) >= pinningAutoExcludeThreshold
+        }
+        if excluded { return false }
 
         // User excludes
         for pattern in settings.excludeHosts {

@@ -19,8 +19,8 @@ import Network
 /// new handshakes.
 nonisolated(unsafe) private var mitmHandshakeSemaphore = DispatchSemaphore(value: 20)
 
-/// Active session count — no hard cap, but tracked for diagnostics.
-nonisolated(unsafe) private var activeSessionCount: Int = 0
+/// Active session count — protected by handlersLock for thread safety.
+nonisolated(unsafe) private var activeSessionCount: Int = 0  // guarded by handlersLock
 
 /// Registry of active MITM handlers. SSLContext callbacks use the handler ID
 /// (stored as the SSLConnectionRef) to look up the handler safely.

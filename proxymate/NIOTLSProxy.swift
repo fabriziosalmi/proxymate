@@ -279,7 +279,9 @@ private final class MITMInspectHandler: ChannelInboundHandler {
 
         ClientBootstrap(group: group)
             .channelInitializer { channel in
-                let sslHandler = try! NIOSSLClientHandler(context: clientCtx, serverHostname: host)
+                guard let sslHandler = try? NIOSSLClientHandler(context: clientCtx, serverHostname: host) else {
+                    return channel.close()
+                }
                 return channel.pipeline.addHandler(sslHandler).flatMap {
                     channel.pipeline.addHandler(HTTPRequestEncoder())
                 }.flatMap {

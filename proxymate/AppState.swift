@@ -7,6 +7,7 @@ import Foundation
 import Combine
 import SwiftUI
 import IOKit.ps
+import os
 
 @MainActor
 final class AppState: ObservableObject {
@@ -533,7 +534,11 @@ final class AppState: ObservableObject {
         WebhookManager.shared.configure(s)
     }
 
-    nonisolated(unsafe) static var latestStats = Stats()
+    private nonisolated(unsafe) static let _latestStats = OSAllocatedUnfairLock(initialState: Stats())
+    nonisolated static var latestStats: Stats {
+        get { _latestStats.withLock { $0 } }
+        set { _latestStats.withLock { $0 = newValue } }
+    }
 
     private func startMetrics() {
         MetricsServer.shared.statsProvider = {

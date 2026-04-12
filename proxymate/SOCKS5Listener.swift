@@ -59,8 +59,10 @@ nonisolated final class SOCKS5Listener: @unchecked Sendable {
     }
 
     func stop() {
-        listener?.cancel()
-        listener = nil
+        queue.async { [weak self] in
+            self?.listener?.cancel()
+            self?.listener = nil
+        }
     }
 
     func updateRules(_ r: [WAFRule]) { queue.async { [weak self] in self?.rulesSnapshot = r } }

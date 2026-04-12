@@ -54,17 +54,18 @@ nonisolated final class PrivilegedHelper: @unchecked Sendable {
 
         var ref: AuthorizationRef?
 
-        // Use kAuthorizationRightExecute as a C string via a local copy so
-        // the pointer survives the entire AuthorizationCreate call.
-        let rightName = kAuthorizationRightExecute
-        var item = rightName.withCString { namePtr -> AuthorizationItem in
-            AuthorizationItem(
-                name: namePtr,
-                valueLength: 0,
-                value: nil,
-                flags: 0
-            )
-        }
+        // Copy the right name to a stable C string that outlives AuthorizationCreate.
+        // withCString's pointer is only valid inside the closure — using it after
+        // the closure returns is undefined behavior (dangling pointer).
+        let rightCStr = strdup(kAuthorizationRightExecute)!
+        defer { free(rightCStr) }
+
+        var item = AuthorizationItem(
+            name: rightCStr,
+            valueLength: 0,
+            value: nil,
+            flags: 0
+        )
         var rights = withUnsafeMutablePointer(to: &item) { ptr in
             AuthorizationRights(count: 1, items: ptr)
         }
@@ -94,7 +95,10 @@ nonisolated final class PrivilegedHelper: @unchecked Sendable {
         try ensureAuthorized()
 
         lock.lock()
-        let ref = authRef!
+        guard let ref = authRef else {
+            lock.unlock()
+            throw PrivilegedHelperError.authorizationDenied
+        }
         lock.unlock()
 
         // Build argv: /bin/sh -c "script"

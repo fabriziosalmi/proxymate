@@ -30,8 +30,8 @@ nonisolated final class MetricsServer: @unchecked Sendable {
             self.stop()
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
-            params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback),
-                                                                port: NWEndpoint.Port(rawValue: port)!)
+            guard let nwPort = NWEndpoint.Port(rawValue: port) else { return }
+            params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: nwPort)
             guard let listener = try? NWListener(using: params) else { return }
             listener.newConnectionHandler = { [weak self] conn in
                 self?.handle(conn)

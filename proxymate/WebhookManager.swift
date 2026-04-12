@@ -32,8 +32,7 @@ nonisolated final class WebhookManager: @unchecked Sendable {
     // MARK: - Event senders
 
     func sendBlock(host: String, ruleName: String) {
-        guard settings.enabled && settings.onBlock else { return }
-        send(event: "block", key: "block-\(ruleName)", payload: [
+        send(event: "block", key: "block-\(ruleName)", guard: \.onBlock, payload: [
             "event": "block",
             "host": host,
             "rule": ruleName,
@@ -42,8 +41,7 @@ nonisolated final class WebhookManager: @unchecked Sendable {
     }
 
     func sendExfiltration(host: String, patternName: String, severity: String, preview: String) {
-        guard settings.enabled && settings.onExfiltration else { return }
-        send(event: "exfiltration", key: "exfil-\(patternName)", payload: [
+        send(event: "exfiltration", key: "exfil-\(patternName)", guard: \.onExfiltration, payload: [
             "event": "exfiltration",
             "host": host,
             "pattern": patternName,
@@ -54,8 +52,7 @@ nonisolated final class WebhookManager: @unchecked Sendable {
     }
 
     func sendBudget(provider: String, reason: String) {
-        guard settings.enabled && settings.onBudget else { return }
-        send(event: "budget", key: "budget-\(provider)", payload: [
+        send(event: "budget", key: "budget-\(provider)", guard: \.onBudget, payload: [
             "event": "budget_exceeded",
             "provider": provider,
             "reason": reason,
@@ -65,9 +62,12 @@ nonisolated final class WebhookManager: @unchecked Sendable {
 
     // MARK: - Internal
 
-    private func send(event: String, key: String, payload: [String: String]) {
+    private func send(event: String, key: String, guard flag: KeyPath<WebhookSettings, Bool>? = nil, payload: [String: String]) {
         queue.async { [weak self] in
             guard let self else { return }
+            // Read settings on queue thread to avoid data race
+            guard self.settings.enabled else { return }
+            if let flag, !self.settings[keyPath: flag] { return }
 
             // Debounce
             let debounce = TimeInterval(self.settings.debounceSeconds)

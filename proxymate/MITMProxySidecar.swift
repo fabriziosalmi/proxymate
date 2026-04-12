@@ -85,10 +85,9 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
                 args += ["--script", addon]
             }
             p.arguments = args
+            let stderrPipe = Pipe()
             p.standardOutput = Pipe()
-            p.standardError = Pipe()
-
-            let stderrPipe = p.standardError as! Pipe
+            p.standardError = stderrPipe
             p.terminationHandler = { [weak self] proc in
                 let stderrData = stderrPipe.fileHandleForReading.availableData
                 let stderr = String(data: stderrData, encoding: .utf8) ?? ""

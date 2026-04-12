@@ -220,16 +220,21 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
 
     /// Unique entries (deduplicated across all sources).
     var uniqueEntries: Int {
+        os_unfair_lock_lock(&setsLock)
         var allDomains = Set<String>()
         for set in domainSets.values { allDomains.formUnion(set) }
         var allIPs = Set<String>()
         for set in ipSets.values { allIPs.formUnion(set) }
+        os_unfair_lock_unlock(&setsLock)
         return allDomains.count + allIPs.count
     }
 
     /// Number of active sources.
     var activeSourceCount: Int {
-        domainSets.count + ipSets.count
+        os_unfair_lock_lock(&setsLock)
+        let n = domainSets.count + ipSets.count
+        os_unfair_lock_unlock(&setsLock)
+        return n
     }
 
     // MARK: - Parsing

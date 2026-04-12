@@ -132,7 +132,9 @@ nonisolated final class PACServer: @unchecked Sendable {
             """
 
         case .smartBypass:
-            let conditions = directDomains.map { domain -> String in
+            // Sanitize domains to prevent JavaScript injection in PAC script
+            let safeDomains = directDomains.map { $0.filter { $0.isASCII && "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._*-".contains($0) } }
+            let conditions = safeDomains.filter { !$0.isEmpty }.map { domain -> String in
                 if domain.hasPrefix("*.") {
                     let suffix = String(domain.dropFirst(2))
                     return "    if (dnsDomainIs(host, \".\(suffix)\") || host == \"\(suffix)\") return \"DIRECT\";"
