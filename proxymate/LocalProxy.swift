@@ -372,11 +372,13 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
         onEvent?(.allowed(host: host, method: method))
 
-        // Host memory + fingerprint
+        // Host memory + fingerprint (skip CONNECT — tunnel setup has minimal headers by design)
         HostMemory.shared.recordRequest(host: host)
-        let fp = RequestFingerprint.compute(headerString)
-        if let suspicion = RequestFingerprint.isSuspicious(fp) {
-            onEvent?(.log(.warn, "Suspicious fingerprint \(host): \(suspicion) [fp:\(fp.hash)]"))
+        if method.uppercased() != "CONNECT" {
+            let fp = RequestFingerprint.compute(headerString)
+            if let suspicion = RequestFingerprint.isSuspicious(fp) {
+                onEvent?(.log(.warn, "Suspicious fingerprint \(host): \(suspicion) [fp:\(fp.hash)]"))
+            }
         }
 
         // MITM interception for CONNECT tunnels
@@ -658,33 +660,34 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         }
     }
 
+    /// Cancel a connection only if it's not already cancelled.
+    private func safeCancel(_ conn: NWConnection) {
+        if conn.state != .cancelled { conn.cancel() }
+    }
+
     private func pipe(from: NWConnection, to: NWConnection) {
         from.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
+            guard let self else { self?.safeCancel(from); self?.safeCancel(to); return }
             if let data, !data.isEmpty {
                 to.send(content: data, completion: .contentProcessed { [weak self] err in
                     if err != nil {
-                        from.cancel()
-                        to.cancel()
+                        self?.safeCancel(from)
+                        self?.safeCancel(to)
                         return
                     }
-                    // Only close after data is fully sent
                     if isComplete {
-                        from.cancel()
-                        to.cancel()
+                        self?.safeCancel(from)
+                        self?.safeCancel(to)
                     } else {
                         self?.pipe(from: from, to: to)
                     }
                 })
-                return // don't fall through to isComplete/error below
-            }
-            if isComplete {
-                from.cancel()
-                to.cancel()
                 return
             }
-            if error != nil {
-                from.cancel()
-                to.cancel()
+            if isComplete || error != nil {
+                self.safeCancel(from)
+                self.safeCancel(to)
+                return
             }
         }
     }
@@ -699,41 +702,54 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                                aiContext: AIContext?) {
         let maxBuffer = 2 * 1024 * 1024  // 2 MB
         from.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
             var buf = buffer
             if let data, !data.isEmpty {
                 buf.append(data)
                 to.send(content: data, completion: .contentProcessed { [weak self] err in
+                    guard let self else { return }
                     if err != nil {
-                        from.cancel(); to.cancel(); return
+                        self.safeCancel(from); self.safeCancel(to); return
                     }
-                    if buf.count > maxBuffer {
-                        self?.pipe(from: from, to: to)
+                    if isComplete {
+                        self.finishBuffer(from: from, to: to, buffer: buf,
+                                          cacheContext: cacheContext, aiContext: aiContext)
+                    } else if buf.count > maxBuffer {
+                        self.pipe(from: from, to: to)
                     } else {
-                        self?.pipeAndBuffer(from: from, to: to, buffer: buf,
-                                            cacheContext: cacheContext, aiContext: aiContext)
+                        self.pipeAndBuffer(from: from, to: to, buffer: buf,
+                                           cacheContext: cacheContext, aiContext: aiContext)
                     }
                 })
+                return
             }
             if isComplete {
-                to.send(content: nil, isComplete: true, completion: .contentProcessed { _ in })
-                // Return upstream connection to pool instead of cancelling
-                if let endpoint = from.currentPath?.remoteEndpoint,
-                   case .hostPort(let host, let port) = endpoint {
-                    ConnectionPool.shared.put(host: "\(host)", port: port.rawValue, connection: from)
-                } else {
-                    from.cancel()
-                }
-                if let ctx = cacheContext {
-                    Self.storeInCache(responseData: buf, context: ctx)
-                }
-                if let ai = aiContext {
-                    self?.extractAIUsage(responseData: buf, context: ai)
-                }
+                self.finishBuffer(from: from, to: to, buffer: buf,
+                                  cacheContext: cacheContext, aiContext: aiContext)
                 return
             }
             if error != nil {
-                from.cancel(); to.cancel()
+                self.safeCancel(from); self.safeCancel(to)
             }
+        }
+    }
+
+    private func finishBuffer(from: NWConnection, to: NWConnection,
+                               buffer: Data, cacheContext: CacheContext?,
+                               aiContext: AIContext?) {
+        // Return upstream to pool or cancel
+        if let endpoint = from.currentPath?.remoteEndpoint,
+           case .hostPort(let host, let port) = endpoint {
+            ConnectionPool.shared.put(host: "\(host)", port: port.rawValue, connection: from)
+        } else {
+            safeCancel(from)
+        }
+        safeCancel(to)
+        if let ctx = cacheContext {
+            Self.storeInCache(responseData: buffer, context: ctx)
+        }
+        if let ai = aiContext {
+            extractAIUsage(responseData: buffer, context: ai)
         }
     }
 
