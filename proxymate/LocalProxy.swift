@@ -58,6 +58,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "proxymate.localproxy", qos: .userInitiated)
     private var listener: NWListener?
+    private var sessionCounter = 0
+    private var activeSessions: [Int: ProxySession] = [:]
     private var rulesSnapshot: [WAFRule] = []
     private var allowlistSnapshot: [AllowEntry] = []
     private var privacySnapshot = PrivacySettings()
@@ -592,7 +594,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         return (lines.joined(separator: "\r\n"), actions)
     }
 
-    // MARK: - Forwarding
+    // MARK: - Forwarding (via ProxySession — per-connection queue)
 
     private func forward(client: NWConnection,
                          headerData: Data,
@@ -601,138 +603,46 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                          cacheContext: CacheContext? = nil,
                          aiContext: AIContext? = nil,
                          memberId: UUID? = nil) {
-        guard let port = NWEndpoint.Port(rawValue: upstream.port) else {
-            client.cancel()
-            return
-        }
-        // Try connection pool first
-        let pooled = ConnectionPool.shared.get(host: upstream.host, port: port.rawValue)
-        let upstreamConn = pooled ?? NWConnection(
-            host: NWEndpoint.Host(upstream.host),
-            port: port,
-            using: .tcp
+        sessionCounter += 1
+        let sessionID = sessionCounter
+        let session = ProxySession(client: client, sessionID: sessionID, onEvent: onEvent)
+        activeSessions[sessionID] = session
+
+        session.connectAndForward(
+            headerData: headerData,
+            leftover: leftover,
+            upstreamHost: upstream.host,
+            upstreamPort: upstream.port,
+            cacheContext: cacheContext.map {
+                ProxySession.CacheContext(method: $0.method, url: $0.url, requestHeaders: $0.requestHeaders)
+            },
+            aiContext: aiContext.map {
+                ProxySession.AIContext(provider: $0.provider)
+            }
         )
-        upstreamConn.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .ready:
-                upstreamConn.send(content: headerData, completion: .contentProcessed { [weak self] err in
-                    if let err {
-                        self?.onEvent?(.log(.error, "Upstream send failed: \(err.localizedDescription)"))
-                        self?.sendErrorResponse(client: client, status: "502 Bad Gateway",
-                                                body: "Upstream send failed: \(err.localizedDescription)\n")
-                        upstreamConn.cancel()
-                        return
-                    }
-                    let startPipes = { [weak self] in
-                        self?.pipe(from: client, to: upstreamConn)
-                        // Buffer response if we need to cache or extract AI tokens
-                        if cacheContext != nil || aiContext != nil {
-                            self?.pipeAndBuffer(from: upstreamConn, to: client,
-                                                buffer: Data(),
-                                                cacheContext: cacheContext,
-                                                aiContext: aiContext)
-                        } else {
-                            self?.pipe(from: upstreamConn, to: client)
-                        }
-                    }
-                    if leftover.isEmpty {
-                        startPipes()
-                    } else {
-                        upstreamConn.send(content: leftover, completion: .contentProcessed { _ in
-                            startPipes()
-                        })
-                    }
-                })
-            case .failed(let err):
-                self?.onEvent?(.log(.error, "Upstream connect failed: \(err.localizedDescription)"))
-                if let mid = memberId { PoolRouter.shared.connectionEnded(memberId: mid) }
-                self?.sendErrorResponse(client: client, status: "502 Bad Gateway",
-                                        body: "Upstream connection failed: \(err.localizedDescription)\n")
-            case .cancelled:
-                if let mid = memberId { PoolRouter.shared.connectionEnded(memberId: mid) }
-                client.cancel()
-            default:
-                break
-            }
-        }
-        if pooled != nil {
-            // Already connected — trigger the handler directly
-            upstreamConn.stateUpdateHandler?(.ready)
-        } else {
-            upstreamConn.start(queue: queue)
-        }
-    }
 
-    private func pipe(from: NWConnection, to: NWConnection) {
-        from.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
-            if let data, !data.isEmpty {
-                // Fire-and-forget send — NWConnection serializes internally.
-                // Don't wait for completion before reading next chunk.
-                to.send(content: data, completion: .contentProcessed { err in
-                    if err != nil { from.cancel(); to.cancel() }
-                })
-            }
-            if isComplete || error != nil {
-                // Send remaining data then close
-                to.send(content: nil, isComplete: true, completion: .contentProcessed { _ in
-                    from.cancel(); to.cancel()
-                })
-            } else {
-                // Immediately read next chunk — no waiting for send completion
-                self.pipe(from: from, to: to)
+        // Cleanup session after 5 minutes max (prevents zombie sessions)
+        queue.asyncAfter(deadline: .now() + 300) { [weak self] in
+            if let s = self?.activeSessions.removeValue(forKey: sessionID) {
+                s.finish()
             }
         }
     }
 
-    /// Like `pipe` but accumulates the full response. On completion:
-    /// 1. Stores in cache if cacheContext is provided
-    /// 2. Extracts AI token usage if aiContext is provided
-    /// Caps buffering at 2 MB; falls back to plain pipe if exceeded.
-    private func pipeAndBuffer(from: NWConnection, to: NWConnection,
-                               buffer: Data,
-                               cacheContext: CacheContext?,
-                               aiContext: AIContext?) {
-        let maxBuffer = 2 * 1024 * 1024  // 2 MB
-        from.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
-            var buf = buffer
-            if let data, !data.isEmpty {
-                buf.append(data)
-                to.send(content: data, completion: .contentProcessed { err in
-                    if err != nil { from.cancel(); to.cancel() }
-                })
-            }
-            if isComplete {
-                self.finishBuffer(from: from, to: to, buffer: buf,
-                                  cacheContext: cacheContext, aiContext: aiContext)
-            } else if error != nil {
-                from.cancel(); to.cancel()
-            } else if buf.count > maxBuffer {
-                self.pipe(from: from, to: to)
-            } else {
-                self.pipeAndBuffer(from: from, to: to, buffer: buf,
-                                   cacheContext: cacheContext, aiContext: aiContext)
-            }
-        }
-    }
+    /// CONNECT tunnel — forward raw bytes between client and upstream
+    private func forwardTunnel(client: NWConnection, host: String, port: UInt16,
+                                upstreamHost: String, upstreamPort: UInt16) {
+        sessionCounter += 1
+        let sessionID = sessionCounter
+        let session = ProxySession(client: client, sessionID: sessionID, onEvent: onEvent)
+        activeSessions[sessionID] = session
 
-    private func finishBuffer(from: NWConnection, to: NWConnection,
-                               buffer: Data, cacheContext: CacheContext?,
-                               aiContext: AIContext?) {
-        // Return upstream to pool or cancel
-        if let endpoint = from.currentPath?.remoteEndpoint,
-           case .hostPort(let host, let port) = endpoint {
-            ConnectionPool.shared.put(host: "\(host)", port: port.rawValue, connection: from)
-        } else {
-            from.cancel()
-        }
-        to.cancel()
-        if let ctx = cacheContext {
-            Self.storeInCache(responseData: buffer, context: ctx)
-        }
-        if let ai = aiContext {
-            extractAIUsage(responseData: buffer, context: ai)
+        session.tunnel(upstreamHost: upstreamHost, upstreamPort: upstreamPort)
+
+        queue.asyncAfter(deadline: .now() + 300) { [weak self] in
+            if let s = self?.activeSessions.removeValue(forKey: sessionID) {
+                s.finish()
+            }
         }
     }
 
