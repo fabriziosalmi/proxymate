@@ -664,22 +664,22 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     }
 
     private func pipe(from: NWConnection, to: NWConnection) {
-        from.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
+        from.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
-                to.send(content: data, completion: .contentProcessed { [weak self] err in
-                    if err != nil || isComplete {
-                        from.cancel()
-                        to.cancel()
-                    } else {
-                        self?.pipe(from: from, to: to)
-                    }
+                // Fire-and-forget send — NWConnection serializes internally.
+                // Don't wait for completion before reading next chunk.
+                to.send(content: data, completion: .contentProcessed { err in
+                    if err != nil { from.cancel(); to.cancel() }
                 })
-            } else if isComplete || error != nil {
-                from.cancel()
-                to.cancel()
+            }
+            if isComplete || error != nil {
+                // Send remaining data then close
+                to.send(content: nil, isComplete: true, completion: .contentProcessed { _ in
+                    from.cancel(); to.cancel()
+                })
             } else {
-                // No data, not complete, no error — keep reading
+                // Immediately read next chunk — no waiting for send completion
                 self.pipe(from: from, to: to)
             }
         }
@@ -694,28 +694,22 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                                cacheContext: CacheContext?,
                                aiContext: AIContext?) {
         let maxBuffer = 2 * 1024 * 1024  // 2 MB
-        from.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
+        from.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             var buf = buffer
             if let data, !data.isEmpty {
                 buf.append(data)
-                to.send(content: data, completion: .contentProcessed { [weak self] err in
-                    guard let self else { return }
-                    if err != nil || isComplete {
-                        self.finishBuffer(from: from, to: to, buffer: buf,
-                                          cacheContext: cacheContext, aiContext: aiContext)
-                    } else if buf.count > maxBuffer {
-                        self.pipe(from: from, to: to)
-                    } else {
-                        self.pipeAndBuffer(from: from, to: to, buffer: buf,
-                                           cacheContext: cacheContext, aiContext: aiContext)
-                    }
+                to.send(content: data, completion: .contentProcessed { err in
+                    if err != nil { from.cancel(); to.cancel() }
                 })
-            } else if isComplete {
+            }
+            if isComplete {
                 self.finishBuffer(from: from, to: to, buffer: buf,
                                   cacheContext: cacheContext, aiContext: aiContext)
             } else if error != nil {
                 from.cancel(); to.cancel()
+            } else if buf.count > maxBuffer {
+                self.pipe(from: from, to: to)
             } else {
                 self.pipeAndBuffer(from: from, to: to, buffer: buf,
                                    cacheContext: cacheContext, aiContext: aiContext)
