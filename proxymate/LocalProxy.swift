@@ -107,16 +107,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 self.listener = listener
                 listener.start(queue: self.queue)
 
-                // Start NIO TLS proxy if MITM enabled
-                if mitm.enabled {
-                    do {
-                        let nioPort = try NIOTLSProxy.shared.start(
-                            rules: rules, privacy: privacy, onEvent: self.onEvent)
-                        self.onEvent?(.log(.info, "NIO MITM proxy on 127.0.0.1:\(nioPort)"))
-                    } catch {
-                        self.onEvent?(.log(.error, "NIO MITM start failed: \(error)"))
-                    }
-                }
+                // NIOTLSProxy reserved for v2.0 (requires full NIO listener rewrite)
             } catch {
                 self.startCompletion = nil
                 completion(.failure(error))
@@ -130,7 +121,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             self.listener?.cancel()
             self.listener = nil
             self.upstream = nil
-            NIOTLSProxy.shared.stop()
+            // NIOTLSProxy.shared.stop() // v2.0
             self.onEvent?(.stopped)
         }
     }
@@ -395,35 +386,23 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
         }
 
-        // MITM interception for CONNECT tunnels (NIO-SSL)
+        // MITM interception for CONNECT tunnels
         if method.uppercased() == "CONNECT" &&
-           TLSManager.shared.shouldIntercept(host: host, settings: mitmSnapshot) &&
-           NIOTLSProxy.shared.port > 0 {
-            // First connect to NIO MITM proxy, THEN tell client "200 OK"
-            let nioPort = NWEndpoint.Port(rawValue: UInt16(NIOTLSProxy.shared.port))!
-            let nioConn = NWConnection(host: .ipv4(.loopback), port: nioPort, using: .tcp)
-            nioConn.stateUpdateHandler = { [weak self] state in
-                guard let self else { return }
-                switch state {
-                case .ready:
-                    // Send hostname header to NIO so it can forge the cert
-                    let header = Data("\(host)\n".utf8)
-                    nioConn.send(content: header, completion: .contentProcessed { _ in
-                        // Now tell client tunnel is established
-                        let established = Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8)
-                        client.send(content: established, completion: .contentProcessed { _ in
-                            // Bidirectional pipe: client ↔ NIO MITM proxy
-                            self.pipe(from: client, to: nioConn)
-                            self.pipe(from: nioConn, to: client)
-                        })
-                    })
-                case .failed:
-                    self.onEvent?(.log(.error, "MITM NIO connect failed for \(host)"))
-                    client.cancel()
-                default: break
-                }
-            }
-            nioConn.start(queue: self.queue)
+           TLSManager.shared.shouldIntercept(host: host, settings: mitmSnapshot) {
+            let targetPort = UInt16(target.split(separator: ":").last.flatMap { String($0) } ?? "443") ?? 443
+            let established = Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8)
+            client.send(content: established, completion: .contentProcessed { [weak self] _ in
+                guard let self else { client.cancel(); return }
+                let handler = MITMHandler(
+                    clientConn: client,
+                    hostname: host,
+                    port: targetPort,
+                    rules: self.rulesSnapshot,
+                    privacy: self.privacySnapshot,
+                    onEvent: self.onEvent
+                )
+                handler.start()
+            })
             return
         }
 
