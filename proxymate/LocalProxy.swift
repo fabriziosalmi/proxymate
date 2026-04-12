@@ -106,6 +106,17 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 }
                 self.listener = listener
                 listener.start(queue: self.queue)
+
+                // Start NIO TLS proxy if MITM enabled
+                if mitm.enabled {
+                    do {
+                        let nioPort = try NIOTLSProxy.shared.start(
+                            rules: rules, privacy: privacy, onEvent: self.onEvent)
+                        self.onEvent?(.log(.info, "NIO MITM proxy on 127.0.0.1:\(nioPort)"))
+                    } catch {
+                        self.onEvent?(.log(.error, "NIO MITM start failed: \(error)"))
+                    }
+                }
             } catch {
                 self.startCompletion = nil
                 completion(.failure(error))
@@ -119,6 +130,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             self.listener?.cancel()
             self.listener = nil
             self.upstream = nil
+            NIOTLSProxy.shared.stop()
             self.onEvent?(.stopped)
         }
     }
@@ -383,24 +395,26 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
         }
 
-        // MITM interception for CONNECT tunnels
+        // MITM interception for CONNECT tunnels (via NIO-SSL proxy)
         if method.uppercased() == "CONNECT" &&
-           TLSManager.shared.shouldIntercept(host: host, settings: mitmSnapshot) {
-            // Parse port from target (host:port)
-            let targetPort = UInt16(target.split(separator: ":").last.flatMap { String($0) } ?? "443") ?? 443
-            // Send "200 Connection Established" then hand off to MITMHandler
+           TLSManager.shared.shouldIntercept(host: host, settings: mitmSnapshot) &&
+           NIOTLSProxy.shared.port > 0 {
+            // Send "200 Connection Established" then pipe client to NIO MITM proxy
             let established = "HTTP/1.1 200 Connection Established\r\n\r\n"
             client.send(content: established.data(using: .utf8), completion: .contentProcessed { [weak self] _ in
                 guard let self else { client.cancel(); return }
-                let handler = MITMHandler(
-                    clientConn: client,
-                    hostname: host,
-                    port: targetPort,
-                    rules: self.rulesSnapshot,
-                    privacy: self.privacySnapshot,
-                    onEvent: self.onEvent
-                )
-                handler.start()
+                // Connect to local NIO proxy and pipe bidirectionally
+                let nioPort = NWEndpoint.Port(rawValue: UInt16(NIOTLSProxy.shared.port))!
+                let nioConn = NWConnection(host: .ipv4(.loopback), port: nioPort, using: .tcp)
+                nioConn.stateUpdateHandler = { [weak self] state in
+                    if case .ready = state {
+                        self?.pipe(from: client, to: nioConn)
+                        self?.pipe(from: nioConn, to: client)
+                    } else if case .failed = state {
+                        client.cancel()
+                    }
+                }
+                nioConn.start(queue: self.queue)
             })
             return
         }

@@ -268,6 +268,83 @@ nonisolated final class TLSManager: @unchecked Sendable {
         }
     }
 
+    // MARK: - PEM for NIO-SSL
+
+    struct PEMBundle {
+        let cert: String   // leaf cert PEM
+        let key: String    // leaf private key PEM
+        let caCert: String // CA cert PEM
+    }
+
+    /// Returns PEM strings for a hostname (cert + key + CA).
+    /// Uses disk-cached PEM files if available, generates on miss.
+    func pemForHost(_ hostname: String) throws -> PEMBundle {
+        try queue.sync {
+            guard isCAInstalled else { throw TLSError.noCA }
+
+            let safeHostname = hostname.replacingOccurrences(of: "*", with: "_")
+                .replacingOccurrences(of: "/", with: "_")
+            let certFile = leafCacheDir.appendingPathComponent("\(safeHostname).pem")
+            let keyFile = leafCacheDir.appendingPathComponent("\(safeHostname).key")
+
+            // Check PEM cache
+            if let certPEM = try? String(contentsOf: certFile, encoding: .utf8),
+               let keyPEM = try? String(contentsOf: keyFile, encoding: .utf8),
+               let caPEM = try? String(contentsOf: URL(fileURLWithPath: caCertPath), encoding: .utf8) {
+                return PEMBundle(cert: certPEM, key: keyPEM, caCert: caPEM)
+            }
+
+            // Generate
+            try? FileManager.default.createDirectory(at: leafCacheDir, withIntermediateDirectories: true)
+
+            let tmpDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("proxymate-pem-\(hostname.hashValue)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+            let tmpKey = tmpDir.appendingPathComponent("leaf.key").path
+            let tmpCSR = tmpDir.appendingPathComponent("leaf.csr").path
+            let tmpCert = tmpDir.appendingPathComponent("leaf.pem").path
+            let extPath = tmpDir.appendingPathComponent("ext.cnf").path
+
+            let extCnf = """
+            [v3_leaf]
+            subjectAltName = DNS:\(hostname)
+            basicConstraints = CA:FALSE
+            keyUsage = digitalSignature, keyEncipherment
+            extendedKeyUsage = serverAuth
+            """
+            try extCnf.write(toFile: extPath, atomically: true, encoding: .utf8)
+
+            guard shell("/usr/bin/openssl", args: ["genrsa", "-out", tmpKey, "2048"]) == 0 else {
+                throw TLSError.keyGenFailed("Leaf key failed")
+            }
+            guard shell("/usr/bin/openssl", args: [
+                "req", "-new", "-key", tmpKey, "-out", tmpCSR,
+                "-subj", "/CN=\(hostname)/O=Proxymate MITM"
+            ]) == 0 else { throw TLSError.certCreationFailed }
+
+            guard shell("/usr/bin/openssl", args: [
+                "x509", "-req", "-in", tmpCSR,
+                "-CA", caCertPath, "-CAkey", caKeyPath,
+                "-CAcreateserial", "-out", tmpCert, "-days", "365",
+                "-extensions", "v3_leaf", "-extfile", extPath
+            ]) == 0 else { throw TLSError.certCreationFailed }
+
+            guard let certPEM = try? String(contentsOfFile: tmpCert, encoding: .utf8),
+                  let keyPEM = try? String(contentsOfFile: tmpKey, encoding: .utf8),
+                  let caPEM = try? String(contentsOfFile: caCertPath, encoding: .utf8) else {
+                throw TLSError.certCreationFailed
+            }
+
+            // Cache PEM files
+            try? certPEM.write(to: certFile, atomically: true, encoding: .utf8)
+            try? keyPEM.write(to: keyFile, atomically: true, encoding: .utf8)
+
+            return PEMBundle(cert: certPEM, key: keyPEM, caCert: caPEM)
+        }
+    }
+
     /// Import a PKCS12 blob and return the SecIdentity.
     private func importP12(_ data: Data) -> SecIdentity? {
         var items: CFArray?
