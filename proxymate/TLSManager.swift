@@ -13,7 +13,7 @@ import Security
 import AppKit
 
 nonisolated struct MITMSettings: Codable, Hashable, Sendable {
-    var enabled: Bool = false
+    var enabled: Bool = false  // EXPERIMENTAL: SSLContext crashes under load. Use at own risk.
     var interceptHosts: [String] = []
     var excludeHosts: [String] = [
         "*.apple.com", "*.icloud.com",

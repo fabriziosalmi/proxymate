@@ -2179,10 +2179,12 @@ struct PrivacyView: View {
                                 .buttonStyle(.bordered).controlSize(.mini)
                                 .foregroundStyle(.red)
                         }
-                        Toggle("Enable MITM", isOn: mitmBinding(\.enabled))
+                        Toggle("Enable MITM (Experimental)", isOn: mitmBinding(\.enabled))
                             .font(.caption).toggleStyle(.switch).controlSize(.small)
 
                         if state.mitmSettings.enabled {
+                            Text("Experimental: may cause crashes with some apps. Disable if unstable.")
+                                .font(.caption2).foregroundStyle(.orange)
                             Text("HTTPS body inspection is active for non-excluded hosts. Banking, Apple, and Google services are excluded by default.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
