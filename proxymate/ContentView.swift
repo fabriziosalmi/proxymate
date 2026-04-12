@@ -2308,10 +2308,11 @@ struct PrivacyView: View {
                             .font(.caption).toggleStyle(.switch).controlSize(.small)
 
                         if state.mitmSettings.enabled {
-                            Text("HTTPS body inspection is active for non-excluded hosts. Banking, Apple, and Google services are excluded by default.")
+                            Text("HTTPS inspection active. Banking, Apple, Google excluded by default. Cert-pinned apps auto-excluded after 3 failures.")
                                 .font(.caption2).foregroundStyle(.secondary)
-                            Text("Apps with certificate pinning are auto-detected and excluded after 3 failed handshakes.")
-                                .font(.caption2).foregroundStyle(.secondary)
+
+                            // Exclude host input
+                            MITMExcludeSection()
                         }
                     } else {
                         Text("Generate a root CA to enable HTTPS body inspection. This allows WAF content rules and exfiltration scanning to work on encrypted traffic.")
@@ -2423,5 +2424,84 @@ struct PrivacyView: View {
             .font(.caption)
             .toggleStyle(.switch)
             .controlSize(.small)
+    }
+}
+
+// MARK: - MITM Exclude Section
+
+struct MITMExcludeSection: View {
+    @EnvironmentObject var state: AppState
+    @State private var newExclude = ""
+
+    private var runtimeExcludes: [String] {
+        TLSManager.shared.getRuntimeExcludes()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider().padding(.vertical, 4)
+            Text("BYPASS (skip MITM)").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+
+            // Add new exclude
+            HStack(spacing: 4) {
+                TextField("domain.com or *.domain.com", text: $newExclude)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                Button("Add") {
+                    let host = newExclude.trimmingCharacters(in: .whitespaces).lowercased()
+                    guard !host.isEmpty else { return }
+                    var s = state.mitmSettings
+                    if !s.excludeHosts.contains(host) {
+                        s.excludeHosts.append(host)
+                        state.updateMITM(s)
+                    }
+                    newExclude = ""
+                }
+                .buttonStyle(.bordered).controlSize(.mini)
+                .disabled(newExclude.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            // User excludes (removable)
+            let defaultExcludes = MITMSettings().excludeHosts
+            let userExcludes = state.mitmSettings.excludeHosts.filter { !defaultExcludes.contains($0) }
+            if !userExcludes.isEmpty {
+                Text("User excludes:").font(.caption2).foregroundStyle(.secondary)
+                ForEach(userExcludes, id: \.self) { host in
+                    HStack(spacing: 4) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.red)
+                            .font(.caption2)
+                            .onTapGesture {
+                                var s = state.mitmSettings
+                                s.excludeHosts.removeAll { $0 == host }
+                                state.updateMITM(s)
+                            }
+                        Text(host).font(.system(.caption, design: .monospaced))
+                    }
+                }
+            }
+
+            // Auto-detected excludes (cert pinning)
+            if !runtimeExcludes.isEmpty {
+                Text("Auto-detected (cert pinning):").font(.caption2).foregroundStyle(.secondary)
+                Text(runtimeExcludes.joined(separator: ", "))
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(3)
+                Button("Clear auto-excludes") {
+                    TLSManager.shared.resetPinningHistory()
+                }
+                .buttonStyle(.borderless).font(.caption2).foregroundStyle(.secondary)
+            }
+
+            // Default excludes (info only)
+            DisclosureGroup {
+                Text(defaultExcludes.joined(separator: ", "))
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            } label: {
+                Text("Default excludes (\(defaultExcludes.count))").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
     }
 }
