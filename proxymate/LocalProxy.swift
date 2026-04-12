@@ -559,14 +559,20 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             i += 1
         }
 
-        // Inject DNT and Sec-GPC before the final empty line
-        let insertIdx = max(lines.count - 1, 1)
+        // Inject DNT and Sec-GPC before the header/body separator (\r\n\r\n).
+        // Find the first empty line (the separator) — insert before it.
+        let insertIdx: Int
+        if let emptyIdx = lines.firstIndex(of: "") {
+            insertIdx = emptyIdx
+        } else {
+            insertIdx = lines.count
+        }
         if settings.forceDNT && !hasDNT {
             lines.insert("DNT: 1", at: insertIdx)
             actions.append("DNT")
         }
         if settings.forceGPC && !hasGPC {
-            lines.insert("Sec-GPC: 1", at: insertIdx)
+            lines.insert("Sec-GPC: 1", at: insertIdx + (settings.forceDNT && !hasDNT ? 1 : 0))
             actions.append("GPC")
         }
 
