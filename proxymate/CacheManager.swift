@@ -89,12 +89,12 @@ nonisolated final class CacheManager: @unchecked Sendable {
     }
 
     func lookup(method: String, url: String, requestHeaders: String) -> LookupResult? {
-        guard settings.enabled else { return nil }
         guard method.uppercased() == "GET" || method.uppercased() == "HEAD" else { return nil }
 
         let key = cacheKey(method: method, url: url, requestHeaders: requestHeaders)
 
         return queue.sync { () -> LookupResult? in
+            guard settings.enabled else { return nil }
             guard let entry = entries[key] else {
                 // L1 miss → try L2 disk cache
                 if let l2 = DiskCache.shared.lookup(key: key) {
@@ -144,17 +144,20 @@ nonisolated final class CacheManager: @unchecked Sendable {
 
     func store(method: String, url: String, requestHeaders: String,
                statusLine: String, responseHeaders: String, body: Data) {
-        guard settings.enabled else { return }
         guard method.uppercased() == "GET" else { return }
+
+        // Take a thread-safe snapshot of settings
+        let s = queue.sync { settings }
+        guard s.enabled else { return }
 
         let respMap = Self.parseHeaderMap(responseHeaders)
 
         // Never cache responses with Set-Cookie unless explicitly allowed
-        if respMap["set-cookie"] != nil && !settings.cacheAuthenticated { return }
+        if respMap["set-cookie"] != nil && !s.cacheAuthenticated { return }
 
         // Parse Cache-Control
         let cc = Self.parseCacheControl(respMap["cache-control"] ?? "")
-        if cc.noStore && settings.honorNoStore { return }
+        if cc.noStore && s.honorNoStore { return }
         if cc.private_ { return }
 
         // Status code check
@@ -172,7 +175,7 @@ nonisolated final class CacheManager: @unchecked Sendable {
                 let date = Self.parseHTTPDate(expires) {
             maxAge = max(0, date.timeIntervalSinceNow)
         } else {
-            maxAge = TimeInterval(settings.defaultTTL)
+            maxAge = TimeInterval(s.defaultTTL)
         }
 
         // Vary fields

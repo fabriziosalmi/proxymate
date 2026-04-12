@@ -79,6 +79,15 @@ nonisolated final class SOCKS5Listener: @unchecked Sendable {
             let ver = data[0]
             guard ver == 0x05 else { client.cancel(); return } // Must be SOCKS5
 
+            // Check if client offers NO AUTH (0x00)
+            let nmethods = Int(data[1])
+            let methods = data.count >= 2 + nmethods ? Array(data[2..<(2 + nmethods)]) : []
+            guard methods.contains(0x00) else {
+                // Client doesn't support NO AUTH — reject with 0xFF (no acceptable methods)
+                client.send(content: Data([0x05, 0xFF]), completion: .contentProcessed { _ in client.cancel() })
+                return
+            }
+
             // Reply: no auth required (VER=5, METHOD=0)
             let reply = Data([0x05, 0x00])
             client.send(content: reply, completion: .contentProcessed { [weak self] _ in

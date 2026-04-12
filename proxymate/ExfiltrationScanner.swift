@@ -30,6 +30,7 @@ nonisolated final class ExfiltrationScanner: @unchecked Sendable {
     }
 
     private var compiled: [CompiledPattern] = []
+    private let compiledLock = NSLock()
     private let maxFailures = 5
 
     struct ScanResult: Sendable {
@@ -59,7 +60,9 @@ nonisolated final class ExfiltrationScanner: @unchecked Sendable {
                     ))
                 }
             }
+            self.compiledLock.lock()
             self.compiled = newCompiled
+            self.compiledLock.unlock()
         }
     }
 
@@ -69,11 +72,9 @@ nonisolated final class ExfiltrationScanner: @unchecked Sendable {
     /// match found, or nil if clean. Fast path: if no packs loaded, returns nil
     /// immediately.
     func scan(headers: String, target: String) -> ScanResult? {
-        // Synchronous read — we're on the proxy queue when called from
-        // routeRequest, and compiled array is only mutated on self.queue.
-        // We accept the (tiny) race window for perf; at worst we miss a
-        // freshly added pattern for one request.
+        compiledLock.lock()
         let patterns = compiled
+        compiledLock.unlock()
         guard !patterns.isEmpty else { return nil }
 
         // Combine target URL + headers into one string to scan

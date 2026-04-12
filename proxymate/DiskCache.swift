@@ -60,8 +60,8 @@ nonisolated final class DiskCache: @unchecked Sendable {
     // MARK: - Lookup
 
     func lookup(key: String) -> CacheManager.LookupResult? {
-        guard settings.enabled, db != nil else { return nil }
         return queue.sync {
+            guard settings.enabled, db != nil else { return nil }
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
 
@@ -100,9 +100,8 @@ nonisolated final class DiskCache: @unchecked Sendable {
 
     func store(key: String, statusLine: String, headers: String, body: Data,
                maxAge: TimeInterval) {
-        guard settings.enabled, db != nil else { return }
         queue.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.settings.enabled, self.db != nil else { return }
 
             let bodyHash = Self.sha256Hex(body)
             self.writeBody(hash: bodyHash, data: body)

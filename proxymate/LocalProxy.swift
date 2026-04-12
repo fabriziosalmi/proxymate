@@ -124,8 +124,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     }
 
     func updateRules(_ rules: [WAFRule]) {
-        queue.async { [weak self] in self?.rulesSnapshot = rules }
-        ruleEngine.compile(rules: rules)
+        queue.async { [weak self] in
+            self?.rulesSnapshot = rules
+            self?.ruleEngine.compile(rules: rules)
+        }
     }
 
     func updateAllowlist(_ entries: [AllowEntry]) {
@@ -527,8 +529,9 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
             // Cookie — strip tracking cookies
             if lower.hasPrefix("cookie:") && settings.stripTrackingCookies {
-                let prefix = "Cookie: "
-                let rawValue = String(lines[i].dropFirst(prefix.count))
+                let colonIdx = lines[i].firstIndex(of: ":") ?? lines[i].startIndex
+                let rawValue = String(lines[i][lines[i].index(after: colonIdx)...])
+                    .trimmingCharacters(in: .whitespaces)
                 let cookies = rawValue.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
                 let filtered = cookies.filter { cookie in
                     let name = String(cookie.prefix(while: { $0 != "=" })).lowercased()
@@ -540,7 +543,9 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                         lines.remove(at: i)
                         continue
                     } else {
-                        lines[i] = prefix + filtered.joined(separator: "; ")
+                        // Preserve original header name casing
+                        let headerName = String(lines[i][..<colonIdx])
+                        lines[i] = headerName + ": " + filtered.joined(separator: "; ")
                     }
                 }
             }
@@ -662,12 +667,19 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                         to.cancel()
                         return
                     }
-                    self?.pipe(from: from, to: to)
+                    // Only close after data is fully sent
+                    if isComplete {
+                        from.cancel()
+                        to.cancel()
+                    } else {
+                        self?.pipe(from: from, to: to)
+                    }
                 })
+                return // don't fall through to isComplete/error below
             }
             if isComplete {
-                to.send(content: nil, isComplete: true, completion: .contentProcessed { _ in })
                 from.cancel()
+                to.cancel()
                 return
             }
             if error != nil {
@@ -761,15 +773,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     private func sendBlockedResponse(client: NWConnection, ruleName: String) {
         let body = "Blocked by Proxymate: \(ruleName)\n"
-        let response = """
-        HTTP/1.1 403 Forbidden\r
-        Content-Type: text/plain; charset=utf-8\r
-        Content-Length: \(body.utf8.count)\r
-        Connection: close\r
-        \r
-        \(body)
-        """
-        client.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in
+        let headers = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n"
+        var data = Data(headers.utf8)
+        data.append(Data(body.utf8))
+        client.send(content: data, completion: .contentProcessed { _ in
             client.cancel()
         })
     }
@@ -806,15 +813,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     }
 
     private func sendErrorResponse(client: NWConnection, status: String, body: String) {
-        let response = """
-        HTTP/1.1 \(status)\r
-        Content-Type: text/plain; charset=utf-8\r
-        Content-Length: \(body.utf8.count)\r
-        Connection: close\r
-        \r
-        \(body)
-        """
-        client.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in
+        let headers = "HTTP/1.1 \(status)\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n"
+        var data = Data(headers.utf8)
+        data.append(Data(body.utf8))
+        client.send(content: data, completion: .contentProcessed { _ in
             client.cancel()
         })
     }
@@ -822,21 +824,24 @@ nonisolated final class LocalProxy: @unchecked Sendable {
     // MARK: - Parsing helpers
 
     static func extractHost(method: String, target: String, headers: String) -> String {
+        var host: String
         if method.uppercased() == "CONNECT" {
-            // Handle [IPv6]:port and host:port
-            let parsed = IPv6Support.parseHostPort(target)
-            return parsed.host
-        }
-        if let url = URL(string: target), let h = url.host {
-            return h
-        }
-        for line in headers.split(separator: "\r\n", omittingEmptySubsequences: false) {
-            if line.lowercased().hasPrefix("host:") {
-                let value = line.dropFirst("host:".count).trimmingCharacters(in: .whitespaces)
-                return IPv6Support.parseHostPort(value).host
+            host = IPv6Support.parseHostPort(target).host
+        } else if let url = URL(string: target), let h = url.host {
+            host = h
+        } else {
+            host = ""
+            for line in headers.split(separator: "\r\n", omittingEmptySubsequences: false) {
+                if line.lowercased().hasPrefix("host:") {
+                    let value = line.dropFirst("host:".count).trimmingCharacters(in: .whitespaces)
+                    host = IPv6Support.parseHostPort(value).host
+                    break
+                }
             }
         }
-        return ""
+        // Strip trailing dot (valid DNS, but breaks rule matching and cache keys)
+        if host.hasSuffix(".") { host = String(host.dropLast()) }
+        return host
     }
 
     static func matchesDomain(host: String, pattern: String) -> Bool {

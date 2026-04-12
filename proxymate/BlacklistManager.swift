@@ -20,6 +20,8 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
     private var domainSets: [UUID: Set<String>] = [:]
     /// IP → set of source IDs that block it
     private var ipSets: [UUID: Set<String>] = [:]
+    /// Lock for reading domainSets/ipSets from non-queue threads.
+    private let setsLock = NSLock()
 
     /// URLSession that bypasses system proxy (avoids circular dependency).
     private let directSession: URLSession = {
@@ -46,18 +48,18 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
     /// Check if a host (domain or IP) is in any enabled blacklist.
     func lookup(host: String, enabledSources: [BlacklistSource]) -> BlockResult? {
         let h = host.lowercased()
+        setsLock.lock()
+        let domains = domainSets
+        let ips = ipSets
+        setsLock.unlock()
         for source in enabledSources where source.enabled {
-            // Check domain sets
-            if let domains = domainSets[source.id] {
-                if domains.contains(h) || Self.matchesParentDomain(h, in: domains) {
+            if let d = domains[source.id] {
+                if d.contains(h) || Self.matchesParentDomain(h, in: d) {
                     return BlockResult(sourceName: source.name, category: source.category)
                 }
             }
-            // Check IP sets
-            if let ips = ipSets[source.id] {
-                if ips.contains(h) {
-                    return BlockResult(sourceName: source.name, category: source.category)
-                }
+            if let i = ips[source.id], i.contains(h) {
+                return BlockResult(sourceName: source.name, category: source.category)
             }
         }
         return nil
@@ -104,12 +106,14 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
                     let entries = Self.parse(text: text, format: source.format)
                     let count = entries.domains.count + entries.ips.count
 
+                    self.setsLock.lock()
                     if !entries.domains.isEmpty {
                         self.domainSets[source.id] = entries.domains
                     }
                     if !entries.ips.isEmpty {
                         self.ipSets[source.id] = entries.ips
                     }
+                    self.setsLock.unlock()
 
                     // Cache to disk
                     self.saveToDisk(source: source, entries: entries)
@@ -133,19 +137,27 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
 
     func clearSource(_ id: UUID) {
         queue.async { [weak self] in
+            self?.setsLock.lock()
             self?.domainSets.removeValue(forKey: id)
             self?.ipSets.removeValue(forKey: id)
+            self?.setsLock.unlock()
         }
     }
 
     func entryCount(for id: UUID) -> Int {
-        (domainSets[id]?.count ?? 0) + (ipSets[id]?.count ?? 0)
+        setsLock.lock()
+        let n = (domainSets[id]?.count ?? 0) + (ipSets[id]?.count ?? 0)
+        setsLock.unlock()
+        return n
     }
 
     /// Total entries across all sources (may include duplicates across sources).
     var totalEntries: Int {
-        domainSets.values.reduce(0) { $0 + $1.count } +
-        ipSets.values.reduce(0) { $0 + $1.count }
+        setsLock.lock()
+        let n = domainSets.values.reduce(0) { $0 + $1.count } +
+                ipSets.values.reduce(0) { $0 + $1.count }
+        setsLock.unlock()
+        return n
     }
 
     /// Unique entries (deduplicated across all sources).
@@ -242,8 +254,10 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
         let entries = Self.parse(text: text, format: .plainDomains) // cached as plain list
         // Also try IPs
         let ipEntries = Self.parse(text: text, format: .plainIPs)
+        setsLock.lock()
         if !entries.domains.isEmpty { domainSets[source.id] = entries.domains }
         if !ipEntries.ips.isEmpty { ipSets[source.id] = ipEntries.ips }
+        setsLock.unlock()
         return entries.domains.count + ipEntries.ips.count
     }
 
