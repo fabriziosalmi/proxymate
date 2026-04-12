@@ -42,6 +42,7 @@ final class AppState: ObservableObject {
     @Published var wafShadowMode: Bool = false
     @Published var isLowPowerMode: Bool = false
     @Published var isEnabled: Bool = false
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
     @Published var isBusy: Bool = false
     @Published var localPort: UInt16?
     @Published var logs: [LogEntry] = []
@@ -116,16 +117,20 @@ final class AppState: ObservableObject {
         }
         log(.info, "Proxymate ready")
 
-        // Check CA certificate expiry (#43)
-        if let days = TLSManager.shared.caExpiryDays(), days < 30 {
-            if days <= 0 {
-                log(.error, "CA certificate has EXPIRED — regenerate to continue MITM interception")
-            } else {
-                log(.warn, "CA certificate expires in \(days) days — consider regenerating soon")
+        NotificationManager.shared.setup()
+
+        // Check CA certificate expiry (#43) — async to avoid blocking main thread
+        Task.detached(priority: .utility) {
+            let days = TLSManager.shared.caExpiryDays()
+            await MainActor.run { [weak self] in
+                guard let self, let days, days < 30 else { return }
+                if days <= 0 {
+                    self.log(.error, "CA certificate has EXPIRED — regenerate to continue MITM interception")
+                } else {
+                    self.log(.warn, "CA certificate expires in \(days) days — consider regenerating soon")
+                }
             }
         }
-
-        NotificationManager.shared.setup()
         startBatteryMonitor()
         registerMemoryPressureHandler()
 
@@ -412,6 +417,7 @@ final class AppState: ObservableObject {
             DiskCache.shared.purgeAll()
         }
         source.resume()
+        memoryPressureSource = source  // retain to prevent dealloc-while-resumed crash
     }
 
     // MARK: - Battery Monitor (#41)
