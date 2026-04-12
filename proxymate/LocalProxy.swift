@@ -246,6 +246,13 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         let isAllowed = ruleEngine.isAllowed(host: host)
             || AllowlistMatcher.isAllowed(host: host, port: nil, entries: allowlistSnapshot)
 
+        // Mock check: stealth 200 OK (before block — mock takes priority)
+        if !isAllowed && ruleEngine.checkMock(host: host) {
+            onEvent?(.blocked(host: host, ruleName: "Mock: \(host)"))
+            sendMockResponse(client: client, host: host)
+            return
+        }
+
         // WAF check: RuleEngine fast path (Set for domains/IPs, then content)
         if !isAllowed {
             if let blockReason = ruleEngine.checkBlock(host: host) {
@@ -366,6 +373,13 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         }
 
         onEvent?(.allowed(host: host, method: method))
+
+        // Host memory + fingerprint
+        HostMemory.shared.recordRequest(host: host)
+        let fp = RequestFingerprint.compute(headerString)
+        if let suspicion = RequestFingerprint.isSuspicious(fp) {
+            onEvent?(.log(.warn, "Suspicious fingerprint \(host): \(suspicion) [fp:\(fp.hash)]"))
+        }
 
         // MITM interception for CONNECT tunnels
         if method.uppercased() == "CONNECT" &&
@@ -757,6 +771,37 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         })
     }
 
+    /// Stealth mock: return fake 200 OK so the tracker thinks it succeeded.
+    private func sendMockResponse(client: NWConnection, host: String) {
+        // Return realistic responses based on common tracker patterns
+        let contentType: String
+        let body: Data
+        if host.contains("analytics") || host.contains("collect") || host.contains("pixel") {
+            // Tracking pixel — return 1x1 transparent GIF
+            contentType = "image/gif"
+            body = Data([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00,
+                         0x01, 0x00, 0x80, 0x00, 0x00, 0xFF, 0xFF, 0xFF,
+                         0x00, 0x00, 0x00, 0x21, 0xF9, 0x04, 0x01, 0x00,
+                         0x00, 0x00, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x00,
+                         0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44,
+                         0x01, 0x00, 0x3B]) // 1x1 transparent GIF
+        } else if host.contains("tag") || host.contains("gtm") || host.contains("js") {
+            // Script tag — return empty JS
+            contentType = "application/javascript"
+            body = Data("/* */".utf8)
+        } else {
+            // Generic — return empty JSON
+            contentType = "application/json"
+            body = Data("{}".utf8)
+        }
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.count)\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
+        var full = Data(response.utf8)
+        full.append(body)
+        client.send(content: full, completion: .contentProcessed { _ in
+            client.cancel()
+        })
+    }
+
     private func sendErrorResponse(client: NWConnection, status: String, body: String) {
         let response = """
         HTTP/1.1 \(status)\r
@@ -816,6 +861,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             guard let regex = try? NSRegularExpression(pattern: rule.pattern, options: []) else { return false }
             let combined = t + "\n" + hd
             return regex.firstMatch(in: combined, range: NSRange(combined.startIndex..., in: combined)) != nil
+        case .mockDomain:
+            return false  // mock handled separately via checkMock, not in block path
         }
     }
 }

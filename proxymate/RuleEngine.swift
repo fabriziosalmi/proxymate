@@ -20,6 +20,8 @@ nonisolated final class RuleEngine: @unchecked Sendable {
     private var blockDomains = Set<String>()     // exact domain → block
     private var blockSuffixes: [String] = []     // .suffix → block
     private var blockIPs = Set<String>()         // exact IP → block
+    private var mockDomains = Set<String>()      // exact domain → mock 200
+    private var mockSuffixes: [String] = []      // .suffix → mock 200
     private var contentAC = AhoCorasick()        // Aho-Corasick automaton for content rules
     private var regexRules: [(name: String, regex: NSRegularExpression)] = []
 
@@ -43,6 +45,8 @@ nonisolated final class RuleEngine: @unchecked Sendable {
             var bd = Set<String>()
             var bs = [String]()
             var bi = Set<String>()
+            var md = Set<String>()
+            var ms = [String]()
             let ac = AhoCorasick()
             var rx: [(String, NSRegularExpression)] = []
 
@@ -62,6 +66,10 @@ nonisolated final class RuleEngine: @unchecked Sendable {
                 case .blockIP:
                     bi.insert(pat)
 
+                case .mockDomain:
+                    md.insert(pat)
+                    ms.append("." + pat)
+
                 case .blockContent:
                     let name = rule.name.isEmpty ? rule.pattern : rule.name
                     ac.addPattern(name: name, pattern: pat)
@@ -80,6 +88,8 @@ nonisolated final class RuleEngine: @unchecked Sendable {
             self.blockDomains = bd
             self.blockSuffixes = bs
             self.blockIPs = bi
+            self.mockDomains = md
+            self.mockSuffixes = ms
             self.contentAC = ac
             self.regexRules = rx
             self._compiledRuleCount = rules.count
@@ -116,6 +126,16 @@ nonisolated final class RuleEngine: @unchecked Sendable {
         }
 
         return nil
+    }
+
+    /// Check if a host should be mocked (stealth 200 OK).
+    func checkMock(host: String) -> Bool {
+        let h = host.lowercased()
+        if mockDomains.contains(h) { return true }
+        for suffix in mockSuffixes {
+            if h.hasSuffix(suffix) { return true }
+        }
+        return false
     }
 
     /// Check if content (target URL + headers + body) matches any content rule.

@@ -27,6 +27,7 @@ nonisolated struct WAFRule: Identifiable, Codable, Hashable, Sendable {
         case blockDomain     = "Block Domain"
         case blockContent    = "Block Content"
         case blockRegex      = "Block Regex"
+        case mockDomain      = "Mock Domain"    // stealth: return fake 200 OK
         var id: String { rawValue }
     }
 

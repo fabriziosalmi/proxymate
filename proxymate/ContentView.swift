@@ -1106,6 +1106,7 @@ struct AddRuleSheet: View {
         case .blockDomain:  return "example.com"
         case .blockContent: return "substring"
         case .blockRegex:   return "(?i)union\\s+select"
+        case .mockDomain:   return "tracker.example.com"
         }
     }
 }
