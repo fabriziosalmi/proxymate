@@ -57,7 +57,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
     fileprivate let writeLock = NSLock()
     fileprivate var pendingWrites = Data()
     private var handshakeRetries = 0
-    private let maxHandshakeRetries = 80
+    private let maxHandshakeRetries = 20
     private let handshakeTimeout: TimeInterval = 15
 
     /// Atomic done flag — prevents double SSLClose / double CFRelease.
@@ -225,7 +225,12 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             case errSSLWouldBlock:
                 self.handshakeRetries += 1
                 if self.handshakeRetries >= self.maxHandshakeRetries {
-                    self.onEvent?(.log(.error, "MITM handshake max retries for \(self.hostname)"))
+                    // Record as failure so host gets auto-excluded after threshold
+                    let shouldExclude = TLSManager.shared.recordHandshakeFailure(host: self.hostname)
+                    if shouldExclude {
+                        self.onEvent?(.log(.warn, "MITM: auto-excluding \(self.hostname) (max retries)"))
+                        TLSManager.shared.addRuntimeExclude(host: self.hostname)
+                    }
                     self.done(ssl: ssl)
                 } else {
                     let delay = min(0.1, 0.01 * Double(self.handshakeRetries / 10 + 1))

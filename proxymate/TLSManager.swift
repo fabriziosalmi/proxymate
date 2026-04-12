@@ -239,9 +239,10 @@ nonisolated final class TLSManager: @unchecked Sendable {
                 throw TLSError.certCreationFailed
             }
 
-            // Create PKCS12 bundle
+            // Create PKCS12 bundle (-legacy for macOS SecPKCS12Import compatibility)
             guard shell("/usr/bin/openssl", args: [
-                "pkcs12", "-export", "-inkey", leafKeyPath, "-in", leafCertPath,
+                "pkcs12", "-export", "-legacy",
+                "-inkey", leafKeyPath, "-in", leafCertPath,
                 "-certfile", caCertPath, "-out", leafP12Path, "-passout", "pass:proxymate"
             ]) == 0 else {
                 try? FileManager.default.removeItem(at: leafDir)
