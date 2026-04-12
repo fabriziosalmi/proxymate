@@ -1758,63 +1758,71 @@ struct AIView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                // Spend summary
-                spendSummary
+                let mitmEnabled = state.mitmSettings.enabled
+
+                // Agent detection (works without MITM — from CONNECT host)
+                sectionHeader("AI AGENT DETECTION")
+                HStack(spacing: 8) {
+                    StatCard(title: "AI Requests", value: "\(state.stats.aiRequests)", color: .blue)
+                    StatCard(title: "AI Blocked", value: "\(state.stats.aiBlocked)", color: .red)
+                }
+                Text("Detected from CONNECT tunnel hostnames. Works without MITM.")
+                    .font(.caption2).foregroundStyle(.tertiary)
 
                 Divider()
 
-                // Provider grid — only show providers with activity
-                let activeProviders = AIProvider.builtIn.filter { state.aiProviderStats[$0.id] != nil }
-                if activeProviders.isEmpty {
-                    VStack(spacing: 6) {
-                        Image(systemName: "brain")
-                            .font(.title3).foregroundStyle(.tertiary)
-                        Text("No AI traffic detected yet")
+                // Cost tracking — only show if MITM is on
+                if mitmEnabled {
+                    spendSummary
+                    Divider()
+
+                    let activeProviders = AIProvider.builtIn.filter { state.aiProviderStats[$0.id] != nil }
+                    if !activeProviders.isEmpty {
+                        sectionHeader("PROVIDERS")
+                        LazyVStack(spacing: 4) {
+                            ForEach(activeProviders) { provider in
+                                AIProviderRow(
+                                    provider: provider,
+                                    stats: state.aiProviderStats[provider.id]
+                                )
+                            }
+                        }
+                        Divider()
+                    }
+
+                    sectionHeader("BUDGET CAPS")
+                    budgetSection
+                    Divider()
+
+                    sectionHeader("MODEL CONTROLS")
+                    modelSection
+                    Divider()
+
+                    HStack {
+                        Button("Reset Stats") { state.resetAIStats() }
+                            .buttonStyle(.bordered).controlSize(.small)
+                        Spacer()
+                        Text(verbatim: "\(state.stats.aiRequests) requests this session")
                             .font(.caption).foregroundStyle(.secondary)
-                        Text("Providers will appear here when API calls are intercepted.")
+                    }
+                    Divider()
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "lock.shield")
+                            .font(.title2).foregroundStyle(.tertiary)
+                        Text("Token counting, cost tracking, and budget caps require MITM inspection.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Text("Enable TLS Interception in the Privacy tab to unlock full AI monitoring.")
                             .font(.caption2).foregroundStyle(.tertiary)
                             .multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
-                } else {
-                    sectionHeader("PROVIDERS")
-                    LazyVStack(spacing: 4) {
-                        ForEach(activeProviders) { provider in
-                            AIProviderRow(
-                                provider: provider,
-                                stats: state.aiProviderStats[provider.id]
-                            )
-                        }
-                    }
+                    Divider()
                 }
 
-                Divider()
-
-                // Budget
-                sectionHeader("BUDGET CAPS")
-                budgetSection
-
-                Divider()
-
-                // Model controls
-                sectionHeader("MODEL CONTROLS")
-                modelSection
-
-                Divider()
-
-                // Actions
-                HStack {
-                    Button("Reset Stats") { state.resetAIStats() }
-                        .buttonStyle(.bordered).controlSize(.small)
-                    Spacer()
-                    Text(verbatim: "\(state.stats.aiRequests) requests this session")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-
-                Divider()
-
-                // Loop Breaker — full enterprise control
+                // Loop Breaker — works without MITM
                 sectionHeader("LOOP BREAKER")
                 loopBreakerSection
             }
