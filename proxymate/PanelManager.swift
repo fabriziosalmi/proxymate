@@ -12,6 +12,13 @@
 import AppKit
 import SwiftUI
 
+/// NSPanel subclass that can become key window (required for TextFields,
+/// buttons, sheets, and all interactive SwiftUI content).
+final class FloatingPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 final class PanelManager {
     static let shared = PanelManager()
 
@@ -64,14 +71,13 @@ final class PanelManager {
         let hostingView = NSHostingView(rootView: AnyView(content))
         hostingView.frame = NSRect(x: 0, y: 0, width: 420, height: 520)
 
-        let panel = NSPanel(
+        let panel = FloatingPanel(
             contentRect: hostingView.frame,
-            styleMask: [.titled, .closable, .nonactivatingPanel, .fullSizeContentView],
+            styleMask: [.titled, .closable, .fullSizeContentView, .resizable],
             backing: .buffered,
             defer: false
         )
         panel.contentView = hostingView
-        panel.isFloatingPanel = true
         panel.level = .floating
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
@@ -80,8 +86,6 @@ final class PanelManager {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isReleasedWhenClosed = false
         panel.backgroundColor = .windowBackgroundColor
-
-        // Close when clicking outside (like a popover, but optional)
         panel.hidesOnDeactivate = false
 
         self.panel = panel
