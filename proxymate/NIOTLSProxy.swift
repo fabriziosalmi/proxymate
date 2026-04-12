@@ -330,7 +330,13 @@ private final class MITMInspectHandler: ChannelInboundHandler {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        // Cert pinning detected
+        // uncleanShutdown is normal for many clients/servers
+        if case NIOSSLError.uncleanShutdown = error {
+            upstreamChannel?.close(promise: nil)
+            context.close(promise: nil)
+            return
+        }
+        // Cert pinning or other TLS errors
         if error is NIOSSLError || error is BoringSSLError {
             let shouldExclude = TLSManager.shared.recordHandshakeFailure(host: hostname)
             if shouldExclude {
@@ -407,6 +413,12 @@ private final class UpstreamRelayHandler: ChannelInboundHandler {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        // uncleanShutdown is normal — many servers don't send TLS close_notify
+        if case NIOSSLError.uncleanShutdown = error {
+            clientChannel.close(promise: nil)
+            context.close(promise: nil)
+            return
+        }
         config.onEvent?(.log(.error, "NIO MITM upstream error \(hostname): \(error)"))
         clientChannel.close(promise: nil)
         context.close(promise: nil)
