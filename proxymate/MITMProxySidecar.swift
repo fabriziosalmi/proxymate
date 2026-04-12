@@ -159,17 +159,26 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
     // MARK: - Find mitmdump
 
     private func findMitmdump() -> String? {
+        // 1. Bundled binary (preferred — no external dependency)
+        let bundledPaths = [
+            Bundle.main.path(forResource: "mitmdump", ofType: nil, inDirectory: "bin"),
+            Bundle.main.path(forResource: "mitmdump", ofType: nil),
+            Bundle.main.bundlePath + "/Contents/Resources/bin/mitmdump",
+        ]
+        for case let path? in bundledPaths {
+            if FileManager.default.isExecutableFile(atPath: path) { return path }
+        }
+
+        // 2. System-installed fallback
         let candidates = [
             "/opt/homebrew/bin/mitmdump",
             "/usr/local/bin/mitmdump",
             "/usr/bin/mitmdump",
         ]
         for path in candidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return path
-            }
+            if FileManager.default.isExecutableFile(atPath: path) { return path }
         }
-        // Try which
+        // 3. PATH search
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         p.arguments = ["mitmdump"]

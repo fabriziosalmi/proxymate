@@ -23,6 +23,9 @@ xcuserdata/
 Package.resolved
 Packages/
 
+# Bundled binaries (too large for git — regenerate with scripts/bundle-binaries.sh)
+build/bundle-bin/
+
 # Local roadmap, never to be tracked or shipped
 FEATURES.md
 FEATURES_SHORT.md

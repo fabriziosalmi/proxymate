@@ -143,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Stop network listeners
         MetricsServer.shared.stop()
         MITMProxySidecar.shared.stop()
+        SquidSidecar.shared.stop()
 
         if UserDefaults.standard.bool(forKey: "proxymate.wasEnabled") {
             UserDefaults.standard.set(false, forKey: "proxymate.wasEnabled")
