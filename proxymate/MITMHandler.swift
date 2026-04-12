@@ -628,11 +628,22 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         isDone = true
         doneLock.unlock()
 
-        MITMClose(ssl.ctx)
-        clientConn.cancel()
-        cleanup()
+        // Unregister from handler registry FIRST — this makes IO callbacks
+        // return errSSLClosedAbort instead of accessing the SSLContext.
+        // Must happen before MITMClose to prevent use-after-free.
+        handlersLock.lock()
+        activeHandlers.removeValue(forKey: handlerID)
+        handlersLock.unlock()
+
+        // Small delay to let in-flight IO callbacks drain before CFRelease.
+        handlerQueue.asyncAfter(deadline: .now() + 0.05) { [self] in
+            MITMClose(ssl.ctx)
+            clientConn.forceCancel()
+            releaseHandshakeSemaphore()
+        }
     }
 
+    /// Cleanup for early exit paths (before SSLContext is created).
     private func cleanup() {
         doneLock.lock()
         if !isDone { isDone = true }
@@ -642,6 +653,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         activeHandlers.removeValue(forKey: handlerID)
         handlersLock.unlock()
 
+        clientConn.forceCancel()
         releaseHandshakeSemaphore()
     }
 

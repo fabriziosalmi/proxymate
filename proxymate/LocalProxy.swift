@@ -660,14 +660,17 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         }
     }
 
-    /// Cancel a connection only if it's not already cancelled.
+    /// Cancel a connection if not already cancelled or cancelling.
     private func safeCancel(_ conn: NWConnection) {
-        if conn.state != .cancelled { conn.cancel() }
+        switch conn.state {
+        case .cancelled, .failed: break
+        default: conn.forceCancel()
+        }
     }
 
     private func pipe(from: NWConnection, to: NWConnection) {
         from.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
-            guard let self else { self?.safeCancel(from); self?.safeCancel(to); return }
+            guard let self else { from.forceCancel(); to.forceCancel(); return }
             if let data, !data.isEmpty {
                 to.send(content: data, completion: .contentProcessed { [weak self] err in
                     if err != nil {
