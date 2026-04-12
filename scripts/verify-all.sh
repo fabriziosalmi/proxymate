@@ -166,11 +166,11 @@ grep -q "enabled: Bool = false" proxymate/Models.swift 2>/dev/null && \
 grep -q "var enabled: Bool = true" proxymate/AhoCorasick.swift 2>/dev/null || \
     pass "Aho-Corasick has no enabled flag (always on)" || skip "Aho-Corasick check"
 
-grep -q "identicalThreshold: Int = 10" proxymate/AgentLoopBreaker.swift && \
-    pass "Loop breaker warn threshold: 10 (conservative)" || fail "Loop breaker threshold not conservative"
+grep -q "identicalThreshold: Int = 20" proxymate/AgentLoopBreaker.swift && \
+    pass "Loop breaker warn threshold: 20 (conservative)" || fail "Loop breaker threshold not conservative"
 
-grep -q "identicalBlockThreshold: Int = 15" proxymate/AgentLoopBreaker.swift && \
-    pass "Loop breaker block threshold: 15 (very conservative)" || fail "Loop breaker block threshold wrong"
+grep -q "identicalBlockThreshold: Int = 30" proxymate/AgentLoopBreaker.swift && \
+    pass "Loop breaker block threshold: 30 (very conservative)" || fail "Loop breaker block threshold wrong"
 
 grep -q "maxCostPerMinuteUSD: Double = 2.0" proxymate/AgentLoopBreaker.swift && \
     pass "Cost runaway cap: \$2/min" || fail "Cost cap not set"

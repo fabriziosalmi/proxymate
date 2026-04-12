@@ -308,10 +308,6 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             }
         }
 
-        // Process-aware rules (resolve source PID → bundle ID → check rules)
-        // Note: requires lsof which is slow; only called if processRules is non-empty
-        // TODO: wire processRules from AppState when UI is ready
-
         // AI Agent enforcement (Claude Code, Cursor, MCP, etc.)
         var detectedMCPMethod: String?
         if let agentDetection = AIAgentEnforcer.detectAgent(headers: headerString, host: host) {

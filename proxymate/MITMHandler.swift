@@ -8,7 +8,6 @@
 
 import Foundation
 import Network
-import Compression
 
 /// Registry of active MITM handlers. SSLContext callbacks use the handler ID
 /// (stored as the SSLConnectionRef) to look up the handler safely.
