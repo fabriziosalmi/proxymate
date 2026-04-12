@@ -365,12 +365,16 @@ struct AddOverrideSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Add Routing Override").font(.headline)
-            Form {
-                TextField("Host pattern (e.g. *.github.com)", text: $pattern)
-                Picker("Route to Pool", selection: $selectedPoolId) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Host pattern").font(.caption).foregroundStyle(.secondary)
+                TextField("*.github.com", text: $pattern)
+                    .textFieldStyle(.roundedBorder)
+                Text("Route to Pool").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: $selectedPoolId) {
                     Text("Select...").tag(nil as UUID?)
                     ForEach(pools) { Text($0.name).tag($0.id as UUID?) }
                 }
+                .labelsHidden()
             }
             Text("Requests matching this pattern will use the selected pool instead of the default.")
                 .font(.caption2).foregroundStyle(.tertiary)
@@ -524,13 +528,21 @@ struct AddPoolSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Add Pool").font(.headline)
-            Form {
-                TextField("Pool Name", text: $name)
-                TextField("First Member Host", text: $host)
-                TextField("Port", text: $port)
-                Picker("Strategy", selection: $strategy) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Pool Name").font(.caption).foregroundStyle(.secondary)
+                TextField("My Pool", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                Text("First Member Host").font(.caption).foregroundStyle(.secondary)
+                TextField("proxy1.example.com", text: $host)
+                    .textFieldStyle(.roundedBorder)
+                Text("Port").font(.caption).foregroundStyle(.secondary)
+                TextField("8080", text: $port)
+                    .textFieldStyle(.roundedBorder)
+                Text("Strategy").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: $strategy) {
                     ForEach(UpstreamPool.Strategy.allCases) { Text($0.rawValue).tag($0) }
                 }
+                .labelsHidden()
             }
             Text("You can add more members after creation via right-click.")
                 .font(.caption2).foregroundStyle(.tertiary)
@@ -592,14 +604,26 @@ struct AddProxySheet: View {
     let onAdd: (ProxyConfig) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Add Proxy").font(.headline)
-            Form {
-                TextField("Name",  text: $name)
-                TextField("Host",  text: $host)
-                TextField("Port",  text: $port)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Name").font(.caption).foregroundStyle(.secondary)
+                TextField("My Proxy", text: $name)
+                    .textFieldStyle(.roundedBorder)
+
+                Text("Host").font(.caption).foregroundStyle(.secondary)
+                TextField("192.168.1.1 or proxy.example.com", text: $host)
+                    .textFieldStyle(.roundedBorder)
+
+                Text("Port").font(.caption).foregroundStyle(.secondary)
+                TextField("8080", text: $port)
+                    .textFieldStyle(.roundedBorder)
+
                 Toggle("Apply to HTTPS too", isOn: $https)
+                    .padding(.top, 4)
             }
+
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -1101,16 +1125,29 @@ struct AddRuleSheet: View {
     let onAdd: (WAFRule) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Add Rule").font(.headline)
-            Form {
-                TextField("Name (optional)", text: $name)
-                Picker("Type", selection: $kind) {
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Name (optional)").font(.caption).foregroundStyle(.secondary)
+                TextField("My Rule", text: $name)
+                    .textFieldStyle(.roundedBorder)
+
+                Text("Type").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: $kind) {
                     ForEach(WAFRule.Kind.allCases) { Text($0.rawValue).tag($0) }
                 }
+                .labelsHidden()
+
+                Text("Pattern").font(.caption).foregroundStyle(.secondary)
                 TextField(placeholder, text: $pattern)
-                TextField("Category", text: $category)
+                    .textFieldStyle(.roundedBorder)
+
+                Text("Category").font(.caption).foregroundStyle(.secondary)
+                TextField("Custom", text: $category)
+                    .textFieldStyle(.roundedBorder)
             }
+
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -1287,15 +1324,27 @@ struct AddAllowEntrySheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Add Allow Entry").font(.headline)
-            Form {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Pattern").font(.caption).foregroundStyle(.secondary)
                 TextField("IP, CIDR (10.0.0.0/8), or domain", text: $pattern)
-                HStack {
-                    TextField("Port (optional)", text: $port).frame(width: 120)
-                    Picker("Protocol", selection: $proto) {
-                        ForEach(AllowEntry.Proto.allCases) { Text($0.rawValue).tag($0) }
+                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Port (optional)").font(.caption).foregroundStyle(.secondary)
+                        TextField("Any", text: $port)
+                            .textFieldStyle(.roundedBorder).frame(width: 100)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Protocol").font(.caption).foregroundStyle(.secondary)
+                        Picker("", selection: $proto) {
+                            ForEach(AllowEntry.Proto.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        .labelsHidden()
                     }
                 }
-                TextField("Note (optional)", text: $note)
+                Text("Note (optional)").font(.caption).foregroundStyle(.secondary)
+                TextField("Why is this allowed?", text: $note)
+                    .textFieldStyle(.roundedBorder)
             }
             HStack {
                 Spacer()
@@ -1531,15 +1580,23 @@ struct AddCustomBlacklistSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Add Custom Blacklist").font(.headline)
-            Form {
-                TextField("Name", text: $name)
-                TextField("URL", text: $url)
-                Picker("Category", selection: $category) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Name").font(.caption).foregroundStyle(.secondary)
+                TextField("My List", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                Text("URL").font(.caption).foregroundStyle(.secondary)
+                TextField("https://example.com/blocklist.txt", text: $url)
+                    .textFieldStyle(.roundedBorder)
+                Text("Category").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: $category) {
                     ForEach(BlacklistSource.BlacklistCategory.allCases) { Text($0.rawValue).tag($0) }
                 }
-                Picker("Format", selection: $format) {
+                .labelsHidden()
+                Text("Format").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: $format) {
                     ForEach(BlacklistSource.ListFormat.allCases) { Text($0.rawValue).tag($0) }
                 }
+                .labelsHidden()
             }
             Text("Lists auto-refresh every 6 hours when enabled.")
                 .font(.caption2).foregroundStyle(.tertiary)
