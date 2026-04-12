@@ -130,12 +130,14 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             // Using takeRetainedValue caused double-free (ARC + MITMClose both release).
             let ctx = ctxUnmanaged.takeUnretainedValue()
 
-            var cert: SecCertificate?
-            SecIdentityCopyCertificate(identity, &cert)
-            guard let cert else { cleanup(); return }
-
-            let chain: NSArray = [identity, cert]
-            guard MITMSetCertificate(ctx, chain) == errSecSuccess else { cleanup(); return }
+            // Build cert chain: [identity, CA cert]
+            // The CA cert is needed for clients to verify the chain.
+            var chain: [Any] = [identity]
+            if let caDER = TLSManager.shared.exportCACertDER(),
+               let caCert = SecCertificateCreateWithData(nil, caDER as CFData) {
+                chain.append(caCert)
+            }
+            guard MITMSetCertificate(ctx, chain as NSArray) == errSecSuccess else { cleanup(); return }
 
             guard let idPtr = UnsafeMutableRawPointer(bitPattern: handlerID) else {
                 cleanup(); return
