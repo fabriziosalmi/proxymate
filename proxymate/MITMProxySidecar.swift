@@ -36,7 +36,7 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
     // MARK: - Lifecycle
 
     func start(upstreamHost: String, upstreamPort: UInt16,
-               listenPort: UInt16 = 8888) throws -> UInt16 {
+               listenPort: UInt16 = 18080) throws -> UInt16 {
         try queue.sync {
             guard !isRunning else { return port }
 
@@ -75,10 +75,16 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             p.standardOutput = Pipe()
             p.standardError = Pipe()
 
+            let stderrPipe = p.standardError as! Pipe
             p.terminationHandler = { [weak self] proc in
+                let stderrData = stderrPipe.fileHandleForReading.availableData
+                let stderr = String(data: stderrData, encoding: .utf8) ?? ""
                 self?.queue.async {
                     self?.isRunning = false
                     self?.port = 0
+                    if proc.terminationStatus != 0 && !stderr.isEmpty {
+                        self?.onEvent?(.log(.error, "mitmproxy error: \(stderr.prefix(200))"))
+                    }
                     self?.onEvent?(.log(.warn, "mitmproxy exited (code \(proc.terminationStatus))"))
                 }
             }
