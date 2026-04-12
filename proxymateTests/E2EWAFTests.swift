@@ -10,14 +10,21 @@ import XCTest
 
 final class E2EWAFTests: XCTestCase {
 
+    // Helper: compile and wait for completion (no Thread.sleep).
+    private func compileAndWait(_ engine: RuleEngine, rules: [WAFRule],
+                                 timeout: TimeInterval = 2.0) {
+        let ex = expectation(description: "compile")
+        engine.compile(rules: rules) { ex.fulfill() }
+        wait(for: [ex], timeout: timeout)
+    }
+
     // MARK: - WAF rule matching (unit-level but through RuleEngine)
 
     func testRuleEngineBlockDomain() {
         let engine = RuleEngine()
-        engine.compile(rules: [
+        compileAndWait(engine, rules: [
             WAFRule(name: "Block evil", kind: .blockDomain, pattern: "evil.com"),
         ])
-        Thread.sleep(forTimeInterval: 0.1)
 
         XCTAssertNotNil(engine.checkBlock(host: "evil.com"))
         XCTAssertNotNil(engine.checkBlock(host: "sub.evil.com"))
@@ -26,11 +33,10 @@ final class E2EWAFTests: XCTestCase {
 
     func testRuleEngineAllowBypass() {
         let engine = RuleEngine()
-        engine.compile(rules: [
+        compileAndWait(engine, rules: [
             WAFRule(name: "Allow good", kind: .allowDomain, pattern: "good.com"),
             WAFRule(name: "Block all", kind: .blockDomain, pattern: "good.com"),
         ])
-        Thread.sleep(forTimeInterval: 0.1)
 
         XCTAssertTrue(engine.isAllowed(host: "good.com"))
         // Note: the block is still there, but allow is checked first in LocalProxy
@@ -38,10 +44,9 @@ final class E2EWAFTests: XCTestCase {
 
     func testRuleEngineBlockIP() {
         let engine = RuleEngine()
-        engine.compile(rules: [
+        compileAndWait(engine, rules: [
             WAFRule(name: "Block IP", kind: .blockIP, pattern: "1.2.3.4"),
         ])
-        Thread.sleep(forTimeInterval: 0.1)
 
         XCTAssertNotNil(engine.checkBlock(host: "1.2.3.4"))
         XCTAssertNil(engine.checkBlock(host: "1.2.3.5"))
@@ -49,10 +54,9 @@ final class E2EWAFTests: XCTestCase {
 
     func testRuleEngineBlockContent() {
         let engine = RuleEngine()
-        engine.compile(rules: [
+        compileAndWait(engine, rules: [
             WAFRule(name: "Block secret", kind: .blockContent, pattern: "topsecret"),
         ])
-        Thread.sleep(forTimeInterval: 0.1)
 
         XCTAssertNotNil(engine.checkContent(target: "http://x.com/topsecret", headers: ""))
         XCTAssertNotNil(engine.checkContent(target: "", headers: "X-Data: topsecret\r\n"))
@@ -64,8 +68,7 @@ final class E2EWAFTests: XCTestCase {
         let rules = (0..<10000).map {
             WAFRule(name: "rule\($0)", kind: .blockDomain, pattern: "domain\($0).com")
         }
-        engine.compile(rules: rules)
-        Thread.sleep(forTimeInterval: 0.5)
+        compileAndWait(engine, rules: rules, timeout: 5.0)
 
         XCTAssertEqual(engine.compiledRuleCount, 10000)
         XCTAssertLessThan(engine.lastCompileTimeMs, 1000, "10K rules should compile in <1s")
@@ -74,7 +77,6 @@ final class E2EWAFTests: XCTestCase {
     // MARK: - Cache behavior
 
     func testCacheControlParsing() {
-        // Already covered in CacheTests, but verify integration
         let cc = CacheManager.parseCacheControl("max-age=300, public")
         XCTAssertEqual(cc.maxAge, 300)
         XCTAssertTrue(cc.public_)
@@ -89,8 +91,7 @@ final class E2EWAFTests: XCTestCase {
         XCTAssertEqual(result.rules.count, 3)
 
         let engine = RuleEngine()
-        engine.compile(rules: result.rules)
-        Thread.sleep(forTimeInterval: 0.1)
+        compileAndWait(engine, rules: result.rules)
 
         XCTAssertNotNil(engine.checkBlock(host: "evil1.com"))
         XCTAssertNotNil(engine.checkBlock(host: "evil2.com"))
@@ -104,8 +105,7 @@ final class E2EWAFTests: XCTestCase {
         XCTAssertEqual(result.rules.count, 2)
 
         let engine = RuleEngine()
-        engine.compile(rules: result.rules)
-        Thread.sleep(forTimeInterval: 0.1)
+        compileAndWait(engine, rules: result.rules)
 
         XCTAssertNotNil(engine.checkBlock(host: "ads.tracker.com"))
         XCTAssertNotNil(engine.checkBlock(host: "sub.ads.tracker.com"))

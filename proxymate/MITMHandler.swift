@@ -14,12 +14,12 @@ import Network
 // MARK: - Global concurrency control
 
 /// Max simultaneous MITM handshakes/sessions. Prevents resource exhaustion.
-nonisolated(unsafe) private let mitmSemaphore = DispatchSemaphore(value: 20)
+private let mitmSemaphore = DispatchSemaphore(value: 20)
 
 /// Registry of active MITM handlers. SSLContext callbacks use the handler ID
 /// (stored as the SSLConnectionRef) to look up the handler safely.
 nonisolated(unsafe) private var activeHandlers: [Int: MITMHandler] = [:]
-nonisolated(unsafe) private let handlersLock = NSLock()
+private let handlersLock = NSLock()
 nonisolated(unsafe) private var nextHandlerID: Int = 1
 
 nonisolated final class MITMHandler: @unchecked Sendable {

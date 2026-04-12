@@ -67,7 +67,7 @@ nonisolated final class DiskCache: @unchecked Sendable {
 
             let sql = "SELECT status_line, headers, body_hash, expires_at FROM cache WHERE key = ? AND expires_at > ? LIMIT 1"
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-            sqlite3_bind_text(stmt, 1, key, -1, nil)
+            sqlite3_bind_text(stmt, 1, key, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
             sqlite3_bind_double(stmt, 2, Date().timeIntervalSince1970)
 
             guard sqlite3_step(stmt) == SQLITE_ROW else {
@@ -115,10 +115,10 @@ nonisolated final class DiskCache: @unchecked Sendable {
             defer { sqlite3_finalize(stmt) }
             guard sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
 
-            sqlite3_bind_text(stmt, 1, key, -1, nil)
-            sqlite3_bind_text(stmt, 2, statusLine, -1, nil)
-            sqlite3_bind_text(stmt, 3, headers, -1, nil)
-            sqlite3_bind_text(stmt, 4, bodyHash, -1, nil)
+            sqlite3_bind_text(stmt, 1, key, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_text(stmt, 2, statusLine, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_text(stmt, 3, headers, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_text(stmt, 4, bodyHash, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
             sqlite3_bind_int64(stmt, 5, Int64(body.count))
             sqlite3_bind_double(stmt, 6, Date().timeIntervalSince1970 + maxAge)
             sqlite3_bind_double(stmt, 7, Date().timeIntervalSince1970)
@@ -193,7 +193,7 @@ nonisolated final class DiskCache: @unchecked Sendable {
         defer { sqlite3_finalize(stmt) }
         guard sqlite3_prepare_v2(db, "UPDATE cache SET last_accessed = ? WHERE key = ?", -1, &stmt, nil) == SQLITE_OK else { return }
         sqlite3_bind_double(stmt, 1, Date().timeIntervalSince1970)
-        sqlite3_bind_text(stmt, 2, key, -1, nil)
+        sqlite3_bind_text(stmt, 2, key, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         sqlite3_step(stmt)
     }
 

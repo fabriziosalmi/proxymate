@@ -19,7 +19,7 @@ final class E2EProxyTests: XCTestCase {
         super.setUp()
         // Start test server
         server = TestServer()
-        try! server.start()
+        do { try server.start() } catch { fatalError("TestServer failed to start: \(error)") }
 
         // Start proxy pointing at test server as upstream
         proxy = LocalProxy()
@@ -108,10 +108,11 @@ final class E2EProxyTests: XCTestCase {
 
     func testWAFBlocksThroughRuleEngine() {
         let engine = RuleEngine()
+        let ex = expectation(description: "compile")
         engine.compile(rules: [
             WAFRule(name: "Block evil", kind: .blockDomain, pattern: "evil.test"),
-        ])
-        Thread.sleep(forTimeInterval: 0.1)
+        ]) { ex.fulfill() }
+        wait(for: [ex], timeout: 2)
         XCTAssertNotNil(engine.checkBlock(host: "evil.test"))
         XCTAssertNotNil(engine.checkBlock(host: "sub.evil.test"))
         XCTAssertNil(engine.checkBlock(host: "good.test"))

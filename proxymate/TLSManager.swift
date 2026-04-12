@@ -278,6 +278,7 @@ nonisolated final class TLSManager: @unchecked Sendable {
               let ref = arr.first?[kSecImportItemIdentity as String] else {
             return nil
         }
+        // SecIdentity is a CF type — cast from Any is safe after the guard above.
         return (ref as! SecIdentity)
     }
 

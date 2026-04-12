@@ -6,6 +6,7 @@
 //  Replaces the linear array scan in LocalProxy.matches() for the hot path.
 //
 //  Compiled once when rules change, not per-request.
+//  All reads go through an immutable snapshot swapped atomically.
 //
 
 import Foundation
@@ -14,28 +15,52 @@ nonisolated final class RuleEngine: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "proxymate.ruleengine", qos: .userInitiated)
 
-    // Pre-compiled sets for O(1) lookup
-    private var allowDomains = Set<String>()     // exact domain → allow
-    private var allowSuffixes: [String] = []     // .suffix → allow (for subdomain match)
-    private var blockDomains = Set<String>()     // exact domain → block
-    private var blockSuffixes: [String] = []     // .suffix → block
-    private var blockIPs = Set<String>()         // exact IP → block
-    private var mockDomains = Set<String>()      // exact domain → mock 200
-    private var mockSuffixes: [String] = []      // .suffix → mock 200
-    private var contentAC = AhoCorasick()        // Aho-Corasick automaton for content rules
-    private var regexRules: [(name: String, regex: NSRegularExpression)] = []
+    /// Immutable snapshot of all compiled rule sets. Swapped atomically.
+    private struct Snapshot {
+        let allowDomains: Set<String>
+        let allowSuffixes: [String]
+        let blockDomains: Set<String>
+        let blockSuffixes: [String]
+        let blockIPs: Set<String>
+        let mockDomains: Set<String>
+        let mockSuffixes: [String]
+        let contentAC: AhoCorasick
+        let regexRules: [(name: String, regex: NSRegularExpression)]
+        let ruleCount: Int
+        let compileTime: TimeInterval
 
-    // Stats
-    private var _compiledRuleCount = 0
-    private var _lastCompileTime: TimeInterval = 0
+        static let empty = Snapshot(
+            allowDomains: [], allowSuffixes: [],
+            blockDomains: [], blockSuffixes: [],
+            blockIPs: [], mockDomains: [], mockSuffixes: [],
+            contentAC: AhoCorasick(), regexRules: [],
+            ruleCount: 0, compileTime: 0
+        )
+    }
 
-    var compiledRuleCount: Int { _compiledRuleCount }
-    var lastCompileTimeMs: Double { _lastCompileTime * 1000 }
+    /// The current compiled snapshot. Protected by snapshotLock for atomic swap.
+    private var snapshot = Snapshot.empty
+    private let snapshotLock = NSLock()
+
+    var compiledRuleCount: Int {
+        snapshotLock.lock()
+        let n = snapshot.ruleCount
+        snapshotLock.unlock()
+        return n
+    }
+
+    var lastCompileTimeMs: Double {
+        snapshotLock.lock()
+        let t = snapshot.compileTime * 1000
+        snapshotLock.unlock()
+        return t
+    }
 
     // MARK: - Compile
 
     /// Compile rules into optimized sets. Called when rules change.
-    func compile(rules: [WAFRule]) {
+    /// Optional completion fires on the internal queue after swap.
+    func compile(rules: [WAFRule], completion: (() -> Void)? = nil) {
         queue.async { [weak self] in
             guard let self else { return }
             let start = CFAbsoluteTimeGetCurrent()
@@ -83,27 +108,39 @@ nonisolated final class RuleEngine: @unchecked Sendable {
             }
             ac.compile()
 
-            self.allowDomains = ad
-            self.allowSuffixes = as_
-            self.blockDomains = bd
-            self.blockSuffixes = bs
-            self.blockIPs = bi
-            self.mockDomains = md
-            self.mockSuffixes = ms
-            self.contentAC = ac
-            self.regexRules = rx
-            self._compiledRuleCount = rules.count
-            self._lastCompileTime = CFAbsoluteTimeGetCurrent() - start
+            let elapsed = CFAbsoluteTimeGetCurrent() - start
+            let newSnapshot = Snapshot(
+                allowDomains: ad, allowSuffixes: as_,
+                blockDomains: bd, blockSuffixes: bs,
+                blockIPs: bi, mockDomains: md, mockSuffixes: ms,
+                contentAC: ac, regexRules: rx,
+                ruleCount: rules.count, compileTime: elapsed
+            )
+
+            self.snapshotLock.lock()
+            self.snapshot = newSnapshot
+            self.snapshotLock.unlock()
+
+            completion?()
         }
     }
 
-    // MARK: - Fast checks (called from proxy queue, lock-free read)
+    // MARK: - Fast checks (snapshot read, thread-safe)
+
+    /// Grab current snapshot for reads. Lock held only during pointer copy.
+    private func current() -> Snapshot {
+        snapshotLock.lock()
+        let s = snapshot
+        snapshotLock.unlock()
+        return s
+    }
 
     /// Check if a host is allowed. O(1) for exact match, O(N) for suffix.
     func isAllowed(host: String) -> Bool {
+        let s = current()
         let h = host.lowercased()
-        if allowDomains.contains(h) { return true }
-        for suffix in allowSuffixes {
+        if s.allowDomains.contains(h) { return true }
+        for suffix in s.allowSuffixes {
             if h.hasSuffix(suffix) { return true }
         }
         return false
@@ -112,14 +149,15 @@ nonisolated final class RuleEngine: @unchecked Sendable {
     /// Check if a host is blocked by domain or IP rules.
     /// Returns the rule name if blocked, nil if allowed.
     func checkBlock(host: String) -> String? {
+        let s = current()
         let h = host.lowercased()
 
         // IP block: O(1)
-        if blockIPs.contains(h) { return "Block IP: \(h)" }
+        if s.blockIPs.contains(h) { return "Block IP: \(h)" }
 
         // Domain block: O(1) exact + O(N) suffix
-        if blockDomains.contains(h) { return "Block Domain: \(h)" }
-        for suffix in blockSuffixes {
+        if s.blockDomains.contains(h) { return "Block Domain: \(h)" }
+        for suffix in s.blockSuffixes {
             if h.hasSuffix(suffix) {
                 return "Block Domain: \(String(suffix.dropFirst()))"
             }
@@ -130,9 +168,10 @@ nonisolated final class RuleEngine: @unchecked Sendable {
 
     /// Check if a host should be mocked (stealth 200 OK).
     func checkMock(host: String) -> Bool {
+        let s = current()
         let h = host.lowercased()
-        if mockDomains.contains(h) { return true }
-        for suffix in mockSuffixes {
+        if s.mockDomains.contains(h) { return true }
+        for suffix in s.mockSuffixes {
             if h.hasSuffix(suffix) { return true }
         }
         return false
@@ -141,14 +180,15 @@ nonisolated final class RuleEngine: @unchecked Sendable {
     /// Check if content (target URL + headers + body) matches any content rule.
     /// Aho-Corasick for substrings, NSRegularExpression for regex rules.
     func checkContent(target: String, headers: String, body: String = "") -> String? {
+        let s = current()
         let combined = target + "\n" + headers + "\n" + body
         // Aho-Corasick: O(text_length) for all substring patterns
-        if let match = contentAC.search(combined) {
+        if let match = s.contentAC.search(combined) {
             return match.name
         }
         // Regex rules (compiled at load time)
         let nsRange = NSRange(combined.startIndex..., in: combined)
-        for (name, regex) in regexRules {
+        for (name, regex) in s.regexRules {
             if regex.firstMatch(in: combined, range: nsRange) != nil {
                 return name
             }
