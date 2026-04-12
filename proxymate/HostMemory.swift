@@ -44,13 +44,24 @@ nonisolated final class HostMemory: @unchecked Sendable {
 
     // MARK: - Record
 
+    private static let maxHosts = 50_000
+    private static let staleThreshold: TimeInterval = 24 * 3600 // 24h
+
     func recordRequest(host: String) {
         queue.async { [weak self] in
-            var p = self?.hosts[host.lowercased()] ?? HostProfile()
+            guard let self else { return }
+            var p = self.hosts[host.lowercased()] ?? HostProfile()
             p.requestCount += 1
             p.lastSeen = Date()
-            self?.hosts[host.lowercased()] = p
+            self.hosts[host.lowercased()] = p
+            self.pruneIfNeeded()
         }
+    }
+
+    private func pruneIfNeeded() {
+        guard hosts.count > Self.maxHosts else { return }
+        let cutoff = Date().addingTimeInterval(-Self.staleThreshold)
+        hosts = hosts.filter { $0.value.lastSeen > cutoff }
     }
 
     func recordResponse(host: String, statusCode: Int, latency: Double, bytes: Int) {

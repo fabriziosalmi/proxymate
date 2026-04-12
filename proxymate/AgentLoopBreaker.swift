@@ -180,7 +180,9 @@ nonisolated final class AgentLoopBreaker: @unchecked Sendable {
                 }
             }
 
-            if Int.random(in: 0..<100) == 0 { prune() }
+            // Prune stale entries periodically or when key count grows too large
+            let totalKeys = identicalHistory.count + hostHistory.count + mcpHistory.count
+            if totalKeys > 50_000 || Int.random(in: 0..<100) == 0 { prune() }
             return nil
         }
     }

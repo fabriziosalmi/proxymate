@@ -20,7 +20,10 @@ nonisolated final class AITracker: @unchecked Sendable {
     private var dailySpend: Double = 0
     private var dailyResetDate: Date = Calendar.current.startOfDay(for: Date())
     private var monthlySpend: Double = 0
-    private var monthlyResetMonth: Int = Calendar.current.component(.month, from: Date())
+    private var monthlyResetYearMonth: Int = {
+        let cal = Calendar.current; let now = Date()
+        return cal.component(.year, from: now) * 100 + cal.component(.month, from: now)
+    }()
 
     // MARK: - Configuration
 
@@ -43,8 +46,8 @@ nonisolated final class AITracker: @unchecked Sendable {
 
     /// Check if a host belongs to a known AI provider. Returns nil if not AI.
     func detect(host: String) -> DetectResult? {
-        // Read without lock for speed (acceptable race)
-        for p in providers where p.matchesHost(host) {
+        let snapshot = queue.sync { providers }
+        for p in snapshot where p.matchesHost(host) {
             return DetectResult(provider: p)
         }
         return nil
@@ -52,29 +55,30 @@ nonisolated final class AITracker: @unchecked Sendable {
 
     /// Check if a provider is blocked (by user or budget exceeded).
     func isBlocked(providerId: String) -> (blocked: Bool, reason: String?) {
-        let s = settings
-        if s.blockedProviders.contains(providerId) {
-            return (true, "Provider blocked by user")
-        }
-        if s.dailyBudgetUSD > 0 {
-            resetDailyIfNeeded()
-            if dailySpend >= s.dailyBudgetUSD {
-                return (true, "Daily budget exceeded ($\(String(format: "%.2f", s.dailyBudgetUSD)))")
+        queue.sync {
+            if settings.blockedProviders.contains(providerId) {
+                return (true, "Provider blocked by user")
             }
-        }
-        if s.monthlyBudgetUSD > 0 {
-            resetMonthlyIfNeeded()
-            if monthlySpend >= s.monthlyBudgetUSD {
-                return (true, "Monthly budget exceeded ($\(String(format: "%.2f", s.monthlyBudgetUSD)))")
+            if settings.dailyBudgetUSD > 0 {
+                resetDailyIfNeeded()
+                if dailySpend >= settings.dailyBudgetUSD {
+                    return (true, "Daily budget exceeded ($\(String(format: "%.2f", settings.dailyBudgetUSD)))")
+                }
             }
+            if settings.monthlyBudgetUSD > 0 {
+                resetMonthlyIfNeeded()
+                if monthlySpend >= settings.monthlyBudgetUSD {
+                    return (true, "Monthly budget exceeded ($\(String(format: "%.2f", settings.monthlyBudgetUSD)))")
+                }
+            }
+            return (false, nil)
         }
-        return (false, nil)
     }
 
     /// Check if a specific model is allowed. Call with the model name
     /// extracted from the request body.
     func isModelBlocked(_ model: String) -> (blocked: Bool, reason: String?) {
-        let s = settings
+        let s = queue.sync { settings }
         let m = model.lowercased()
 
         // Blocklist takes priority
@@ -207,10 +211,14 @@ nonisolated final class AITracker: @unchecked Sendable {
     }
 
     private func resetMonthlyIfNeeded() {
-        let month = Calendar.current.component(.month, from: Date())
-        if month != monthlyResetMonth {
+        let cal = Calendar.current
+        let now = Date()
+        let year = cal.component(.year, from: now)
+        let month = cal.component(.month, from: now)
+        let yearMonth = year * 100 + month
+        if yearMonth != monthlyResetYearMonth {
             monthlySpend = 0
-            monthlyResetMonth = month
+            monthlyResetYearMonth = yearMonth
         }
     }
 

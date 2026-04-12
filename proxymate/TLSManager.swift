@@ -370,9 +370,17 @@ nonisolated final class TLSManager: @unchecked Sendable {
         p.launchPath = command
         p.arguments = args
         p.standardOutput = Pipe()
-        p.standardError = Pipe()
-        do { try p.run() } catch { return -1 }
+        let errPipe = Pipe()
+        p.standardError = errPipe
+        do { try p.run() } catch {
+            NSLog("[TLSManager] shell failed to launch \(command): \(error)")
+            return -1
+        }
         p.waitUntilExit()
+        if p.terminationStatus != 0 {
+            let stderr = String(data: errPipe.fileHandleForReading.availableData, encoding: .utf8) ?? ""
+            NSLog("[TLSManager] shell \(command) exited \(p.terminationStatus): \(stderr)")
+        }
         return p.terminationStatus
     }
 

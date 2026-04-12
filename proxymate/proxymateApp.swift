@@ -50,9 +50,13 @@ struct proxymateApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Synchronous cleanup: clear system proxy before process exits.
-        // This runs on SIGTERM, Cmd+Q, and normal quit. Does NOT run on
+        // Synchronous cleanup: clear system proxy + stop all listeners before
+        // process exits. Runs on SIGTERM, Cmd+Q, normal quit. Does NOT run on
         // SIGKILL (kill -9), which is why we also have startup cleanup.
+
+        // Stop network listeners (NWListener, SOCKS5, Metrics)
+        MetricsServer.shared.stop()
+
         if UserDefaults.standard.bool(forKey: "proxymate.wasEnabled") {
             UserDefaults.standard.set(false, forKey: "proxymate.wasEnabled")
             let sem = DispatchSemaphore(value: 0)

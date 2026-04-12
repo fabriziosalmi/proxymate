@@ -318,19 +318,52 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         server.start(queue: handlerQueue)
     }
 
+    /// Max response buffer for WAF inspection. Responses larger than this
+    /// are streamed directly to client without body inspection (prevents OOM).
+    private static let maxResponseBuffer = 10 * 1024 * 1024 // 10 MB
+
     /// Buffer complete server response, apply WAF on body, then send encrypted to client
     private func bufferServerResponse(server: NWConnection, ctx: SSLContext) {
         var responseBuffer = Data()
         var headersComplete = false
         var contentLength: Int?
         var isChunked = false
+        var streamingMode = false // true = too large for inspection, stream directly
 
         func receiveChunk() {
             server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
                 guard let self, !self.checkDone() else { server.cancel(); return }
 
                 if let data, !data.isEmpty {
+                    // If already in streaming mode, send chunks directly
+                    if streamingMode {
+                        self.sendEncrypted(ctx: ctx, data: data)
+                        if isComplete || error != nil {
+                            server.cancel()
+                            self.done(ctx: ctx)
+                        } else {
+                            receiveChunk()
+                        }
+                        return
+                    }
+
                     responseBuffer.append(data)
+
+                    // Switch to streaming if buffer exceeds cap
+                    if responseBuffer.count > Self.maxResponseBuffer {
+                        self.onEvent?(.log(.info, "MITM: response too large for \(self.hostname), streaming without inspection"))
+                        // Flush what we have (headers already parsed, send as-is)
+                        self.sendEncrypted(ctx: ctx, data: responseBuffer)
+                        responseBuffer = Data()
+                        streamingMode = true
+                        if isComplete || error != nil {
+                            server.cancel()
+                            self.done(ctx: ctx)
+                        } else {
+                            receiveChunk()
+                        }
+                        return
+                    }
 
                     // Parse headers to determine content length
                     if !headersComplete, let headerEnd = responseBuffer.range(of: Data("\r\n\r\n".utf8)) {

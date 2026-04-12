@@ -602,7 +602,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 upstreamConn.send(content: headerData, completion: .contentProcessed { [weak self] err in
                     if let err {
                         self?.onEvent?(.log(.error, "Upstream send failed: \(err.localizedDescription)"))
-                        client.cancel()
+                        self?.sendErrorResponse(client: client, status: "502 Bad Gateway",
+                                                body: "Upstream send failed: \(err.localizedDescription)\n")
                         upstreamConn.cancel()
                         return
                     }
@@ -629,7 +630,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             case .failed(let err):
                 self?.onEvent?(.log(.error, "Upstream connect failed: \(err.localizedDescription)"))
                 if let mid = memberId { PoolRouter.shared.connectionEnded(memberId: mid) }
-                client.cancel()
+                self?.sendErrorResponse(client: client, status: "502 Bad Gateway",
+                                        body: "Upstream connection failed: \(err.localizedDescription)\n")
             case .cancelled:
                 if let mid = memberId { PoolRouter.shared.connectionEnded(memberId: mid) }
                 client.cancel()
