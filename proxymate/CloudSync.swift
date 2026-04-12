@@ -39,7 +39,7 @@ final class CloudSync {
             queue: .main
         ) { [weak self] notification in
             let reason = notification.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int
-            DispatchQueue.main.async {
+            Task { @MainActor [weak self] in
                 self?.handleRemoteChange(reason: reason)
             }
         }

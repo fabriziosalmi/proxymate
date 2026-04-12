@@ -19,12 +19,9 @@ nonisolated final class HTTP2Upstream: @unchecked Sendable {
     private let session: URLSession
 
     init() {
-        let config = URLSessionConfiguration.default
-        // HTTP/2 multiplexing replaces pipelining
+        let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
-        // URLSession uses HTTP/2 by default for HTTPS connections
-        // For HTTP, we set this explicitly
         config.protocolClasses = nil // use default (includes h2)
         session = URLSession(configuration: config)
     }

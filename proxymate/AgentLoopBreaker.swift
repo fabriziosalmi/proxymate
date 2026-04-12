@@ -225,7 +225,7 @@ nonisolated final class AgentLoopBreaker: @unchecked Sendable {
 
     private func sha256Short(_ data: Data) -> String {
         var hash = [UInt8](repeating: 0, count: 32)
-        data.withUnsafeBytes { _ = CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash) }
+        _ = data.withUnsafeBytes { CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash) }
         return hash.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 }

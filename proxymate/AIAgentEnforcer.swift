@@ -38,26 +38,26 @@ nonisolated struct MCPPolicy: Identifiable, Codable, Hashable, Sendable {
     var note: String = ""
 }
 
+/// Default agent policies — defined as a file-level constant to avoid
+/// MainActor isolation issues with static properties in default-isolation mode.
+nonisolated private let _defaultAgentPolicies: [AIAgentPolicy] = [
+    .init(agentId: "claude-code",  name: "Claude Code",     action: .audit),
+    .init(agentId: "cursor",       name: "Cursor",          action: .audit),
+    .init(agentId: "windsurf",     name: "Windsurf",        action: .audit),
+    .init(agentId: "aider",        name: "Aider",           action: .audit),
+    .init(agentId: "copilot",      name: "GitHub Copilot",  action: .audit),
+    .init(agentId: "continue",     name: "Continue.dev",    action: .audit),
+    .init(agentId: "codex-cli",    name: "OpenAI Codex CLI",action: .audit),
+    .init(agentId: "mcp",          name: "MCP Connections",  action: .audit),
+]
+
 nonisolated struct AIAgentSettings: Codable, Hashable, Sendable {
     var enabled: Bool = true
-    var policies: [AIAgentPolicy] = AIAgentPolicy.defaults
+    var policies: [AIAgentPolicy] = _defaultAgentPolicies
     var mcpPolicies: [MCPPolicy] = []
     var blockUnknownMCP: Bool = true       // block MCP to servers not in allowlist
     var scanRequestBodies: Bool = true     // DLP scan on AI request bodies
     var logFullPrompts: Bool = false        // log full prompt text (privacy concern)
-}
-
-nonisolated extension AIAgentPolicy {
-    static let defaults: [AIAgentPolicy] = [
-        .init(agentId: "claude-code",  name: "Claude Code",     action: .audit),
-        .init(agentId: "cursor",       name: "Cursor",          action: .audit),
-        .init(agentId: "windsurf",     name: "Windsurf",        action: .audit),
-        .init(agentId: "aider",        name: "Aider",           action: .audit),
-        .init(agentId: "copilot",      name: "GitHub Copilot",  action: .audit),
-        .init(agentId: "continue",     name: "Continue.dev",    action: .audit),
-        .init(agentId: "codex-cli",    name: "OpenAI Codex CLI",action: .audit),
-        .init(agentId: "mcp",          name: "MCP Connections",  action: .audit),
-    ]
 }
 
 // MARK: - Known agent signatures
@@ -216,7 +216,7 @@ nonisolated enum AIAgentEnforcer {
     // MARK: - Helpers
 
     private static func agentDisplayName(_ id: String) -> String {
-        AIAgentPolicy.defaults.first { $0.agentId == id }?.name ?? id
+        _defaultAgentPolicies.first { $0.agentId == id }?.name ?? id
     }
 
     private static func extractHeaderValue(_ headers: String, name: String) -> String? {

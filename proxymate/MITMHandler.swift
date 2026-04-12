@@ -24,7 +24,7 @@ nonisolated(unsafe) private var nextHandlerID: Int = 1
 
 /// Sendable wrapper for SSLContext (C pointer, not Sendable by default).
 /// Safety: all access serialized on MITMHandler's dedicated handlerQueue.
-private struct SSLBox: @unchecked Sendable {
+nonisolated private struct SSLBox: @unchecked Sendable {
     let ctx: SSLContext
     let idPtr: UnsafeMutableRawPointer
 }
@@ -114,7 +114,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                 return
             }
 
-            guard let ctxUnmanaged = MITMCreateSSLContext(.serverSide, .streamType) else {
+            guard let ctxUnmanaged = Self.createSSLContext() else {
                 onEvent?(.log(.error, "MITM SSLCreateContext failed for \(hostname)"))
                 cleanup()
                 return
@@ -608,6 +608,13 @@ nonisolated final class MITMHandler: @unchecked Sendable {
             acquiredSemaphore = false
             mitmSemaphore.signal()
         }
+    }
+
+    /// Wrapper to suppress deprecation warnings for SSLContext APIs.
+    /// SSLContext is deprecated since macOS 10.15 but still functional on macOS 26.
+    @available(macOS, deprecated: 10.15, message: "SSLContext deprecated — migrate to SwiftNIO-SSL")
+    private static func createSSLContext() -> Unmanaged<SSLContext>? {
+        MITMCreateSSLContext(.serverSide, .streamType)
     }
 }
 
