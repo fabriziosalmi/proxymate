@@ -209,7 +209,12 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 completion(.success((headers, leftover)))
                 return
             }
-            if isComplete || acc.count >= 65_536 {
+            if isComplete {
+                // Client closed before sending complete headers — silent drop
+                connection.cancel()
+                return
+            }
+            if acc.count >= 65_536 {
                 completion(.failure(NSError(
                     domain: "Proxymate.LocalProxy", code: 1,
                     userInfo: [NSLocalizedDescriptionKey: "Headers too large (>\(acc.count) bytes)"])))

@@ -310,15 +310,24 @@ final class AppState: ObservableObject {
         case .blocked(let host, let ruleName):
             stats.requestsBlocked += 1
             timeSeries.recordBlocked()
-            log(.warn, "BLOCKED \(host) — \(ruleName)", host: host)
-            NotificationManager.shared.notifyBlock(host: host, ruleName: ruleName)
-            WebhookManager.shared.sendBlock(host: host, ruleName: ruleName)
+            let wafKey = "WAF|\(host)|\(ruleName)"
+            if !seenAgents.contains(wafKey) {
+                seenAgents.insert(wafKey)
+                log(.warn, "BLOCKED \(host) — \(ruleName)", host: host)
+                NotificationManager.shared.notifyBlock(host: host, ruleName: ruleName)
+                WebhookManager.shared.sendBlock(host: host, ruleName: ruleName)
+            }
         case .blacklisted(let host, let sourceName, let category):
             stats.blacklistBlocked += 1
             timeSeries.recordBlocked()
-            log(.warn, "BLACKLIST \(host) — \(sourceName) [\(category)]", host: host)
-            NotificationManager.shared.notifyBlock(host: host, ruleName: "\(sourceName) [\(category)]")
-            WebhookManager.shared.sendBlock(host: host, ruleName: "\(sourceName) [\(category)]")
+            // Log only first block per host (suppress repeats like exp-tas.com x30)
+            let blKey = "BL|\(host)"
+            if !seenAgents.contains(blKey) {
+                seenAgents.insert(blKey)
+                log(.warn, "BLACKLIST \(host) — \(sourceName) [\(category)]", host: host)
+                NotificationManager.shared.notifyBlock(host: host, ruleName: "\(sourceName) [\(category)]")
+                WebhookManager.shared.sendBlock(host: host, ruleName: "\(sourceName) [\(category)]")
+            }
         case .exfiltration(let host, let patternName, let severity, let preview):
             stats.exfiltrationBlocked += 1
             log(.error, "EXFILTRATION [\(severity)] \(patternName) → \(host) | \(preview)", host: host)
