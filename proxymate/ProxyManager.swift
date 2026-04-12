@@ -20,6 +20,14 @@ enum ProxyManagerError: LocalizedError {
 
 enum ProxyManager {
 
+    /// Domains/IPs that bypass the proxy (local networks, localhost, etc.)
+    private static let bypassDomains = [
+        "localhost", "127.0.0.1", "::1",
+        "*.local",
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "169.254.0.0/16",
+    ].joined(separator: " ")
+
     nonisolated static func enable(proxy: ProxyConfig) async throws {
         let httpsBlock = proxy.applyToHTTPS ? """
               networksetup -setsecurewebproxy "$svc" \(proxy.host) \(proxy.port)
@@ -30,6 +38,7 @@ enum ProxyManager {
         networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
           networksetup -setwebproxy "$svc" \(proxy.host) \(proxy.port)
           networksetup -setwebproxystate "$svc" on
+          networksetup -setproxybypassdomains "$svc" \(bypassDomains)
         \(httpsBlock)
         done
         """
