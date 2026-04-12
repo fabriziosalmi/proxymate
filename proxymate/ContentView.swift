@@ -215,25 +215,39 @@ struct QuickProxiesSection: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            List {
-                ForEach(state.proxies) { p in
-                    ProxyRow(proxy: p, isSelected: p.id == state.selectedProxyID)
-                        .contentShape(Rectangle())
-                        .onTapGesture { state.select(p.id) }
-                        .contextMenu {
-                            Button("Use this proxy") { state.select(p.id) }
-                            Button("Create Pool from this") {
-                                state.createPoolFromProxy(p)
-                            }
-                            Divider()
-                            Button("Delete", role: .destructive) { state.removeProxy(p.id) }
-                        }
-                        .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
+            if state.proxies.isEmpty {
+                VStack(spacing: 8) {
+                    Spacer()
+                    Image(systemName: "network.slash")
+                        .font(.title2).foregroundStyle(.quaternary)
+                    Text("No proxies configured").font(.caption).foregroundStyle(.secondary)
+                    Text("Add an upstream proxy server to get started.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center).padding(.horizontal, 20)
+                    Spacer()
                 }
-                .onMove { state.moveProxy(from: $0, to: $1) }
-                .onDelete { state.deleteProxies(at: $0) }
+                .frame(maxWidth: .infinity)
+            } else {
+                List {
+                    ForEach(state.proxies) { p in
+                        ProxyRow(proxy: p, isSelected: p.id == state.selectedProxyID)
+                            .contentShape(Rectangle())
+                            .onTapGesture { state.select(p.id) }
+                            .contextMenu {
+                                Button("Use this proxy") { state.select(p.id) }
+                                Button("Create Pool from this") {
+                                    state.createPoolFromProxy(p)
+                                }
+                                Divider()
+                                Button("Delete", role: .destructive) { state.removeProxy(p.id) }
+                            }
+                            .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
+                    }
+                    .onMove { state.moveProxy(from: $0, to: $1) }
+                    .onDelete { state.deleteProxies(at: $0) }
+                }
+                .listStyle(.plain)
             }
-            .listStyle(.plain)
             Divider()
             HStack {
                 Button { showingAdd = true } label: {
@@ -1266,8 +1280,8 @@ struct AllowlistSection: View {
                             }
                             .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
                     }
-                    .onMove { state.allowlist.move(fromOffsets: $0, toOffset: $1) }
-                    .onDelete { state.allowlist.remove(atOffsets: $0) }
+                    .onMove { state.moveAllowEntries(from: $0, to: $1) }
+                    .onDelete { state.deleteAllowEntries(at: $0) }
                 }
                 .listStyle(.plain)
             }
@@ -1448,14 +1462,13 @@ struct ThreatsSection: View {
 
     private func c2Binding<T>(_ kp: WritableKeyPath<C2Settings, T>) -> Binding<T> {
         Binding(get: { state.c2Settings[keyPath: kp] },
-                set: { var s = state.c2Settings; s[keyPath: kp] = $0; state.c2Settings = s })
+                set: { var s = state.c2Settings; s[keyPath: kp] = $0; state.updateC2(s) })
     }
 
     private func beaconBinding<T>(_ kp: WritableKeyPath<BeaconingSettings, T>) -> Binding<T> {
         Binding(get: { state.beaconingSettings[keyPath: kp] },
                 set: { var s = state.beaconingSettings; s[keyPath: kp] = $0
-                       state.beaconingSettings = s
-                       BeaconingDetector.shared.configure(s) })
+                       state.updateBeaconing(s) })
     }
 
     private func agentPolicyBinding(_ agentId: String) -> Binding<AIAgentPolicy.Action> {
@@ -1464,8 +1477,10 @@ struct ThreatsSection: View {
                 state.aiAgentSettings.policies.first { $0.agentId == agentId }?.action ?? .audit
             },
             set: { newAction in
-                if let i = state.aiAgentSettings.policies.firstIndex(where: { $0.agentId == agentId }) {
-                    state.aiAgentSettings.policies[i].action = newAction
+                var s = state.aiAgentSettings
+                if let i = s.policies.firstIndex(where: { $0.agentId == agentId }) {
+                    s.policies[i].action = newAction
+                    state.updateAIAgentSettings(s)
                 }
             }
         )
@@ -1522,9 +1537,13 @@ struct BlacklistsSection: View {
                     .buttonStyle(.borderless)
                 Spacer()
                 Button {
+                    guard !isRefreshing else { return }
                     isRefreshing = true
                     state.refreshAllBlacklists()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { isRefreshing = false }
+                    Task {
+                        try? await Task.sleep(for: .seconds(2))
+                        isRefreshing = false
+                    }
                 } label: {
                     if isRefreshing {
                         ProgressView().controlSize(.small)

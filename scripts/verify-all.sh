@@ -344,6 +344,9 @@ check_feature "Stats time series (charts)"          "StatsTimeSeries"           
 check_feature "Onboarding wizard (5 steps)"         "stepWelcome"               proxymate/OnboardingView.swift
 check_feature "About screen"                        "AboutView"                 proxymate/AboutView.swift
 check_feature "Localization strings"                "Strings"                   proxymate/Localization.swift
+check_feature "Body decompressor (gzip/deflate)"   "BodyDecompressor"          proxymate/BodyDecompressor.swift
+check_feature "SOCKS5 settings persistence"        "socks5Key"                 proxymate/AppState.swift
+check_feature "AI agent settings persistence"      "aiAgentKey"                proxymate/AppState.swift
 
 # ============================================================
 section "RESULTS"

@@ -102,7 +102,7 @@ nonisolated enum IPv6Support {
 }
 
 private extension String {
-    func leftPad(toLength length: Int, withPad pad: String) -> String {
+    nonisolated func leftPad(toLength length: Int, withPad pad: String) -> String {
         let deficit = length - count
         if deficit <= 0 { return self }
         return String(repeating: pad, count: deficit) + self

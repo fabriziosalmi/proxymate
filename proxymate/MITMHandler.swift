@@ -14,12 +14,12 @@ import Network
 // MARK: - Global concurrency control
 
 /// Max simultaneous MITM handshakes/sessions. Prevents resource exhaustion.
-private let mitmSemaphore = DispatchSemaphore(value: 20)
+nonisolated(unsafe) private var mitmSemaphore = DispatchSemaphore(value: 20)
 
 /// Registry of active MITM handlers. SSLContext callbacks use the handler ID
 /// (stored as the SSLConnectionRef) to look up the handler safely.
 nonisolated(unsafe) private var activeHandlers: [Int: MITMHandler] = [:]
-private let handlersLock = NSLock()
+nonisolated(unsafe) private var handlersLock = NSLock()
 nonisolated(unsafe) private var nextHandlerID: Int = 1
 
 nonisolated final class MITMHandler: @unchecked Sendable {
@@ -486,9 +486,6 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         if let reqFeatures = requestFeatures {
             let statusCode = parseStatusCode(headerString)
             let latencyMs = Date().timeIntervalSince(requestStartTime) * 1000
-            let contentType = BodyDecompressor.extractContentEncoding(headerString) ?? ""
-            let hasSetCookie = headerString.lowercased().contains("set-cookie:")
-
             let respFeatures = FeatureExtractor.extractResponse(
                 statusCode: statusCode, headers: headerString,
                 bodySize: bodyData.count, latencyMs: latencyMs)

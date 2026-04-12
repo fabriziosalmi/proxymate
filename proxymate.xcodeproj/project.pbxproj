@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		011B83E52F8B486A007C4822 /* SOCKSProxy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 011B83E42F8B4869007C4822 /* SOCKSProxy.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		01E363A52F8A4D660003B5AD /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -17,6 +21,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		011B83E42F8B4869007C4822 /* SOCKSProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SOCKSProxy.swift; sourceTree = "<group>"; };
 		01E3631F2F87EA4E0003B5AD /* proxymate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = proxymate.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		01E363A12F8A4D660003B5AD /* proxymateTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = proxymateTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -58,6 +63,7 @@
 				01E363212F87EA4E0003B5AD /* proxymate */,
 				01E363A22F8A4D660003B5AD /* proxymateTests */,
 				01E363202F87EA4E0003B5AD /* Products */,
+				011B83E42F8B4869007C4822 /* SOCKSProxy.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -179,6 +185,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				011B83E52F8B486A007C4822 /* SOCKSProxy.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

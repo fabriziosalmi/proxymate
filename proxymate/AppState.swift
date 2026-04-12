@@ -87,6 +87,7 @@ final class AppState: ObservableObject {
     private let aiSettingsKey  = "proxymate.ai.v1"
     private let blacklistKey   = "proxymate.blacklists.v1"
     private let exfilPacksKey  = "proxymate.exfiltration.v1"
+    private let aiAgentKey     = "proxymate.aiagent.v1"
 
     // MARK: - Local proxy
 
@@ -508,6 +509,19 @@ final class AppState: ObservableObject {
         AgentLoopBreaker.shared.configure(s)
     }
 
+    func updateC2(_ s: C2Settings) {
+        c2Settings = s; save()
+    }
+
+    func updateBeaconing(_ s: BeaconingSettings) {
+        beaconingSettings = s; save()
+        BeaconingDetector.shared.configure(s)
+    }
+
+    func updateAIAgentSettings(_ s: AIAgentSettings) {
+        aiAgentSettings = s; save()
+    }
+
     // MARK: - Cloud sync
 
     func updateCloudSync(_ s: CloudSyncSettings) {
@@ -548,6 +562,15 @@ final class AppState: ObservableObject {
 
     func removeAllowEntry(_ id: UUID) {
         allowlist.removeAll { $0.id == id }; save()
+        syncRulesToListeners()
+    }
+
+    func moveAllowEntries(from source: IndexSet, to destination: Int) {
+        allowlist.move(fromOffsets: source, toOffset: destination); save()
+    }
+
+    func deleteAllowEntries(at offsets: IndexSet) {
+        allowlist.remove(atOffsets: offsets); save()
         syncRulesToListeners()
     }
 
@@ -883,6 +906,7 @@ final class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(mitmSettings) { d.set(data, forKey: mitmKey) }
         if let data = try? JSONEncoder().encode(blacklistSources) { d.set(data, forKey: blacklistKey) }
         if let data = try? JSONEncoder().encode(exfiltrationPacks) { d.set(data, forKey: exfilPacksKey) }
+        if let data = try? JSONEncoder().encode(aiAgentSettings) { d.set(data, forKey: aiAgentKey) }
         if let id = selectedProxyID { d.set(id.uuidString, forKey: selectedKey) }
     }
 
@@ -975,6 +999,10 @@ final class AppState: ObservableObject {
         if let data = d.data(forKey: exfilPacksKey),
            let arr = try? JSONDecoder().decode([ExfiltrationPack].self, from: data) {
             exfiltrationPacks = arr
+        }
+        if let data = d.data(forKey: aiAgentKey),
+           let s = try? JSONDecoder().decode(AIAgentSettings.self, from: data) {
+            aiAgentSettings = s
         }
         if let s = d.string(forKey: selectedKey), let uuid = UUID(uuidString: s) {
             selectedProxyID = uuid

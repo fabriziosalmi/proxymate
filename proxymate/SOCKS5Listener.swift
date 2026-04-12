@@ -39,8 +39,11 @@ nonisolated final class SOCKS5Listener: @unchecked Sendable {
 
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
-            params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback),
-                                                      port: NWEndpoint.Port(rawValue: port)!)
+            guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+                onEvent?(.log(.error, "SOCKS5: invalid port \(port)"))
+                return
+            }
+            params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: nwPort)
             guard let l = try? NWListener(using: params) else { return }
             l.newConnectionHandler = { [weak self] conn in
                 self?.handleClient(conn)

@@ -331,8 +331,9 @@ nonisolated final class TLSManager: @unchecked Sendable {
     
     /// Add host to runtime excludes (triggered by cert pinning detection)
     func addRuntimeExclude(host: String) {
-        queue.sync {
-            runtimeExcludes.insert(host.lowercased())
+        let lower = host.lowercased()
+        queue.async { [self] in
+            runtimeExcludes.insert(lower)
         }
     }
     

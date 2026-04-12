@@ -23,7 +23,6 @@ nonisolated enum BodyDecompressor {
     static func decompress(_ data: Data, encoding: String) -> (Data, Bool) {
         let enc = encoding.lowercased().trimmingCharacters(in: .whitespaces)
 
-        let algorithm: compression_algorithm
         switch enc {
         case "gzip", "x-gzip":
             // gzip = deflate + gzip header. Compression framework handles raw deflate,
@@ -35,10 +34,17 @@ nonisolated enum BodyDecompressor {
 
         case "deflate":
             // RFC 7230: "deflate" can be raw deflate or zlib-wrapped.
-            // Try zlib first, fall back to raw deflate.
+            // Try zlib-wrapped first; if that fails, try stripping the 2-byte zlib header
+            // and decompressing the raw deflate stream.
             let (result, ok) = decompressRaw(data, algorithm: COMPRESSION_ZLIB)
             if ok { return (result, true) }
-            return decompressRaw(data, algorithm: COMPRESSION_ZLIB)
+            // Strip 2-byte zlib header (0x78 ...) and 4-byte Adler-32 trailer, then retry.
+            if data.count > 6 {
+                let raw = data[2..<(data.count - 4)]
+                let (result2, ok2) = decompressRaw(raw, algorithm: COMPRESSION_ZLIB)
+                if ok2 { return (result2, true) }
+            }
+            return (data, false)
 
         case "identity", "":
             return (data, false) // not compressed
