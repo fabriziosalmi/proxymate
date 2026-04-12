@@ -639,7 +639,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         // MITMClose does SSLClose + CFRelease (single owner — we used
         // takeUnretainedValue so Swift ARC won't double-release).
         MITMClose(ssl.ctx)
-        clientConn.forceCancel()
+        clientConn.cancel()
         releaseHandshakeSemaphore()
     }
 
@@ -653,7 +653,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         activeHandlers.removeValue(forKey: handlerID)
         handlersLock.unlock()
 
-        clientConn.forceCancel()
+        clientConn.cancel()
         releaseHandshakeSemaphore()
     }
 

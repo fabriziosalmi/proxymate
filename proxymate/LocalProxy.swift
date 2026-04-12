@@ -662,37 +662,24 @@ nonisolated final class LocalProxy: @unchecked Sendable {
         }
     }
 
-    /// Cancel a connection if not already cancelled or cancelling.
-    private func safeCancel(_ conn: NWConnection) {
-        switch conn.state {
-        case .cancelled, .failed: break
-        default: conn.forceCancel()
-        }
-    }
-
     private func pipe(from: NWConnection, to: NWConnection) {
         from.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
-            guard let self else { from.forceCancel(); to.forceCancel(); return }
+            guard let self else { return }
             if let data, !data.isEmpty {
                 to.send(content: data, completion: .contentProcessed { [weak self] err in
-                    if err != nil {
-                        self?.safeCancel(from)
-                        self?.safeCancel(to)
-                        return
-                    }
-                    if isComplete {
-                        self?.safeCancel(from)
-                        self?.safeCancel(to)
+                    if err != nil || isComplete {
+                        from.cancel()
+                        to.cancel()
                     } else {
                         self?.pipe(from: from, to: to)
                     }
                 })
-                return
-            }
-            if isComplete || error != nil {
-                self.safeCancel(from)
-                self.safeCancel(to)
-                return
+            } else if isComplete || error != nil {
+                from.cancel()
+                to.cancel()
+            } else {
+                // No data, not complete, no error — keep reading
+                self.pipe(from: from, to: to)
             }
         }
     }
@@ -713,10 +700,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 buf.append(data)
                 to.send(content: data, completion: .contentProcessed { [weak self] err in
                     guard let self else { return }
-                    if err != nil {
-                        self.safeCancel(from); self.safeCancel(to); return
-                    }
-                    if isComplete {
+                    if err != nil || isComplete {
                         self.finishBuffer(from: from, to: to, buffer: buf,
                                           cacheContext: cacheContext, aiContext: aiContext)
                     } else if buf.count > maxBuffer {
@@ -726,15 +710,14 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                                            cacheContext: cacheContext, aiContext: aiContext)
                     }
                 })
-                return
-            }
-            if isComplete {
+            } else if isComplete {
                 self.finishBuffer(from: from, to: to, buffer: buf,
                                   cacheContext: cacheContext, aiContext: aiContext)
-                return
-            }
-            if error != nil {
-                self.safeCancel(from); self.safeCancel(to)
+            } else if error != nil {
+                from.cancel(); to.cancel()
+            } else {
+                self.pipeAndBuffer(from: from, to: to, buffer: buf,
+                                   cacheContext: cacheContext, aiContext: aiContext)
             }
         }
     }
@@ -747,9 +730,9 @@ nonisolated final class LocalProxy: @unchecked Sendable {
            case .hostPort(let host, let port) = endpoint {
             ConnectionPool.shared.put(host: "\(host)", port: port.rawValue, connection: from)
         } else {
-            safeCancel(from)
+            from.cancel()
         }
-        safeCancel(to)
+        to.cancel()
         if let ctx = cacheContext {
             Self.storeInCache(responseData: buffer, context: ctx)
         }
