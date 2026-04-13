@@ -85,7 +85,7 @@ Defeats scripts that expect a specific shape of response and would otherwise ret
 
 ## Pool-aware rules
 
-If your upstream is a [multi-member pool](/guide/features#routing), you can tag rules with a member selector:
+If your upstream is a [multi-member pool](/guide/features.md#routing), you can tag rules with a member selector:
 
 ```
 Type:     Block Domain

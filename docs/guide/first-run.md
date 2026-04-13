@@ -22,7 +22,7 @@ Required for MITM. Skip if you only need plain proxying + WAF on HTTP.
 - Clicks "Install" → enter admin password once → adds the CA to the system keychain with `trustRoot`
 - The CA is local to this Mac; it cannot be used by anyone without your user passphrase
 
-See the [security model](/guide/security#ca-lifecycle) for details on what this actually does and does not mean.
+See the [security model](/guide/security.md#ca-lifecycle) for details on what this actually does and does not mean.
 
 ## 3. Pick an upstream
 

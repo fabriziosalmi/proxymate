@@ -17,7 +17,7 @@ Proxymate is a **menu-bar app**. You install it, toggle it on, and every app on 
 
 ## Where to go next
 
-- **[Installation](/guide/installation)** — download, verify SHA256, trust the CA
-- **[First run](/guide/first-run)** — the 30-second onboarding tour
-- **[Features overview](/guide/features)** — one-page tour of every capability
-- **[Security model](/guide/security)** — what Proxymate can (and can't) protect you from
+- **[Installation](/guide/installation.md)** — download, verify SHA256, trust the CA
+- **[First run](/guide/first-run.md)** — the 30-second onboarding tour
+- **[Features overview](/guide/features.md)** — one-page tour of every capability
+- **[Security model](/guide/security.md)** — what Proxymate can (and can't) protect you from

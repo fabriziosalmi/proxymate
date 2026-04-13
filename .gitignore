@@ -27,13 +27,15 @@ Packages/
 build/bundle-bin/
 
 # Local roadmap, never to be tracked or shipped
-FEATURES.md
-FEATURES_SHORT.md
-NEWFEATURES.md
-ROADMAP.md
-NOTES.md
-TODO.local.md
-test-results-*.txt
+# Root-anchored (leading /) so we don't accidentally ignore
+# docs/guide/features.md etc. on case-insensitive filesystems.
+/FEATURES.md
+/FEATURES_SHORT.md
+/NEWFEATURES.md
+/ROADMAP.md
+/NOTES.md
+/TODO.local.md
+/test-results-*.txt
 
 # VitePress (docs site)
 docs/node_modules/
