@@ -30,13 +30,19 @@ fi
 
 mkdir -p "$DST/lib"
 
-for bin in mitmdump squid; do
-    if [[ -f "$SRC/$bin" ]]; then
-        cp -f "$SRC/$bin" "$DST/$bin"
-        chmod 755 "$DST/$bin"
-        echo "Copied $bin to bundle"
-    fi
-done
+# mitmproxy.app is a nested app bundle (PyInstaller requires its sibling
+# Python.framework + stdlib layout). Copy the whole tree.
+if [[ -d "$SRC/mitmproxy.app" ]]; then
+    rm -rf "$DST/mitmproxy.app"
+    cp -R "$SRC/mitmproxy.app" "$DST/mitmproxy.app"
+    echo "Copied mitmproxy.app to bundle"
+fi
+
+if [[ -f "$SRC/squid" ]]; then
+    cp -f "$SRC/squid" "$DST/squid"
+    chmod 755 "$DST/squid"
+    echo "Copied squid to bundle"
+fi
 
 for lib in "$SRC"/lib/*.dylib; do
     if [[ -f "$lib" ]]; then

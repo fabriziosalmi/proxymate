@@ -160,11 +160,17 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
     // MARK: - Find mitmdump
 
     private func findMitmdump() -> String? {
-        // 1. Bundled binary (preferred — no external dependency)
+        // 1. Bundled mitmproxy.app (preferred — no external dependency).
+        //    mitmdump is PyInstaller-packaged and needs its sibling
+        //    Python.framework + stdlib, so the whole .app is embedded.
+        let resources = Bundle.main.bundlePath + "/Contents/Resources"
         let bundledPaths = [
+            resources + "/bin/mitmproxy.app/Contents/MacOS/mitmdump",
+            resources + "/mitmproxy.app/Contents/MacOS/mitmdump",
+            // Legacy flat-binary paths (kept for backward compat during rollout)
             Bundle.main.path(forResource: "mitmdump", ofType: nil, inDirectory: "bin"),
             Bundle.main.path(forResource: "mitmdump", ofType: nil),
-            Bundle.main.bundlePath + "/Contents/Resources/bin/mitmdump",
+            resources + "/bin/mitmdump",
         ]
         for case let path? in bundledPaths {
             if FileManager.default.isExecutableFile(atPath: path) { return path }

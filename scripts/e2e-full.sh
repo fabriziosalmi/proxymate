@@ -63,6 +63,28 @@ body=$(pcurl -X POST -H "Content-Type: application/json" \
     -d '{"marker":"e2e"}' http://httpbin.org/post | grep -c '"marker": "e2e"' || echo "0")
 [[ "$body" -ge 1 ]] && pass "HTTP POST body forwarded" || fail "HTTP POST body forwarded (count $body)"
 
+# Large POST body: stress the header/leftover boundary. Initial read is
+# 8KB, so a >8KB body exercises the client→upstream pipe (not just
+# leftover forwarding). Use a deterministic 64KB payload with a marker
+# at the END so truncation would be detected.
+LARGE_POST=$(mktemp)
+printf 'START_MARKER' > "$LARGE_POST"
+# Fill to ~64KB minus the end marker
+dd if=/dev/zero bs=1024 count=64 2>/dev/null | tr '\0' 'A' >> "$LARGE_POST"
+printf 'END_MARKER_XYZ' >> "$LARGE_POST"
+size=$(wc -c < "$LARGE_POST" | tr -d ' ')
+resp=$(pcurl -X POST -H "Content-Type: application/octet-stream" \
+    --data-binary "@$LARGE_POST" http://httpbin.org/post || echo "")
+rm -f "$LARGE_POST"
+reported=$(echo "$resp" | grep -o '"Content-Length": "[0-9]*"' | head -1 | grep -o '[0-9]*')
+ends_ok=$(echo "$resp" | grep -c "END_MARKER_XYZ" || echo "0")
+info "POST body ${size} bytes, upstream Content-Length: ${reported:-unknown}"
+if [[ "$ends_ok" -ge 1 && "${reported:-0}" == "$size" ]]; then
+    pass "HTTP POST 64KB body fully forwarded (end marker seen)"
+else
+    fail "HTTP POST 64KB body truncated (end_marker=$ends_ok, reported=${reported:-?} vs sent=$size)"
+fi
+
 # ── 2. HTTPS CONNECT ─────────────────────────────────────────────────────
 section "2. HTTPS CONNECT"
 code=$(pcurl -o /dev/null -w "%{http_code}" https://example.com/ || echo "000")

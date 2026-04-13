@@ -23,29 +23,28 @@ done
 
 mkdir -p "$DEST/lib"
 
-# --- mitmdump ---
-echo "==> Bundling mitmdump..."
-MITMDUMP_SRC=""
-for candidate in \
-    "/opt/homebrew/Caskroom/mitmproxy/*/mitmproxy.app/Contents/MacOS/mitmdump" \
-    "/opt/homebrew/bin/mitmdump" \
-    "/usr/local/bin/mitmdump"; do
-    # Expand glob
-    for f in $candidate; do
-        if [[ -x "$f" || -L "$f" ]]; then
-            MITMDUMP_SRC="$(readlink -f "$f" 2>/dev/null || realpath "$f")"
-            break 2
-        fi
-    done
+# --- mitmproxy.app (nested bundle) ---
+# mitmdump is PyInstaller-packaged: the binary relies on sibling
+# Python.framework in Frameworks/ and Python stdlib in Resources/.
+# Copying just the binary produces a broken dlopen at first run.
+# We embed the whole mitmproxy.app tree; findMitmdump() uses the
+# binary inside it.
+echo "==> Bundling mitmproxy.app..."
+MITMPROXY_APP_SRC=""
+for candidate in /opt/homebrew/Caskroom/mitmproxy/*/mitmproxy.app; do
+    if [[ -d "$candidate" && -x "$candidate/Contents/MacOS/mitmdump" ]]; then
+        MITMPROXY_APP_SRC="$candidate"
+        break
+    fi
 done
 
-if [[ -z "$MITMDUMP_SRC" ]]; then
-    echo "ERROR: mitmdump not found. Install: brew install mitmproxy"
+if [[ -z "$MITMPROXY_APP_SRC" ]]; then
+    echo "ERROR: mitmproxy.app not found. Install: brew install --cask mitmproxy"
     exit 1
 fi
-cp "$MITMDUMP_SRC" "$DEST/mitmdump"
-chmod 755 "$DEST/mitmdump"
-echo "   Copied: $MITMDUMP_SRC ($(du -h "$DEST/mitmdump" | cut -f1))"
+rm -rf "$DEST/mitmproxy.app"
+cp -R "$MITMPROXY_APP_SRC" "$DEST/mitmproxy.app"
+echo "   Copied: $MITMPROXY_APP_SRC ($(du -sh "$DEST/mitmproxy.app" | cut -f1))"
 
 # --- squid ---
 echo "==> Bundling squid..."
@@ -107,8 +106,8 @@ install_name_tool -change \
 # --- Verify ---
 echo ""
 echo "==> Verifying..."
-echo "mitmdump deps:"
-otool -L "$DEST/mitmdump" | grep -v "^$DEST" | head -5
+echo "mitmdump runs:"
+"$DEST/mitmproxy.app/Contents/MacOS/mitmdump" --version 2>&1 | head -2
 echo ""
 echo "squid deps:"
 otool -L "$DEST/squid" | grep -v "^$DEST" | head -8
