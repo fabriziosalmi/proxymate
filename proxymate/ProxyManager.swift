@@ -12,9 +12,12 @@ import SystemConfiguration
 
 enum ProxyManagerError: LocalizedError {
     case scriptFailed(String)
+    case verificationFailed(expected: String, actual: String)
     var errorDescription: String? {
         switch self {
         case .scriptFailed(let m): return m
+        case .verificationFailed(let exp, let act):
+            return "System proxy not applied (expected \(exp), got \(act))"
         }
     }
 }
@@ -44,6 +47,12 @@ enum ProxyManager {
         done
         """
         try await runPrivileged(shell)
+
+        // Verify the change actually took effect. On macOS 26 the legacy
+        // `AuthorizationExecuteWithPrivileges` path was silently no-op'ing,
+        // leaving stale proxy state while the app reported "enabled".
+        // If verification fails we surface a real error instead of lying.
+        try await verifyApplied(host: proxy.host, port: proxy.port)
     }
 
     nonisolated static func disable() async throws {
@@ -81,5 +90,23 @@ enum ProxyManager {
         try await Task.detached(priority: .userInitiated) {
             try PrivilegedHelper.shared.runAsRoot(shell)
         }.value
+    }
+
+    /// Poll SystemConfiguration briefly until the proxy matches the expected
+    /// host/port. Writes by `networksetup` propagate into SC asynchronously,
+    /// usually <50ms; we allow up to 2s before giving up.
+    private nonisolated static func verifyApplied(host: String, port: Int) async throws {
+        let deadline = Date().addingTimeInterval(2.0)
+        var last: (host: String, port: Int)? = nil
+        while Date() < deadline {
+            if let current = await currentProxy() {
+                last = current
+                if current.host == host && current.port == port { return }
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
+        let actual = last.map { "\($0.host):\($0.port)" } ?? "disabled"
+        throw ProxyManagerError.verificationFailed(
+            expected: "\(host):\(port)", actual: actual)
     }
 }

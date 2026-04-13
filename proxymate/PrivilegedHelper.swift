@@ -2,12 +2,14 @@
 //  PrivilegedHelper.swift
 //  proxymate
 //
-//  Caches an AuthorizationRef so the user enters their admin password only
-//  once per session. All subsequent privileged operations (networksetup calls)
-//  reuse the cached reference without any UI.
+//  Runs shell scripts as root for privileged operations (networksetup,
+//  security add-trusted-cert, etc.). Uses `osascript do shell script …
+//  with administrator privileges` which is the only path that reliably
+//  works on macOS 26 (Tahoe) — AuthorizationExecuteWithPrivileges has
+//  been fully removed/no-op since 15+ and silently fails.
 //
-//  Uses AuthHelperExecute (C wrapper in AuthHelper.c) which calls the
-//  deprecated-but-functional AuthorizationExecuteWithPrivileges under the hood.
+//  The OS caches admin authorization for ~5 minutes across invocations,
+//  so back-to-back privileged calls don't re-prompt.
 //
 
 import Foundation
@@ -17,7 +19,7 @@ enum PrivilegedHelperError: LocalizedError {
     case authorizationDenied
     case authorizationCancelled
     case authorizationFailed(OSStatus)
-    case executionFailed(OSStatus)
+    case executionFailed(Int32)
     case outputError(String)
 
     var errorDescription: String? {
@@ -29,7 +31,7 @@ enum PrivilegedHelperError: LocalizedError {
         case .authorizationFailed(let s):
             return "Authorization failed (OSStatus \(s))"
         case .executionFailed(let s):
-            return "Privileged execution failed (OSStatus \(s))"
+            return "Privileged execution failed (exit \(s))"
         case .outputError(let msg):
             return msg
         }
@@ -41,129 +43,109 @@ nonisolated final class PrivilegedHelper: @unchecked Sendable {
     static let shared = PrivilegedHelper()
 
     private let lock = NSLock()
-    private var authRef: AuthorizationRef?
+    private var hasAuthorizedOnce = false
 
     // MARK: - Public API
 
-    /// Ensures an AuthorizationRef exists. The first call presents the native
-    /// macOS password dialog. Subsequent calls return immediately.
-    func ensureAuthorized() throws {
-        lock.lock()
-        defer { lock.unlock() }
-        if authRef != nil { return }
+    /// No-op on macOS 26+: there's nothing to pre-authorize because we
+    /// invoke `osascript` per-call. The OS caches auth itself for ~5min.
+    /// Kept for API compatibility with existing call sites.
+    func ensureAuthorized() throws { /* noop */ }
 
-        var ref: AuthorizationRef?
-
-        // Copy the right name to a stable C string that outlives AuthorizationCreate.
-        // withCString's pointer is only valid inside the closure — using it after
-        // the closure returns is undefined behavior (dangling pointer).
-        let rightCStr = strdup(kAuthorizationRightExecute)!
-        defer { free(rightCStr) }
-
-        var item = AuthorizationItem(
-            name: rightCStr,
-            valueLength: 0,
-            value: nil,
-            flags: 0
-        )
-        var rights = withUnsafeMutablePointer(to: &item) { ptr in
-            AuthorizationRights(count: 1, items: ptr)
-        }
-        let flags: AuthorizationFlags = [
-            .interactionAllowed,
-            .preAuthorize,
-            .extendRights
-        ]
-
-        let status = AuthorizationCreate(&rights, nil, flags, &ref)
-
-        switch status {
-        case errAuthorizationSuccess:
-            authRef = ref
-        case errAuthorizationCanceled:
-            throw PrivilegedHelperError.authorizationCancelled
-        case errAuthorizationDenied:
-            throw PrivilegedHelperError.authorizationDenied
-        default:
-            throw PrivilegedHelperError.authorizationFailed(status)
-        }
-    }
-
-    /// Runs a shell script as root using the cached authorization.
+    /// Runs a shell script as root via `osascript do shell script`.
     /// Blocks the calling thread until the script finishes.
+    ///
+    /// Presents the native macOS admin password/TouchID dialog on first call;
+    /// subsequent calls within the OS auth window (~5min) run without UI.
     func runAsRoot(_ script: String) throws {
-        try ensureAuthorized()
+        // Materialize the script to a temp file. Embedding large, quote-heavy
+        // scripts directly inside AppleScript string literals is fragile
+        // (escaping rules differ); a temp file sidesteps the issue entirely.
+        let tmpDir = FileManager.default.temporaryDirectory
+        let tmpURL = tmpDir.appendingPathComponent("proxymate-priv-\(UUID().uuidString).sh")
+        let body = "#!/bin/bash\nset -o pipefail\n" + script + "\n"
+
+        try body.write(to: tmpURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmpURL) }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o700)],
+            ofItemAtPath: tmpURL.path
+        )
+
+        // AppleScript invocation: quote the path defensively. The path comes
+        // from FileManager + UUID so it has no spaces or quotes, but escape
+        // anyway to keep this robust if that ever changes.
+        let quotedPath = Self.escapeForAppleScriptDouble(tmpURL.path)
+        let applescript = "do shell script \"/bin/bash \\\"\(quotedPath)\\\"\" with administrator privileges"
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", applescript]
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+
+        do {
+            try proc.run()
+        } catch {
+            throw PrivilegedHelperError.authorizationFailed(errSecInternalError)
+        }
+        proc.waitUntilExit()
+
+        let stdoutStr = String(
+            data: outPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        let stderrStr = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+
+        if proc.terminationStatus != 0 {
+            // AppleScript error -128 == user cancelled the auth prompt.
+            if stderrStr.contains("(-128)") || stderrStr.lowercased().contains("user canceled") {
+                throw PrivilegedHelperError.authorizationCancelled
+            }
+            let msg = stderrStr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !msg.isEmpty {
+                throw PrivilegedHelperError.outputError(msg)
+            }
+            throw PrivilegedHelperError.executionFailed(proc.terminationStatus)
+        }
+
+        // `networksetup` writes soft errors to stdout without exiting non-zero.
+        let combined = stdoutStr + stderrStr
+        if combined.lowercased().contains("** error") {
+            throw PrivilegedHelperError.outputError(
+                combined.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
 
         lock.lock()
-        guard let ref = authRef else {
-            lock.unlock()
-            throw PrivilegedHelperError.authorizationDenied
-        }
+        hasAuthorizedOnce = true
         lock.unlock()
-
-        // Build argv: /bin/sh -c "script"
-        let dashC = strdup("-c")!
-        let scriptC = strdup(script)!
-        defer { free(dashC); free(scriptC) }
-
-        var args: [UnsafeMutablePointer<CChar>?] = [dashC, scriptC, nil]
-        var pipe: UnsafeMutablePointer<FILE>?
-
-        let status = args.withUnsafeMutableBufferPointer { buf -> OSStatus in
-            AuthHelperExecute(
-                ref,
-                "/bin/sh",
-                buf.baseAddress!,
-                &pipe
-            )
-        }
-
-        // Read stdout to wait for child completion + capture any error output
-        var output = ""
-        if let fp = pipe {
-            var buf = [CChar](repeating: 0, count: 4096)
-            while fgets(&buf, Int32(buf.count), fp) != nil {
-                output += String(cString: buf)
-            }
-            fclose(fp)
-        }
-
-        // Reap zombie children (non-blocking)
-        var childStatus: Int32 = 0
-        while waitpid(-1, &childStatus, WNOHANG) > 0 {}
-
-        guard status == errAuthorizationSuccess else {
-            throw PrivilegedHelperError.executionFailed(status)
-        }
-
-        // networksetup writes errors to stdout; surface them
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.lowercased().contains("** error") {
-            throw PrivilegedHelperError.outputError(trimmed)
-        }
     }
 
-    /// Drops the cached authorization. After this, the next privileged call
-    /// will show the password dialog again.
+    /// Clears our "has authorized once" hint. The OS auth cache is not
+    /// user-controllable; this only affects UI state.
     func deauthorize() {
         lock.lock()
         defer { lock.unlock() }
-        if let ref = authRef {
-            AuthorizationFree(ref, [.destroyRights])
-            authRef = nil
-        }
+        hasAuthorizedOnce = false
     }
 
-    /// Whether we currently hold a valid authorization.
+    /// Best-effort indicator of whether we've successfully run a privileged
+    /// command in this session. Not authoritative (the OS auth window may
+    /// have expired independently).
     var isAuthorized: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return authRef != nil
+        return hasAuthorizedOnce
     }
 
-    deinit {
-        if let ref = authRef {
-            AuthorizationFree(ref, [])
-        }
+    // Escape a string for embedding inside an AppleScript double-quoted literal.
+    private static func escapeForAppleScriptDouble(_ s: String) -> String {
+        // Backslashes first, then double-quotes.
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }

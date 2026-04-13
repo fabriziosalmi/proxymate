@@ -10,12 +10,6 @@
 #include <Security/SecureTransport.h>
 #include <stdio.h>
 
-/// Wrapper around the deprecated AuthorizationExecuteWithPrivileges.
-OSStatus AuthHelperExecute(AuthorizationRef _Nonnull auth,
-                           const char * _Nonnull tool,
-                           char * _Nullable const * _Nonnull arguments,
-                           FILE * _Nullable * _Nullable pipe);
-
 // MARK: - SSLContext wrappers (deprecated since macOS 10.15, still functional)
 
 /// Create an SSL context for MITM use.

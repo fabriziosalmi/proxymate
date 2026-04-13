@@ -10,17 +10,8 @@
 #include <Security/Security.h>
 #include <Security/SecureTransport.h>
 
-// MARK: - AuthorizationExecuteWithPrivileges wrapper
-
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-
-OSStatus AuthHelperExecute(AuthorizationRef auth,
-                           const char *tool,
-                           char *const *arguments,
-                           FILE **pipe) {
-    return AuthorizationExecuteWithPrivileges(auth, tool, kAuthorizationFlagDefaults, arguments, pipe);
-}
 
 // MARK: - SSLContext wrappers for MITM
 
