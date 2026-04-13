@@ -1,155 +1,135 @@
 <p align="center">
-  <img src="proxymate.svg" width="80" alt="Proxymate icon">
+  <img src="proxymate.svg" width="96" alt="Proxymate icon">
 </p>
 
-# Proxymate
+<h1 align="center">Proxymate</h1>
 
-[![CI](https://github.com/fabriziosalmi/proxymate/actions/workflows/ci.yml/badge.svg)](https://github.com/fabriziosalmi/proxymate/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![macOS](https://img.shields.io/badge/macOS-15%2B-black.svg)](https://www.apple.com/macos/)
-[![Swift](https://img.shields.io/badge/Swift-5-orange.svg)](https://swift.org)
-[![Tests](https://img.shields.io/badge/tests-134%20passed-brightgreen.svg)](#)
-[![Zero Telemetry](https://img.shields.io/badge/telemetry-zero-purple.svg)](#privacy)
+<p align="center">
+  <em>Your Mac. Your traffic. Your rules.</em>
+</p>
 
-A macOS menu bar app for HTTP/HTTPS proxy management with built-in WAF, privacy protection, AI agent enforcement, and threat intelligence. Free and open source, forever.
+<p align="center">
+  <a href="https://fabriziosalmi.github.io/proxymate/"><img src="https://img.shields.io/badge/docs-live-0A84FF.svg" alt="Documentation"></a>
+  <a href="https://github.com/fabriziosalmi/proxymate/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.48-blue.svg" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/macOS-15%2B-black.svg" alt="macOS 15+">
+  <img src="https://img.shields.io/badge/notarized-yes-success.svg" alt="Notarized">
+  <img src="https://img.shields.io/badge/telemetry-zero-purple.svg" alt="Zero telemetry">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+</p>
 
-## Features
+A privacy-first **menu-bar HTTP/HTTPS/SOCKS proxy for macOS**, with a built-in WAF, transparent TLS interception, AI agent controls, credential-exfiltration scanner, and multi-upstream pool routing. Zero telemetry, zero cloud accounts, signed and notarized by Apple.
 
-**Proxy Management**
-- One-click system proxy toggle from the menu bar
-- Multi-upstream pools with 6 load balancing strategies (round-robin, weighted, failover, lowest-latency, least-connections, random)
-- Health checks with automatic failover
-- Host-pattern routing overrides (e.g. `*.github.com` → specific pool)
-
-**Security**
-- WAF rules: block/allow by IP, domain, or content pattern
-- Bulk blacklist ingestion: TOR exit nodes, ad/tracking domains, malware C2, crypto miners
-- DNS-level blocking: resolves domains via DoH and blocks if IP is blacklisted
-- Credential exfiltration scanner: AWS keys, GitHub PATs, Stripe keys, Slack tokens, PII (IBAN, credit cards, fiscal codes, SSN)
-- IP allowlist with CIDR range support and port/protocol scoping
-- macOS notifications on first block per rule
-
-**Privacy**
-- Strip/replace User-Agent, Referer, ETag (anti-supercookie)
-- Remove tracking cookies (`_ga`, `_fbp`, `__utm`, etc.)
-- Inject `DNT: 1` and `Sec-GPC: 1` headers
-- DNS-over-HTTPS (Cloudflare, Quad9, Google, or custom provider)
-- TLS MITM with active HTTPS interception (root CA, leaf cert forging, SSLContext)
-- Response header stripping (Server, X-Powered-By) via MITM
-
-**AI/LLM Observability & Enforcement**
-- Auto-detect 11 providers (OpenAI, Anthropic, Google, Mistral, Cohere, Together, Groq, DeepSeek, Perplexity, xAI, Ollama)
-- Token counting from JSON responses and SSE streams
-- Cost estimation with built-in pricing table (17 models)
-- Daily and monthly budget caps with auto-block
-- Model allowlist/blocklist (block expensive models)
-- AI agent detection (Claude Code, Cursor, Windsurf, Aider, Copilot, Codex CLI)
-- MCP (Model Context Protocol) traffic detection and server allowlist
-- Agent loop breaker: detects stuck LLMs, rapid-fire loops, MCP router loops, cost runaway
-
-**Threat Detection**
-- C2 framework signatures (Cobalt Strike, Sliver, Mythic, Empire, Havoc, Metasploit)
-- Beaconing detection (fixed-interval request patterns)
-- WebSocket frame parsing with WAF inspection on text frames
-- Process-aware rules (PID to bundle ID, per-app allow/block/direct)
-- 19 built-in threat intelligence feeds across 8 categories
-
-**Caching**
-- L1 RAM cache with full HTTP semantics (Cache-Control, Vary, ETag, Expires)
-- L2 disk cache (SQLite metadata + sharded filesystem bodies)
-- LRU eviction, configurable size and TTL
-- Tracking parameter stripping from cache keys (`utm_*`, `fbclid`, etc.)
-
-**Protocol Support**
-- HTTP/HTTPS forward proxy (Network.framework)
-- SOCKS5 proxy (RFC 1928)
-- HTTP/2 upstream forwarding
-
-**Rule Management**
-- Import from hosts files, Adblock Plus, plain domain/IP lists
-- Auto-detect format, deduplicate on import
-- Export as JSON or hosts file
-- iCloud sync between Macs
-- Drag-reorder for priority control
-
-**Logging & Monitoring**
-- Persistent JSONL logs with rotation (survives restarts)
-- OSLog integration (visible in Console.app)
-- Prometheus /metrics endpoint (opt-in, localhost only)
-- Webhook events on block/exfiltration/budget (JSON POST)
-- macOS notifications on first block per rule
-- Live search and filter by text, host, or level
-- Click-to-rule: right-click a log entry to block or allow the host
-- Real-time req/sec charts (Apple Charts)
-
-## Requirements
-
-- macOS 15.0 or later
-- Xcode 26+ (for building from source)
+📖 **Full documentation:** [fabriziosalmi.github.io/proxymate](https://fabriziosalmi.github.io/proxymate/)
 
 ## Install
 
-### From DMG (recommended)
+Download `Proxymate-0.9.48.dmg` from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest), verify the hash, and drag the app into `/Applications`:
 
-Download the latest DMG from [Releases](../../releases), open it, and drag Proxymate to Applications.
+```bash
+shasum -a 256 ~/Downloads/Proxymate-0.9.48.dmg
+# b56ecfbc53d0a2132d60f563232ab597c931616db0b1089318620d5c9834cae9
+```
 
-### From source
+The DMG is notarized and stapled — no "Cannot verify developer" dialog. Requires macOS 15 (Sequoia) or newer, Apple Silicon.
+
+## What it does
+
+**Traffic routing** — local HTTP/HTTPS forward proxy on a loopback-bound port, SOCKS5 listener, HTTP/2 upstream, transparent CONNECT tunnels with optional MITM interception.
+
+**Filtering** — Block Domain / Block IP (CIDR) / Block Content (Aho-Corasick) rules. Ships with 19 curated blacklist feeds (~90 K entries across ads, malware, phishing, TOR exits). Shadow-mode evaluation for rule authoring without breaking traffic.
+
+**Privacy rewriting** — strip `User-Agent`, `Referer`, `ETag`, tracking cookies; inject `DNT: 1` / `Sec-GPC: 1`. Per-host policy.
+
+**TLS interception** — per-installation Root CA stored AES-256 encrypted with a Keychain-bound passphrase; leaf certs forged on demand through a bundled `mitmproxy` sidecar. Auto-excludes pinned apps (Signal, WhatsApp, banking, Apple services).
+
+**AI agent controls** — detects Claude Code, Cursor, Codex, Aider, MCP clients. Tracks tokens for 11 providers, estimates cost, enforces per-model allowlists, breaks runaway loops.
+
+**Threat detection** — beaconing heuristic, C2 framework fingerprints (Cobalt Strike, Sliver, Mythic, Havoc, Empire, Metasploit), credential-exfiltration scanner with 7 pattern packs.
+
+**Routing** — multi-upstream pools with 6 load-balancing strategies, per-pool health checks, circuit breaker on member failure.
+
+**Everything else** — PAC server with smart bypass, DoH resolver, L1 RAM + L2 SQLite cache, Prometheus metrics endpoint, webhook events, iCloud sync for rule sets, persistent JSONL logs with rotation.
+
+See the [features overview](https://fabriziosalmi.github.io/proxymate/guide/features) for a deeper tour.
+
+## Quick start
+
+1. Install the DMG, launch from `/Applications`
+2. Menu-bar icon → **Enable** (one admin-password prompt for `networksetup`)
+3. In **Preferences → MITM**, install the Root CA (another prompt for keychain trust)
+4. Watch the **Logs** tab; every app's traffic now routes through Proxymate
+
+The five-step onboarding wizard ships sensible defaults so the first-run experience is complete in ~30 seconds.
+
+## Privacy
+
+- **Zero telemetry.** The binary contains no analytics endpoint.
+- **Zero cloud accounts.** No login, no sign-up, no server-side anything.
+- **Local data only.** Everything lives under `~/Library/Application Support/Proxymate/` and your login Keychain.
+- **Only outbound calls on its own:** blacklist refresh URLs you opt into, DoH resolver of your choosing.
+
+See the [security model](https://fabriziosalmi.github.io/proxymate/guide/security) for threat model + CA lifecycle details.
+
+## Build from source
 
 ```bash
 git clone https://github.com/fabriziosalmi/proxymate.git
 cd proxymate
 open proxymate.xcodeproj
-# Press ⌘R to build and run
+# ⌘R to run a Debug build
 ```
 
-### Build a DMG
+For a signed release build with notarization pipeline:
 
 ```bash
-# Dev build (no notarization)
-./scripts/build-dmg.sh --skip-notarize
-
-# Production build (requires Developer ID certificate + notarytool credentials)
-./scripts/build-dmg.sh
+./scripts/build-dmg.sh            # requires Developer ID + notarytool credentials
+./scripts/build-dmg.sh --skip-notarize   # local ad-hoc DMG
 ```
-
-## Usage
-
-1. Click the shield icon in the menu bar
-2. Select an upstream proxy or create a pool
-3. Toggle the switch to enable — admin password required once per session
-4. Configure rules, privacy, cache, and AI settings in the respective tabs
-
-### Keyboard shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `⌘T` | Toggle proxy on/off |
-| `⌘1`–`⌘7` | Switch tabs |
 
 ## Architecture
 
 ```
-App traffic → System Proxy → LocalProxy (in-process)
-                                 ├─ Allowlist check
-                                 ├─ WAF rules
-                                 ├─ Blacklist + DNS-level block
-                                 ├─ Exfiltration scanner
-                                 ├─ Privacy header rewriting
-                                 ├─ Cache lookup
-                                 ├─ AI provider detection
-                                 └─ PoolRouter → upstream
+App traffic → System proxy → LocalProxy (loopback, random port)
+                                ├─ Allowlist (CIDR + domain)
+                                ├─ WAF (domain / IP / content)
+                                ├─ Blacklist feeds (19 sources)
+                                ├─ DNS-resolved IP blocklist
+                                ├─ Exfiltration scanner
+                                ├─ C2 / beaconing detection
+                                ├─ AI agent enforcement
+                                ├─ Privacy header rewriting
+                                ├─ L1 RAM / L2 SQLite cache
+                                └─ PoolRouter → upstream
 ```
 
-All processing happens in a single in-process proxy on `127.0.0.1`. No external dependencies, no background daemons, no network calls except your traffic and optional DoH/blacklist refresh.
+Single-process. Network.framework + swift-nio. No frameworks, no background daemons, no external processes on the hot path. MITM uses a signed `mitmproxy` sidecar spawned on demand when interception is enabled.
 
-## Privacy
+## Testing
 
-- Zero telemetry
-- Zero cloud accounts or logins
-- No analytics SDKs
-- No network calls on launch (blacklist refresh is opt-in)
-- All data stays on your Mac (`~/Library/Application Support/Proxymate/`)
+```bash
+# Unit + integration tests (XCTest)
+xcodebuild test -project proxymate.xcodeproj -scheme proxymate \
+    -destination 'platform=macOS' -parallel-testing-enabled NO
+
+# Full end-to-end suite against a running instance
+./scripts/e2e-full.sh
+# Baseline: 22 passed / 0 failed / 2 skipped
+```
+
+The e2e suite exercises every major capability through a live listener + Squid upstream: HTTP + HTTPS CONNECT, privacy header injection, WAF blocking, cache hits, 1 MB payload integrity, 20-way concurrency, latency ceiling.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). The code is currently in a trusted-reviewer phase; external PRs will open up with the v1.0 public release.
+
+## Security
+
+Found something sensitive? Report privately via GitHub Security Advisories or by email to the address in `SECURITY.md`. Please do not open a public issue for suspected vulnerabilities.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+---
+
+<sub>Built by one person in Italy, for people who want to know what their Mac is actually sending on the wire. No VC, no Series A, no growth hacks.</sub>
