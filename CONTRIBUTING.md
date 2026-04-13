@@ -24,7 +24,7 @@ open proxymate.xcodeproj
 
 Requirements:
 
-- macOS 15 (Sequoia) or newer — tested on 26 (Tahoe)
+- macOS 26 (Tahoe) or newer — the Xcode deployment target is macos26.1
 - Xcode 26+
 - Apple Silicon. Intel is not a supported target.
 - `pnpm` if you're touching `docs/` — the VitePress site

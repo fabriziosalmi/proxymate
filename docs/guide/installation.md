@@ -2,13 +2,24 @@
 
 ## Requirements
 
-- macOS 15 (Sequoia) or newer — tested on 26 (Tahoe)
+- macOS 26 (Tahoe) or newer
 - Apple Silicon (M1 / M2 / M3 / M4). Intel is not a supported target.
 - ~150 MB free disk (bundled mitmproxy sidecar is 88 MB on its own)
 
-## Download
+## Homebrew (recommended)
 
-Grab the signed, notarized DMG from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest).
+Proxymate ships in a personal Homebrew tap. Submission to `homebrew-cask` core will follow once the main repo meets Homebrew's notability threshold (≥75 stars or equivalent).
+
+```bash
+brew tap fabriziosalmi/proxymate
+brew install --cask proxymate
+```
+
+That's it — `proxymate.app` appears in `/Applications` and is available from the menu bar on next launch. `brew upgrade --cask proxymate` handles updates.
+
+## DMG
+
+If you prefer to install manually, grab the signed, notarized DMG from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest).
 
 ::: tip Integrity check
 Verify the SHA-256 before mounting, especially if you downloaded from a mirror:
@@ -41,12 +52,26 @@ You can revoke at any time from **System Settings → Privacy & Security → Dev
 
 ## Uninstall
 
+Via Homebrew (recommended — cleans user data via the `zap` stanza):
+
+```bash
+brew uninstall --cask --zap proxymate
+# Optional: remove this tap
+brew untap fabriziosalmi/proxymate
+```
+
+Manual cleanup (if you installed from DMG):
+
 ```bash
 # Quit from menu bar first
 rm -rf /Applications/Proxymate.app
 rm -rf ~/Library/Application\ Support/Proxymate
 rm -rf ~/Library/Caches/com.fabriziosalmi.proxymate
-# Remove CA from keychain
+```
+
+In either case, to fully remove the Proxymate Root CA from your login keychain:
+
+```bash
 security delete-certificate -c "Proxymate Root CA" ~/Library/Keychains/login.keychain-db
 ```
 
