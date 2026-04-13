@@ -128,7 +128,6 @@ body {
 }
 
 .VPFeature .icon {
-  font-size: 36px !important;
   background: var(--vp-c-brand-soft) !important;
   border-radius: var(--r-md) !important;
   width: 56px !important;
@@ -136,6 +135,14 @@ body {
   display: grid !important;
   place-items: center !important;
   margin-bottom: 20px !important;
+  overflow: hidden;
+}
+
+/* VitePress renders `icon.src` as an <img>; size + center it inside the chip. */
+.VPFeature .icon img {
+  width: 28px;
+  height: 28px;
+  display: block;
 }
 
 .VPFeature .title {

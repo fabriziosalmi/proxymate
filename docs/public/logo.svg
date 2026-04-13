@@ -1,18 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <defs>
-    <linearGradient id="pmg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#0A84FF"/>
-      <stop offset="100%" stop-color="#BF5AF2"/>
-    </linearGradient>
-    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="2"/>
-    </filter>
-  </defs>
-  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#pmg)"/>
-  <!-- Shield silhouette -->
-  <path d="M32 16 L44 22 V34 Q44 42 32 48 Q20 42 20 34 V22 Z"
-        fill="rgba(255,255,255,0.96)" filter="url(#glow)"/>
-  <!-- Checkmark -->
-  <path d="M26 32 L30 36 L38 28" stroke="url(#pmg)" stroke-width="3"
-        stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <circle cx="16" cy="16" r="14" fill="#0a0a0c" stroke="#f97316" stroke-width="1.5"/>
+  <ellipse cx="16" cy="16" rx="10" ry="7" fill="none" stroke="#f97316" stroke-width="1.5"/>
+  <circle cx="16" cy="16" r="3.5" fill="#f97316"/>
+  <circle cx="17.2" cy="14.8" r="1.2" fill="#fff" opacity="0.9"/>
 </svg>
