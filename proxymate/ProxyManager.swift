@@ -45,6 +45,16 @@ enum ProxyManager {
         // with admin privileges.
         try validate(host: proxy.host, port: proxy.port)
 
+        // Idempotent fast-path: if the system already routes to this host/port,
+        // there's nothing to apply. Skipping osascript here avoids spurious
+        // admin-password prompts on wake-from-sleep and network-interface
+        // changes (NWPathMonitor fires on Wi-Fi/Ethernet/VPN transitions),
+        // where the settings almost always already match.
+        if let current = await currentProxy(),
+           current.host == proxy.host && current.port == proxy.port {
+            return
+        }
+
         let httpsBlock = proxy.applyToHTTPS ? """
               networksetup -setsecurewebproxy "$svc" \(proxy.host) \(proxy.port)
               networksetup -setsecurewebproxystate "$svc" on
@@ -68,6 +78,11 @@ enum ProxyManager {
     }
 
     nonisolated static func disable() async throws {
+        // Idempotent: if no HTTP proxy is currently active, nothing to turn off.
+        // Avoids a gratuitous admin prompt on quit when the user never enabled,
+        // or when disable was already called and the app is tearing down twice.
+        if await currentProxy() == nil { return }
+
         let shell = """
         networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
           networksetup -setwebproxystate "$svc" off
