@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required for NWListener on 127.0.0.1:* and any accepting socket. -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!-- Required for outbound connections (upstream proxy, DoH, blacklist
+         refresh, webhooks). -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Required to launch the bundled mitmdump (PyInstaller + CPython 3.14).
+         CPython uses an executable memory region for its eval loop; without
+         this entitlement the hardened runtime kills the process on first
+         bytecode dispatch. -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- Required so the bundled squid can dlopen @executable_path/lib/
+         libssl.3.dylib and libcrypto.3.dylib. With library validation on,
+         the hardened runtime rejects dylibs not signed by the same Team ID
+         as the loading executable — squid is homebrew-signed, our OpenSSL
+         copies are homebrew-signed, outer app is Developer ID: three Team
+         IDs, none match. Disabling library validation lets this load. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

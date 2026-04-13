@@ -74,8 +74,61 @@ if [[ ! -d "${EXPORTED_APP}" ]]; then
     exit 1
 fi
 
+echo "==> Re-signing nested sidecars with Developer ID..."
+# The app ships mitmproxy.app + squid + OpenSSL dylibs from homebrew.
+# Homebrew signed them with its own certificate chain, which breaks the
+# outer signature (mixed anchors) and fails notarization. Re-sign
+# bottom-up with our Developer ID + hardened runtime + the app's
+# entitlements so library validation sees a consistent Team ID.
+SIGN_ID="Developer ID Application"
+SIGN_ENT="${PROJECT_DIR}/proxymate/proxymate.entitlements"
+BIN_DIR="${EXPORTED_APP}/Contents/Resources/bin"
+
+if [[ -d "${BIN_DIR}" ]]; then
+    # 1. Every bundled dylib
+    find "${BIN_DIR}" -type f -name "*.dylib" -print0 | \
+        xargs -0 -I{} codesign --force --timestamp --options runtime \
+            --sign "${SIGN_ID}" {}
+
+    # 2. Every non-app executable in bin/ (squid)
+    for bin in "${BIN_DIR}"/*; do
+        [[ -f "$bin" && -x "$bin" && ! "$bin" == *.dylib ]] || continue
+        codesign --force --timestamp --options runtime \
+            --sign "${SIGN_ID}" "$bin"
+    done
+
+    # 3. Nested mitmproxy.app — sign contents bottom-up, then the bundle
+    NESTED_APP="${BIN_DIR}/mitmproxy.app"
+    if [[ -d "${NESTED_APP}" ]]; then
+        find "${NESTED_APP}/Contents" -type f \( -name "*.dylib" -o -name "*.so" \) -print0 | \
+            xargs -0 -I{} codesign --force --timestamp --options runtime \
+                --sign "${SIGN_ID}" {}
+        for exe in "${NESTED_APP}/Contents/MacOS"/*; do
+            [[ -f "$exe" && -x "$exe" ]] || continue
+            codesign --force --timestamp --options runtime \
+                --sign "${SIGN_ID}" --entitlements "${SIGN_ENT}" "$exe"
+        done
+        # Sign Python framework if present
+        PY_FW="${NESTED_APP}/Contents/Frameworks/Python.framework"
+        if [[ -d "${PY_FW}" ]]; then
+            codesign --force --timestamp --options runtime \
+                --sign "${SIGN_ID}" "${PY_FW}/Versions/Current/Python" 2>/dev/null || true
+            codesign --force --timestamp --options runtime \
+                --sign "${SIGN_ID}" "${PY_FW}"
+        fi
+        # Sign the nested app bundle itself
+        codesign --force --timestamp --options runtime \
+            --sign "${SIGN_ID}" --entitlements "${SIGN_ENT}" "${NESTED_APP}"
+    fi
+fi
+
+# 4. Re-sign the outer app last, so the outer signature covers the new
+#    nested signatures.
+codesign --force --timestamp --options runtime \
+    --sign "${SIGN_ID}" --entitlements "${SIGN_ENT}" "${EXPORTED_APP}"
+
 echo "==> Verifying code signature..."
-codesign --verify --deep --strict "${EXPORTED_APP}"
+codesign --verify --verbose=2 --strict "${EXPORTED_APP}"
 echo "    Signature OK"
 
 if [[ "${SKIP_NOTARIZE}" == false ]]; then
