@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 420" fill="none">
+  <defs>
+    <linearGradient id="winBg" x1="0" y1="0" x2="520" y2="420">
+      <stop offset="0%" stop-color="#1C1C1E"/>
+      <stop offset="100%" stop-color="#0A0A0C"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0A84FF"/>
+      <stop offset="100%" stop-color="#BF5AF2"/>
+    </linearGradient>
+    <filter id="halo" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="24"/>
+    </filter>
+  </defs>
+  <!-- Soft halo behind -->
+  <ellipse cx="260" cy="210" rx="220" ry="140" fill="url(#accent)"
+           opacity="0.35" filter="url(#halo)"/>
+  <!-- App window -->
+  <rect x="60" y="50" width="400" height="320" rx="18"
+        fill="url(#winBg)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+  <!-- Traffic lights -->
+  <circle cx="82" cy="72" r="6" fill="#FF5F57"/>
+  <circle cx="102" cy="72" r="6" fill="#FEBC2E"/>
+  <circle cx="122" cy="72" r="6" fill="#28C840"/>
+  <!-- Title bar label -->
+  <text x="260" y="76" font-family="-apple-system" font-size="12"
+        fill="rgba(255,255,255,0.72)" text-anchor="middle">Proxymate</text>
+  <!-- Toggle pill -->
+  <rect x="80" y="104" width="120" height="32" rx="16"
+        fill="url(#accent)"/>
+  <text x="140" y="124" font-family="-apple-system" font-size="13"
+        font-weight="600" fill="white" text-anchor="middle">Enabled</text>
+  <!-- Stats row -->
+  <g font-family="-apple-system" font-size="11" fill="rgba(255,255,255,0.56)">
+    <text x="80" y="170">Allowed</text>
+    <text x="200" y="170">Blocked</text>
+    <text x="320" y="170">Cost</text>
+  </g>
+  <g font-family="-apple-system" font-size="24" font-weight="600" fill="white">
+    <text x="80" y="198">1,284</text>
+    <text x="200" y="198">47</text>
+    <text x="320" y="198">$0.12</text>
+  </g>
+  <!-- Log rows -->
+  <g font-family="SF Mono, monospace" font-size="10" fill="rgba(255,255,255,0.64)">
+    <rect x="80" y="230" width="360" height="24" rx="6" fill="rgba(255,255,255,0.03)"/>
+    <circle cx="92" cy="242" r="3" fill="#28C840"/>
+    <text x="104" y="246">GET  api.github.com/zen                        200</text>
+
+    <rect x="80" y="262" width="360" height="24" rx="6" fill="rgba(255,255,255,0.03)"/>
+    <circle cx="92" cy="274" r="3" fill="#FF5F57"/>
+    <text x="104" y="278">GET  doubleclick.net/collect                   403</text>
+
+    <rect x="80" y="294" width="360" height="24" rx="6" fill="rgba(255,255,255,0.03)"/>
+    <circle cx="92" cy="306" r="3" fill="#0A84FF"/>
+    <text x="104" y="310">POST api.anthropic.com/v1/messages  AGENT      200</text>
+
+    <rect x="80" y="326" width="360" height="24" rx="6" fill="rgba(255,255,255,0.03)"/>
+    <circle cx="92" cy="338" r="3" fill="#FEBC2E"/>
+    <text x="104" y="342">GET  google-analytics.com/collect    SHADOW    —</text>
+  </g>
+</svg>

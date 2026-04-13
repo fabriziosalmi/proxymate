@@ -34,3 +34,9 @@ ROADMAP.md
 NOTES.md
 TODO.local.md
 test-results-*.txt
+
+# VitePress (docs site)
+docs/node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+docs/.vitepress/.temp/
