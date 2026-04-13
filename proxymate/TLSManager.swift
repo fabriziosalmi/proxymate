@@ -3,9 +3,19 @@
 //  proxymate
 //
 //  Manages a per-installation root CA for TLS MITM interception.
-//  v0.8.13: CA key stored on disk (AES-encrypted), NOT in Keychain.
-//  Cert stored in Keychain for system trust only.
-//  Leaf certs forged on-the-fly via openssl using disk-based CA key.
+//
+//  CA private key is stored on disk encrypted with AES-256 (openssl
+//  -aes256 PEM envelope). The symmetric passphrase is a 32-byte random
+//  blob kept in the user's login Keychain (kSecClassGenericPassword,
+//  this-device-only). Result: reading ca.key from backup/malware is
+//  useless without Keychain access, and Keychain access requires the
+//  user's login password (or TouchID) on modern macOS.
+//
+//  Leaf P12 bundles use a separate Keychain-stored random passphrase.
+//
+//  CA cert (public half) goes to the Keychain as a certificate so the
+//  user can manage trust via Keychain Access.app. Leaf certs are forged
+//  on-the-fly via openssl, signed by the disk-encrypted CA key.
 //
 
 import Foundation
@@ -39,6 +49,12 @@ nonisolated final class TLSManager: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "proxymate.tls", qos: .userInitiated)
     private let caLabel = "Proxymate Root CA"
+
+    // Keychain account names for the random passphrases. Service is the app
+    // bundle id so items are scoped to this installation.
+    private let keychainService = "fabriziosalmi.proxymate.tls"
+    private let caPassphraseAccount = "ca-key-passphrase-v1"
+    private let leafPassphraseAccount = "leaf-p12-passphrase-v1"
 
     // Disk paths for CA key + cert
     private let caDir: URL = {
@@ -92,25 +108,35 @@ nonisolated final class TLSManager: @unchecked Sendable {
         return Calendar.current.dateComponents([.day], from: Date(), to: expiry).day
     }
 
-    /// Generate a new root CA. Key stays on disk, cert goes to Keychain for trust.
+    /// Generate a new root CA. Key is written to disk encrypted with AES-256;
+    /// the symmetric passphrase is stored in Keychain. Cert goes to Keychain
+    /// as a certificate item for trust management.
     func generateCA() throws -> SecCertificate {
         try queue.sync {
             try? FileManager.default.createDirectory(at: caDir, withIntermediateDirectories: true)
 
-            // Remove old files
+            // Remove old files and stale Keychain passphrases.
             try? FileManager.default.removeItem(atPath: caKeyPath)
             try? FileManager.default.removeItem(atPath: caCertPath)
+            deletePassphrase(account: caPassphraseAccount)
+            deletePassphrase(account: leafPassphraseAccount)
 
-            // 1. Generate CA key + self-signed cert via openssl
-            guard shell("/usr/bin/openssl", args: [
-                "req", "-x509", "-new", "-nodes", "-newkey", "rsa:2048",
+            // Fresh random passphrase for the new CA key.
+            let caPass = try getOrCreatePassphrase(account: caPassphraseAccount)
+
+            // 1. Generate AES-256-encrypted CA key + self-signed cert via openssl.
+            //    -passout env:VAR reads the passphrase from the env we pass to
+            //    Process; it never hits argv or the filesystem.
+            guard shellWithEnv("/usr/bin/openssl", args: [
+                "req", "-x509", "-new", "-newkey", "rsa:2048", "-aes256",
+                "-passout", "env:PROXYMATE_CA_PASS",
                 "-keyout", caKeyPath, "-out", caCertPath, "-days", "3650",
                 "-subj", "/CN=\(caLabel)/O=Proxymate/C=US"
-            ]) == 0 else {
+            ], env: ["PROXYMATE_CA_PASS": caPass]) == 0 else {
                 throw TLSError.keyGenFailed("openssl req -x509 failed")
             }
 
-            // Protect key file
+            // Tighten permissions on the (already-encrypted) key file.
             try? FileManager.default.setAttributes(
                 [.posixPermissions: 0o600], ofItemAtPath: caKeyPath)
 
@@ -143,7 +169,9 @@ nonisolated final class TLSManager: @unchecked Sendable {
         }
     }
 
-    /// Remove CA from disk and Keychain.
+    /// Remove CA from disk, Keychain (cert + passphrases), and memory cache.
+    /// Existing leaf P12 files on disk become unreadable once the leaf
+    /// passphrase is deleted; that's the desired behavior (revocation).
     func removeCA() {
         queue.sync {
             try? FileManager.default.removeItem(at: caDir)
@@ -152,6 +180,8 @@ nonisolated final class TLSManager: @unchecked Sendable {
                 kSecAttrLabel as String: caLabel,
             ]
             SecItemDelete(certQuery as CFDictionary)
+            deletePassphrase(account: caPassphraseAccount)
+            deletePassphrase(account: leafPassphraseAccount)
             leafCache.removeAll()
         }
     }
@@ -259,23 +289,36 @@ nonisolated final class TLSManager: @unchecked Sendable {
                 throw TLSError.certCreationFailed
             }
 
-            // Sign with CA (using disk-based key — no Keychain export needed)
-            guard shell("/usr/bin/openssl", args: [
+            // Ensure the CA key is encrypted at rest (transparent migration
+            // from plaintext keys produced by older builds) and fetch the
+            // passphrase from Keychain.
+            try ensureCAKeyEncrypted()
+            let caPass = try getOrCreatePassphrase(account: caPassphraseAccount)
+            let leafPass = try getOrCreatePassphrase(account: leafPassphraseAccount)
+
+            // Sign with the encrypted CA key via -passin env:VAR (passphrase
+            // never appears on argv or any temp file).
+            guard shellWithEnv("/usr/bin/openssl", args: [
                 "x509", "-req", "-in", leafCSRPath,
                 "-CA", caCertPath, "-CAkey", caKeyPath,
+                "-passin", "env:PROXYMATE_CA_PASS",
                 "-CAcreateserial", "-out", leafCertPath, "-days", "365",
                 "-extensions", "v3_leaf", "-extfile", extPath
-            ]) == 0 else {
+            ], env: ["PROXYMATE_CA_PASS": caPass]) == 0 else {
                 try? FileManager.default.removeItem(at: leafDir)
                 throw TLSError.certCreationFailed
             }
 
-            // Create PKCS12 bundle (LibreSSL on macOS, no -legacy flag needed)
-            guard shell("/usr/bin/openssl", args: [
+            // Create PKCS12 bundle with a random, per-installation passphrase
+            // stored in Keychain. Identical for all leaves (acceptable — leaves
+            // are ephemeral and re-forgeable — and avoids per-file key
+            // management complexity).
+            guard shellWithEnv("/usr/bin/openssl", args: [
                 "pkcs12", "-export", "-des3",
                 "-inkey", leafKeyPath, "-in", leafCertPath,
-                "-certfile", caCertPath, "-out", leafP12Path, "-passout", "pass:proxymate"
-            ]) == 0 else {
+                "-certfile", caCertPath, "-out", leafP12Path,
+                "-passout", "env:PROXYMATE_LEAF_PASS"
+            ], env: ["PROXYMATE_LEAF_PASS": leafPass]) == 0 else {
                 try? FileManager.default.removeItem(at: leafDir)
                 throw TLSError.certCreationFailed
             }
@@ -286,8 +329,11 @@ nonisolated final class TLSManager: @unchecked Sendable {
                 throw TLSError.certCreationFailed
             }
 
-            // Save P12 to disk cache for next time
+            // Save P12 to disk cache for next time (0o600 perms so other
+            // local users can't read the leaf key).
             try? p12Data.write(to: diskP12, options: .atomic)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: diskP12.path)
 
             guard let identity = importP12(p12Data) else {
                 try? FileManager.default.removeItem(at: leafDir)
@@ -359,12 +405,15 @@ nonisolated final class TLSManager: @unchecked Sendable {
                 "-subj", "/CN=\(hostname)/O=Proxymate MITM"
             ]) == 0 else { throw TLSError.certCreationFailed }
 
-            guard shell("/usr/bin/openssl", args: [
+            try ensureCAKeyEncrypted()
+            let caPass = try getOrCreatePassphrase(account: caPassphraseAccount)
+            guard shellWithEnv("/usr/bin/openssl", args: [
                 "x509", "-req", "-in", tmpCSR,
                 "-CA", caCertPath, "-CAkey", caKeyPath,
+                "-passin", "env:PROXYMATE_CA_PASS",
                 "-CAcreateserial", "-out", tmpCert, "-days", "365",
                 "-extensions", "v3_leaf", "-extfile", extPath
-            ]) == 0 else { throw TLSError.certCreationFailed }
+            ], env: ["PROXYMATE_CA_PASS": caPass]) == 0 else { throw TLSError.certCreationFailed }
 
             guard let certPEM = try? String(contentsOfFile: tmpCert, encoding: .utf8),
                   let keyPEM = try? String(contentsOfFile: tmpKey, encoding: .utf8),
@@ -380,16 +429,19 @@ nonisolated final class TLSManager: @unchecked Sendable {
         }
     }
 
-    /// Import a PKCS12 blob and return the SecIdentity.
+    /// Import a PKCS12 blob using the Keychain-stored leaf passphrase.
     private func importP12(_ data: Data) -> SecIdentity? {
-        var items: CFArray?
-        let opts: [String: Any] = [kSecImportExportPassphrase as String: "proxymate"]
-        guard SecPKCS12Import(data as CFData, opts as CFDictionary, &items) == errSecSuccess,
-              let arr = items as? [[String: Any]],
-              let ref = arr.first?[kSecImportItemIdentity as String] else {
+        guard let leafPass = try? getOrCreatePassphrase(account: leafPassphraseAccount) else {
             return nil
         }
-        // SecIdentity is a CF type — the guard above validates the PKCS12 import succeeded.
+        var items: CFArray?
+        let opts: [String: Any] = [kSecImportExportPassphrase as String: leafPass]
+        guard SecPKCS12Import(data as CFData, opts as CFDictionary, &items) == errSecSuccess,
+              let arr = items as? [[String: Any]],
+              let first = arr.first,
+              let ref = first[kSecImportItemIdentity as String] else {
+            return nil
+        }
         return (ref as! SecIdentity)
     }
 
@@ -480,12 +532,25 @@ nonisolated final class TLSManager: @unchecked Sendable {
     }
 
     private func shell(_ command: String, args: [String]) -> Int32 {
+        shellWithEnv(command, args: args, env: nil)
+    }
+
+    /// Run a subprocess with an explicit environment overlay. Env vars are
+    /// added on top of the parent process env (not replacing it), so /usr/bin
+    /// PATH and locale stay intact. Used to pass secrets (passphrases) to
+    /// openssl without putting them on argv or on disk.
+    private func shellWithEnv(_ command: String, args: [String], env: [String: String]?) -> Int32 {
         let p = Process()
         p.launchPath = command
         p.arguments = args
         p.standardOutput = Pipe()
         let errPipe = Pipe()
         p.standardError = errPipe
+        if let env {
+            var merged = ProcessInfo.processInfo.environment
+            for (k, v) in env { merged[k] = v }
+            p.environment = merged
+        }
         do { try p.run() } catch {
             NSLog("[TLSManager] shell failed to launch \(command): \(error)")
             return -1
@@ -496,6 +561,123 @@ nonisolated final class TLSManager: @unchecked Sendable {
             NSLog("[TLSManager] shell \(command) exited \(p.terminationStatus): \(stderr)")
         }
         return p.terminationStatus
+    }
+
+    // MARK: - Keychain-backed passphrase helpers
+
+    /// Returns the passphrase stored for `account`, generating and storing a
+    /// fresh 32-byte random one if none exists. Thread safety: callers hold
+    /// `queue`. Keychain itself is thread-safe.
+    private func getOrCreatePassphrase(account: String) throws -> String {
+        if let existing = readPassphrase(account: account) { return existing }
+
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let rc = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard rc == errSecSuccess else {
+            throw TLSError.keyGenFailed("SecRandomCopyBytes failed (\(rc))")
+        }
+        let pass = Data(bytes).base64EncodedString()
+        try storePassphrase(pass, account: account)
+        return pass
+    }
+
+    private func readPassphrase(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data,
+              let s = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return s
+    }
+
+    private func storePassphrase(_ passphrase: String, account: String) throws {
+        guard let data = passphrase.data(using: .utf8) else {
+            throw TLSError.keyGenFailed("passphrase encoding failed")
+        }
+        let delete: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(delete as CFDictionary)
+
+        let add: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let status = SecItemAdd(add as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw TLSError.keychainError(status)
+        }
+    }
+
+    private func deletePassphrase(account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
+    /// Detect an unencrypted CA key from a pre-fix install and re-encrypt it
+    /// in place with a fresh Keychain-stored passphrase. No-op once the key
+    /// is already encrypted. All leaf caches are invalidated on migration
+    /// (leaves were signed without a passphrase — still valid cryptographically
+    /// but cached P12s were encrypted under the hardcoded leaf passphrase
+    /// and won't import with the new random one).
+    private func ensureCAKeyEncrypted() throws {
+        guard FileManager.default.fileExists(atPath: caKeyPath) else { return }
+        let head: String
+        do {
+            let fh = try FileHandle(forReadingFrom: URL(fileURLWithPath: caKeyPath))
+            defer { try? fh.close() }
+            let snippet = try fh.read(upToCount: 256) ?? Data()
+            head = String(data: snippet, encoding: .utf8) ?? ""
+        } catch {
+            return // unreadable — leave it; caller will fail on use
+        }
+        // Encrypted PEM envelopes start with either:
+        //   -----BEGIN ENCRYPTED PRIVATE KEY-----   (PKCS#8 encrypted)
+        //   -----BEGIN RSA PRIVATE KEY-----
+        //   Proc-Type: 4,ENCRYPTED                  (traditional OpenSSL)
+        if head.contains("ENCRYPTED") { return }
+
+        // Migrate: re-encrypt the plaintext key under a fresh passphrase.
+        let pass = try getOrCreatePassphrase(account: caPassphraseAccount)
+        let tmp = caKeyPath + ".migrating"
+        try? FileManager.default.removeItem(atPath: tmp)
+        let rc = shellWithEnv("/usr/bin/openssl", args: [
+            "rsa", "-in", caKeyPath, "-out", tmp, "-aes256",
+            "-passout", "env:PROXYMATE_CA_PASS"
+        ], env: ["PROXYMATE_CA_PASS": pass])
+        guard rc == 0, FileManager.default.fileExists(atPath: tmp) else {
+            try? FileManager.default.removeItem(atPath: tmp)
+            throw TLSError.keyGenFailed("CA key migration failed")
+        }
+        _ = try? FileManager.default.replaceItemAt(
+            URL(fileURLWithPath: caKeyPath), withItemAt: URL(fileURLWithPath: tmp))
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: caKeyPath)
+        // Drop caches: old leaf P12s (if any) were encrypted with the legacy
+        // hardcoded passphrase and won't import under the new leaf passphrase.
+        try? FileManager.default.removeItem(at: leafCacheDir)
+        leafCache.removeAll()
+        // Also delete any stale leaf passphrase so a fresh one is generated
+        // on next signing (old cached files, if any escaped the dir wipe, are
+        // useless without the matching passphrase).
+        deletePassphrase(account: leafPassphraseAccount)
     }
 
     enum TLSError: LocalizedError {
