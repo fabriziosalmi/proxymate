@@ -35,16 +35,28 @@ rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}"
 
 echo "==> Archiving ${SCHEME}..."
+# Force manual signing across every target (main + SPM package targets
+# like swift-nio-ssl_NIOSSL). With CODE_SIGN_STYLE=Automatic in the
+# project, passing CODE_SIGN_IDENTITY on the CLI conflicts; switching
+# both the style and the identity explicitly resolves it for release.
+# swift-nio / swift-nio-ssl bundle targets produce resource bundles
+# that need no distribution signature — CODE_SIGN_IDENTITY="-" ad-hoc
+# signs them, which satisfies Xcode's archive validation without
+# requiring Developer ID on every dependency.
 xcodebuild archive \
     -project "${PROJECT_DIR}/proxymate.xcodeproj" \
     -scheme "${SCHEME}" \
     -configuration Release \
     -archivePath "${ARCHIVE_PATH}" \
     -destination 'generic/platform=macOS' \
-    CODE_SIGN_IDENTITY="Developer ID Application" \
+    CODE_SIGN_STYLE=Manual \
+    CODE_SIGN_IDENTITY="Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)" \
+    DEVELOPMENT_TEAM=7FC7ZTYMYU \
+    PROVISIONING_PROFILE_SPECIFIER="" \
     OTHER_CODE_SIGN_FLAGS="--timestamp" \
     ENABLE_HARDENED_RUNTIME=YES \
-    2>&1 | tail -5
+    -allowProvisioningUpdates \
+    2>&1 | tail -15
 
 echo "==> Exporting archive..."
 # Create export options plist
