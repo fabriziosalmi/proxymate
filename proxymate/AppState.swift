@@ -60,6 +60,12 @@ final class AppState: ObservableObject {
         return false
     }
     let timeSeries = StatsTimeSeries()
+    /// Keeps Combine forwarders alive for the AppState lifetime.
+    /// Used to republish nested ObservableObject changes so the Stats tab
+    /// redraws when `timeSeries.points` mutates. SwiftUI's `@EnvironmentObject`
+    /// observes only the outer AppState — without this forwarding, the live
+    /// req/sec chart never refreshed after the first render.
+    private var cancellables = Set<AnyCancellable>()
 
     nonisolated struct Stats: Sendable {
         var requestsAllowed: Int = 0
@@ -195,6 +201,14 @@ final class AppState: ObservableObject {
                 self?.handle(event: event)
             }
         }
+
+        // Forward nested ObservableObject changes so the Stats tab picks up
+        // timeSeries.points mutations (the per-second chart tick). Without
+        // this republish, SwiftUI only observed AppState.objectWillChange
+        // and ignored timeSeries entirely.
+        timeSeries.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
     // MARK: - Selection
