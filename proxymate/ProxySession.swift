@@ -195,22 +195,50 @@ final class ProxySession: @unchecked Sendable {
     private func processBufferedResponse() {
         guard let buffer = responseBuffer, !buffer.isEmpty else { return }
 
+        // Parse headers once; both cache and AI need them.
+        guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else { return }
+        let headerPart = buffer[..<headerEnd.lowerBound]
+        let body = Data(buffer[headerEnd.upperBound...])
+        guard let headerStr = String(data: headerPart, encoding: .utf8) else { return }
+
         if let ctx = cacheContext {
-            guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else { return }
-            let headerPart = buffer[..<headerEnd.lowerBound]
-            let body = buffer[headerEnd.upperBound...]
-            guard let headerStr = String(data: headerPart, encoding: .utf8) else { return }
             let lines = headerStr.split(separator: "\r\n", maxSplits: 1, omittingEmptySubsequences: false)
             guard let statusLine = lines.first else { return }
             let responseHeaders = lines.count > 1 ? String(lines[1]) : ""
             CacheManager.shared.store(
                 method: ctx.method, url: ctx.url, requestHeaders: ctx.requestHeaders,
-                statusLine: String(statusLine), responseHeaders: responseHeaders, body: Data(body))
+                statusLine: String(statusLine), responseHeaders: responseHeaders, body: body)
         }
 
         if let ai = aiContext {
-            let _ = AITracker.shared.extractUsage(provider: ai.provider, responseBody: buffer)
+            // Decode Content-Encoding (gzip/deflate/br) before token extraction.
+            // Upstream AI APIs almost always compress; without this, every
+            // extractUsage call failed to parse JSON and token tracking was
+            // silently zero.
+            let encoding = Self.headerValue(in: headerStr, name: "Content-Encoding") ?? ""
+            let bodyForAI: Data
+            if encoding.isEmpty {
+                bodyForAI = body
+            } else {
+                let (decoded, ok) = BodyDecompressor.decompress(body, encoding: encoding)
+                bodyForAI = ok ? decoded : body
+            }
+            _ = AITracker.shared.extractUsage(provider: ai.provider, responseBody: bodyForAI)
         }
+    }
+
+    /// Case-insensitive header value lookup on a pre-parsed header block.
+    /// Returns the trimmed value of the first matching header, or nil.
+    private static func headerValue(in headerBlock: String, name: String) -> String? {
+        let lowerName = name.lowercased() + ":"
+        for rawLine in headerBlock.split(separator: "\r\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            if line.lowercased().hasPrefix(lowerName) {
+                let after = line.dropFirst(lowerName.count)
+                return after.trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
     }
 
     // MARK: - Error response

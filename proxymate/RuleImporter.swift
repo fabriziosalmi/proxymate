@@ -92,10 +92,15 @@ nonisolated enum RuleImporter {
             completion(.failure(ImportError.invalidURL))
             return
         }
-        let config = URLSessionConfiguration.default
+        // URLSession holds onto delegate queues and connection pools for the
+        // lifetime of the session; without invalidateAndCancel() every rule
+        // import leaked a session plus a worker thread. Invalidate once the
+        // dataTask completion fires so everything goes away after one use.
+        let config = URLSessionConfiguration.ephemeral
         config.connectionProxyDictionary = [:]
         let session = URLSession(configuration: config)
         let task = session.dataTask(with: url) { data, _, error in
+            defer { session.finishTasksAndInvalidate() }
             if let error {
                 completion(.failure(error))
                 return

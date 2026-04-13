@@ -147,8 +147,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if UserDefaults.standard.bool(forKey: "proxymate.wasEnabled") {
             UserDefaults.standard.set(false, forKey: "proxymate.wasEnabled")
+            // Run cleanup on a detached Task (NOT the main actor) so async
+            // hops inside ProxyManager.disable()/PACServer.clearSystemPAC()
+            // don't deadlock waiting for the main thread that's blocked on
+            // the semaphore below.
             let sem = DispatchSemaphore(value: 0)
-            Task {
+            Task.detached(priority: .userInitiated) {
                 try? await ProxyManager.disable()
                 try? await PACServer.clearSystemPAC()
                 sem.signal()

@@ -85,6 +85,22 @@ else
     fail "HTTP POST 64KB body truncated (end_marker=$ends_ok, reported=${reported:-?} vs sent=$size)"
 fi
 
+# ── 1b. HTTP REQUEST SMUGGLING REJECT ────────────────────────────────────
+# RFC 9112 §6.1: a message must not carry both Transfer-Encoding and
+# Content-Length. Proxymate should 400 the request before the body can
+# cause upstream/proxy parse disagreement.
+section "1b. SMUGGLING REJECT"
+PROXY_HOST=$(echo "$PROXY" | sed -E 's|^http://||; s|/$||')
+PROXY_H=${PROXY_HOST%:*}
+PROXY_P=${PROXY_HOST##*:}
+smuggle_resp=$(printf 'POST http://httpbin.org/post HTTP/1.1\r\nHost: httpbin.org\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\nConnection: close\r\n\r\n0\r\n\r\n' \
+    | nc -w 3 "$PROXY_H" "$PROXY_P" 2>/dev/null | head -1 || echo "")
+if echo "$smuggle_resp" | grep -q " 400 "; then
+    pass "Smuggling (chunked + Content-Length) rejected with 400"
+else
+    fail "Smuggling not rejected — got: ${smuggle_resp:-empty}"
+fi
+
 # ── 2. HTTPS CONNECT ─────────────────────────────────────────────────────
 section "2. HTTPS CONNECT"
 code=$(pcurl -o /dev/null -w "%{http_code}" https://example.com/ || echo "000")

@@ -135,7 +135,7 @@ nonisolated enum HTTPParser {
 
     // MARK: - Header validation
 
-    /// Check if headers are within sane limits.
+    /// Check if headers are within sane limits and well-formed.
     static func validateHeaders(_ data: Data) -> Bool {
         // Max header size: 64KB
         if data.count > 65536 { return false }
@@ -148,7 +148,28 @@ nonisolated enum HTTPParser {
         let method = String(str.prefix(while: { $0 != " " })).uppercased()
         let validMethods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD",
                             "OPTIONS", "CONNECT", "TRACE"]
-        return validMethods.contains(method)
+        guard validMethods.contains(method) else { return false }
+
+        // Reject HTTP request smuggling: a message MUST NOT carry both a
+        // Transfer-Encoding and a Content-Length header (RFC 9112 §6.1).
+        // If both are present, proxy and upstream may disagree on body
+        // boundary, enabling CL.TE / TE.CL attacks that bypass our WAF.
+        guard let fullStr = String(data: data, encoding: .utf8) else { return true }
+        var hasTE = false
+        var hasCL = false
+        var teCount = 0
+        var clCount = 0
+        for rawLine in fullStr.split(separator: "\r\n", omittingEmptySubsequences: false) {
+            let line = rawLine.lowercased()
+            if line.hasPrefix("transfer-encoding:") { hasTE = true; teCount += 1 }
+            else if line.hasPrefix("content-length:") { hasCL = true; clCount += 1 }
+        }
+        // Both present → smuggling attempt
+        if hasTE && hasCL { return false }
+        // Duplicate TE or CL with differing values also smells like smuggling;
+        // reject any duplicate since a legitimate client never sends two.
+        if teCount > 1 || clCount > 1 { return false }
+        return true
     }
 
     // MARK: - URL length check

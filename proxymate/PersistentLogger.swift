@@ -86,6 +86,18 @@ nonisolated final class PersistentLogger: @unchecked Sendable {
         flushTimer = timer
     }
 
+    deinit {
+        // Stop the repeating timer so the queue doesn't keep firing at a
+        // dangling self, and flush any remaining buffered entries.
+        flushTimer?.cancel()
+        flushTimer = nil
+        queue.sync {
+            self.flushBuffer()
+            try? self.fileHandle?.close()
+            self.fileHandle = nil
+        }
+    }
+
     // MARK: - Read persisted logs (called from MainActor, executes on queue)
 
     func loadPersistedLogs(limit: Int = 200) async -> [LogEntry] {
