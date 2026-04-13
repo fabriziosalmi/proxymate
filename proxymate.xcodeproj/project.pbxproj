@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		011B83E52F8B486A007C4822 /* SOCKSProxy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 011B83E42F8B4869007C4822 /* SOCKSProxy.swift */; };
 		011B83EA2F8BE52F007C4822 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 011B83E92F8BE52F007C4822 /* NIOCore */; };
 		011B83EC2F8BE52F007C4822 /* NIOHTTP1 in Frameworks */ = {isa = PBXBuildFile; productRef = 011B83EB2F8BE52F007C4822 /* NIOHTTP1 */; };
 		011B83EE2F8BE52F007C4822 /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = 011B83ED2F8BE52F007C4822 /* NIOPosix */; };
@@ -25,7 +24,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		011B83E42F8B4869007C4822 /* SOCKSProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SOCKSProxy.swift; sourceTree = "<group>"; };
 		01E3631F2F87EA4E0003B5AD /* proxymate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = proxymate.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		01E363A12F8A4D660003B5AD /* proxymateTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = proxymateTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -71,7 +69,6 @@
 				01E363212F87EA4E0003B5AD /* proxymate */,
 				01E363A22F8A4D660003B5AD /* proxymateTests */,
 				01E363202F87EA4E0003B5AD /* Products */,
-				011B83E42F8B4869007C4822 /* SOCKSProxy.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -224,7 +221,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				011B83E52F8B486A007C4822 /* SOCKSProxy.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
