@@ -1009,6 +1009,11 @@ final class AppState: ObservableObject {
     func clearLogs() {
         let count = logs.count
         logs.removeAll()
+        // Reset the dedupe set too: without this, log events that had already
+        // fired once (BLOCKED, BLACKLIST, AGENT, AI) stay in seenAgents and
+        // are suppressed the next time they fire — making the Logs tab look
+        // dead after Clear even though traffic is actively flowing.
+        seenAgents.removeAll()
         ToastState.shared.show("\(count) log entries cleared", icon: "trash", color: .secondary)
     }
 

@@ -1603,6 +1603,7 @@ struct BlacklistsSection: View {
             // Aggregate stats
             if !state.blacklistSources.isEmpty {
                 Divider()
+                let _ = state.statsTick  // 1Hz dependency — BlacklistManager is not ObservableObject
                 HStack(spacing: 12) {
                     VStack(alignment: .leading) {
                         Text("Total").font(.system(size: 7)).foregroundStyle(.tertiary)
@@ -1868,6 +1869,7 @@ struct AIView: View {
     }
 
     private var spendSummary: some View {
+        let _ = state.statsTick  // 1Hz dependency — AITracker is not ObservableObject
         let (daily, monthly) = AITracker.shared.getTotalSpend()
         return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
@@ -2486,6 +2488,7 @@ struct MITMExcludeSection: View {
     }
 
     var body: some View {
+        let _ = state.statsTick  // 1Hz dependency — TLSManager auto-excludes are not ObservableObject
         VStack(alignment: .leading, spacing: 6) {
             Divider().padding(.vertical, 4)
             Text("BYPASS (skip MITM)").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
