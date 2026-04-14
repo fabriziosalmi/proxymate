@@ -52,9 +52,12 @@ Per-host policy. Every option is a checkbox.
 - Leaf certs forged on demand per hostname, with SAN
 - Bundled `mitmproxy` sidecar (88 MB, Python 3.14, OpenSSL 3.5) handles the TLS dance
 - Auto-exclude for pinned apps, `*.apple.com`, banking, `*.signal.org`, etc.
+- Curated streaming-media exclude list (RAI, Mediaset, La7, Netflix, Spotify, Twitch, YouTube media CDN, Disney+, DAZN, Brightcove, Akamai media subdomains)
 - Runtime auto-exclude after 3 consecutive pinning failures per host
+- **Browser compatibility hardening** (0.9.54 – 0.9.56): `Alt-Svc` stripped to keep browsers on HTTP/2 inside the tunnel, HTTP/2 disabled on the downstream leg to prevent connection coalescing across hosts, one-click **Export Root CA** for Firefox import
+- **Export** button in Preferences → TLS Interception writes `~/Downloads/proxymate-ca.pem` and reveals it in Finder — ready to drag-drop into Firefox's Certificate Authorities
 
-See [security model](/guide/security.md) for full CA lifecycle.
+See [security model](/guide/security.md) for the full CA lifecycle and [MITM & browser trust](/guide/mitm-browser-trust.md) for the Firefox / HSTS / HTTP/3 / coalescing writeup.
 
 ## AI / agent controls
 

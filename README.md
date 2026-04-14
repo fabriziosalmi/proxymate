@@ -32,11 +32,11 @@ brew install --cask proxymate
 
 ### DMG
 
-Download `Proxymate-0.9.56.dmg` from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest), verify the hash, and drag the app into `/Applications`:
+Download the latest `Proxymate-<version>.dmg` from the [releases page](https://github.com/fabriziosalmi/proxymate/releases/latest), verify the hash, and drag the app into `/Applications`:
 
 ```bash
-shasum -a 256 ~/Downloads/Proxymate-0.9.56.dmg
-# 6670f2d66ad5e50bb84d79c6a41a4bb03abcf6185613a21be0b845fbda81b8c8
+shasum -a 256 ~/Downloads/Proxymate-*.dmg
+# compare against the SHA-256 printed in the release notes
 ```
 
 The DMG is notarized and stapled — no "Cannot verify developer" dialog. Requires macOS 26 (Tahoe) or newer, Apple Silicon.
@@ -126,6 +126,18 @@ xcodebuild test -project proxymate.xcodeproj -scheme proxymate \
 ```
 
 The e2e suite exercises every major capability through a live listener + Squid upstream: HTTP + HTTPS CONNECT, privacy header injection, WAF blocking, cache hits, 1 MB payload integrity, 20-way concurrency, latency ceiling.
+
+### Site compatibility triage
+
+When a user reports "site X doesn't work", the Playwright-based harness under `tests/site-compat/` reproduces the problem in one command and cross-references failures against the live proxy log to classify each failed host as **BYPASS** (never reached the proxy), **PROXY_ERROR** (reached the proxy but got an error), or **BROWSER** (succeeded at the proxy; browser surfaced the failure):
+
+```bash
+./scripts/diagnose-site.sh https://example.com                    # single URL
+./scripts/diagnose-site.sh --suite --mitm on                      # full suite
+./scripts/diagnose-site.sh --compare proxy-mitm-off proxy-mitm-on # MITM-only regressions
+```
+
+See [`tests/site-compat/README.md`](tests/site-compat/README.md) for modes, signals, and the calibration notes.
 
 ## Contributing
 

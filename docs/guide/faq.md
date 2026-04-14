@@ -10,6 +10,14 @@ Cert-pinned apps (Signal, WhatsApp, banking apps, mitmproxy itself) will fail TL
 
 For everything else (browsers, CLIs, Electron apps, system services), traffic flows transparently.
 
+## Why does Firefox show a cert error even after I installed the CA?
+
+Firefox doesn't read the macOS system keychain. It keeps its own trust store in `cert9.db` per profile. Safari, Chrome, Edge, Brave, Arc all honor the system keychain automatically — Firefox is the one exception.
+
+Import the CA into Firefox explicitly: Preferences → Privacy → TLS Interception → **Export** (writes `~/Downloads/proxymate-ca.pem`), then in Firefox: Preferences → Privacy and Security → Certificates → **View Certificates → Authorities tab → Import** → pick the file → tick "Trust this CA to identify websites".
+
+Full step-by-step with screenshots in [MITM & browser trust](/guide/mitm-browser-trust.md).
+
 ## What about Apple services?
 
 `*.apple.com`, `*.icloud.com`, `*.apple-cloudkit.com`, `push.apple.com` are pre-excluded from MITM by default. These use Apple's own pinning and would refuse to connect through a MITM proxy anyway.
