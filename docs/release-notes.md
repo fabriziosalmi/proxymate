@@ -36,7 +36,7 @@ No new user-facing features. No protocol changes. No schema changes. Existing 0.
 ```
 File:    Proxymate-0.9.52.dmg
 Size:    64 MB
-SHA-256: <filled in after notarize>
+SHA-256: 6670f2d66ad5e50bb84d79c6a41a4bb03abcf6185613a21be0b845fbda81b8c8
 Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
 Notary:  Accepted, stapled, spctl-verified
 ```
