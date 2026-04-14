@@ -115,11 +115,14 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             // still in its CPython import / TLS setup phase — the first
             // CONNECT into the sidecar hit `Connection refused` and surfaced
             // in Console.app as nw_socket_handle_socket_event SO_ERROR 61.
-            // 10 s cap is well beyond the observed cold-start (~1.5 s).
-            guard Self.waitForLocalPort(listenPort, timeout: 10) else {
+            // Cold-start is normally ~1.5 s, but on macOS under memory
+            // pressure (frequent flushes) the CPython import phase can take
+            // 10–15 s. Bumped 10 → 20 s after a tester report where the
+            // 10 s ceiling fired even when mitmdump eventually came up.
+            guard Self.waitForLocalPort(listenPort, timeout: 20) else {
                 p.terminate()
                 stopSocketListener()
-                throw SidecarError.launchFailed("mitmdump didn't accept connections on :\(listenPort) within 10 s")
+                throw SidecarError.launchFailed("mitmdump didn't accept connections on :\(listenPort) within 20 s")
             }
 
             process = p
