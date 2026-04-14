@@ -1,5 +1,46 @@
 # Release notes
 
+## 0.9.52 — proactive CA-encryption migration + sidecar timeout headroom + diagnose v3
+
+*Released 2026-04-14*
+
+Cleanup release after the 0.9.51 critical fix. Three concrete changes plus a tooling upgrade. Same signed, notarized, stapled distribution.
+
+### 1. CA encryption migration now runs at app launch
+
+Earlier builds gated `ensureCAKeyEncrypted()` behind `identityForHost`, which has two early-return paths: memory cache hit, then disk cache hit. Any user with a warm leaf-cert cache from before the encryption work landed never reached the migration code, and the CA key stayed in plaintext indefinitely.
+
+Fix: `migrateCAEncryptionIfNeeded()` is a public no-arg entry point, called from `AppState.init` alongside the CA-expiry check. Idempotent — early-returns when the file is already encrypted, costs ~5 ms (a single 256-byte read) when nothing needs doing.
+
+### 2. mitmdump startup timeout 10 s → 20 s
+
+Tester reported `"mitmdump didn't accept connections on :18080 within 10 s"` while macOS was under sustained memory pressure. The CPython import phase normally takes ~1.5 s, but page-cache thrashing stretches it to 10–15 s. Bumped the `waitForLocalPort` ceiling in `MITMProxySidecar.start` to 20 s. No effect when the sidecar starts quickly; just headroom for the rare slow-start case.
+
+### 3. scripts/diagnose.sh v3 — color, accuracy, polish
+
+The triage tool from 0.9.50 got a substantial pass:
+
+- **Color output** when run on a TTY (green ✓, yellow !, red ✗, gray –). Plain text when piped to file/CI/gist so grep-friendly tooling stays unchanged.
+- **Section 7 false-positive fixed**: `pgrep -lf "mitmdump|squid"` matched any process whose argv contained those strings — including the shell running diagnose itself. Now uses `pgrep -x` to match exact process names.
+- **Section 11 (UserDefaults) reads correctly**: previously returned `0 bytes` for every key because keys carry version suffixes (`.v1`/`.v2`) and `defaults read fabriziosalmi.proxymate` resolves to a leftover sandbox container path on macOS 26. Now reads the prefs file by full path with both versioned suffixes probed.
+- **Section 18 distinguishes Debug vs Release**: bundled squid signature mismatch on Debug builds is expected (release rebuilds re-sign with Developer ID); Debug now gets a SKIP, release still WARNs.
+
+Verdict summary at the end shows colored OK / WARN / FAIL counts and an exit code (0/1/2) that slots into CI or launchd healthchecks.
+
+### What 0.9.52 does NOT include
+
+No new user-facing features. No protocol changes. No schema changes. Existing 0.9.51 configs work without migration.
+
+### Artifact
+
+```
+File:    Proxymate-0.9.52.dmg
+Size:    64 MB
+SHA-256: <filled in after notarize>
+Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
+Notary:  Accepted, stapled, spctl-verified
+```
+
 ## 0.9.51 — system proxy hijack fix + admin-prompt batching
 
 *Released 2026-04-14*
