@@ -10,6 +10,51 @@ import SwiftUI
 import AppKit
 import Charts
 
+// MARK: - Input validation helpers
+//
+// Used by every "Add X" sheet in this file to gate the submit button and
+// surface inline hints. Centralised here so the rules stay in sync across
+// the Proxies, Pools, Rules, and Blacklists editors.
+
+private enum InputValidator {
+
+    /// Host validator mirroring ProxyManager.validate(host:port:) at the
+    /// privilege boundary. Accepts IPv4, IPv6, or RFC1123 hostnames; rejects
+    /// every shell metacharacter so a value that passes here is safe to
+    /// interpolate into the osascript shell script downstream.
+    static func isValidHost(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed.count <= 253 else { return false }
+        let allowed = CharacterSet(charactersIn:
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:")
+        return trimmed.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    /// TCP port in the valid user range.
+    static func isValidPort(_ s: String) -> Bool {
+        guard let n = Int(s.trimmingCharacters(in: .whitespaces)) else { return false }
+        return (1...65535).contains(n)
+    }
+
+    /// Best-effort regex pattern validation. Calls the same constructor the
+    /// RuleEngine will use at match time — if it throws here, it would have
+    /// crashed the first incoming request.
+    static func isValidRegex(_ pattern: String) -> Bool {
+        (try? NSRegularExpression(pattern: pattern)) != nil
+    }
+
+    /// Accepts only http/https URLs with a non-empty host. Used by the
+    /// custom-blacklist-source sheet; external fetches that bypass the
+    /// system proxy rely on URLSession accepting the URL as-is.
+    static func isValidHTTPURL(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host, !host.isEmpty else { return false }
+        return true
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var state: AppState
     @State private var tab: Tab = .proxies
@@ -581,14 +626,16 @@ struct AddPoolSheet: View {
                 Button("Add") {
                     let pool = UpstreamPool(
                         name: name.isEmpty ? "Pool" : name,
-                        members: [PoolMember(host: host, port: Int(port) ?? 8080)],
+                        members: [PoolMember(host: host.trimmingCharacters(in: .whitespaces),
+                                             port: Int(port) ?? 8080)],
                         strategy: strategy,
                         healthCheck: HealthCheckConfig()
                     )
                     onAdd(pool)
                     dismiss()
                 }
-                .keyboardShortcut(.defaultAction).disabled(host.isEmpty)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!InputValidator.isValidHost(host) || !InputValidator.isValidPort(port))
             }
         }
         .padding(16).frame(width: 340)    }
@@ -659,7 +706,7 @@ struct AddProxySheet: View {
                 Button("Add") {
                     let p = ProxyConfig(
                         name: name.isEmpty ? "Proxy" : name,
-                        host: host,
+                        host: host.trimmingCharacters(in: .whitespaces),
                         port: Int(port) ?? 8080,
                         applyToHTTPS: https
                     )
@@ -667,6 +714,7 @@ struct AddProxySheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
+                .disabled(!InputValidator.isValidHost(host) || !InputValidator.isValidPort(port))
                 .disabled(host.isEmpty)
             }
         }
@@ -1220,10 +1268,26 @@ struct AddRuleSheet: View {
                                   category: category.isEmpty ? "Custom" : category))
                     dismiss()
                 }
-                .keyboardShortcut(.defaultAction).disabled(pattern.isEmpty)
+                .keyboardShortcut(.defaultAction).disabled(!isPatternValid)
+            }
+            if kind == .blockRegex && !pattern.isEmpty && !InputValidator.isValidRegex(pattern) {
+                // Compile failure surfaces HERE rather than at first match,
+                // where it would have crashed the proxy on a real request.
+                Label("Regex doesn't compile — check the pattern syntax",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2).foregroundStyle(.orange)
             }
         }
         .padding(16).frame(width: 340)    }
+
+    /// Pattern is valid if non-empty and, for regex-kind rules, actually
+    /// compiles with NSRegularExpression. Other rule kinds (domain / IP /
+    /// content substring) accept any non-empty string.
+    private var isPatternValid: Bool {
+        guard !pattern.isEmpty else { return false }
+        if kind == .blockRegex { return InputValidator.isValidRegex(pattern) }
+        return true
+    }
 
     private var placeholder: String {
         switch kind {
@@ -1672,10 +1736,11 @@ struct AddCustomBlacklistSheet: View {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Add & Refresh") {
                     onAdd(BlacklistSource(name: name.isEmpty ? "Custom" : name,
-                                          url: url, category: category, format: format))
+                                          url: url.trimmingCharacters(in: .whitespaces),
+                                          category: category, format: format))
                     dismiss()
                 }
-                .keyboardShortcut(.defaultAction).disabled(url.isEmpty)
+                .keyboardShortcut(.defaultAction).disabled(!InputValidator.isValidHTTPURL(url))
             }
         }
         .padding(16).frame(width: 380)    }
