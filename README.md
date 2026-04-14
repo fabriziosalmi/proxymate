@@ -43,7 +43,7 @@ The DMG is notarized and stapled — no "Cannot verify developer" dialog. Requir
 
 ## What it does
 
-**Traffic routing** — local HTTP/HTTPS forward proxy on a loopback-bound port, SOCKS5 listener, HTTP/2 upstream, transparent CONNECT tunnels with optional MITM interception.
+**Traffic routing** — local HTTP/HTTPS forward proxy on a loopback-bound port, SOCKS5 listener, transparent CONNECT tunnels with optional MITM interception.
 
 **Filtering** — Block Domain / Block IP (CIDR) / Block Content (Aho-Corasick) rules. Ships with 19 curated blacklist feeds (~90 K entries across ads, malware, phishing, TOR exits). Shadow-mode evaluation for rule authoring without breaking traffic.
 

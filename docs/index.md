@@ -60,5 +60,5 @@ features:
       src: /icons/waves.svg
       alt: Protocols
     title: Everything Else You'd Expect
-    details: SOCKS5 listener, PAC server with smart bypass, DNS-over-HTTPS, HTTP/2 upstream, Prometheus metrics, webhooks, iCloud sync of your rule sets.
+    details: SOCKS5 listener, PAC server with smart bypass, DNS-over-HTTPS, Prometheus metrics, webhooks, iCloud sync of your rule sets.
 ---

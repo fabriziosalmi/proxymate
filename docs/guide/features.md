@@ -7,7 +7,6 @@ A one-page tour of every capability. Grouped by layer; each section links to dee
 - **HTTP/HTTPS forward proxy** on a random loopback port, bound to 127.0.0.1 only
 - **SOCKS5 listener** (RFC 1928) on a separate port for apps that prefer SOCKS
 - **CONNECT tunnels** for TLS, with optional MITM interception per-host
-- **HTTP/2** upstream support (h2 negotiation via ALPN)
 - **Chunked Transfer-Encoding**, keep-alive, pipelining
 - **IPv6** end-to-end (address literals, CIDR in allowlist, NWConnection IPv6)
 

@@ -33,7 +33,6 @@ nonisolated struct PoolMember: Identifiable, Codable, Hashable, Sendable {
     var port: Int
     var weight: Int = 1          // used by Weighted strategy
     var enabled: Bool = true
-    var useHTTP2: Bool = false   // use HTTP/2 multiplexed forwarding
 }
 
 nonisolated struct HealthCheckConfig: Codable, Hashable, Sendable {
