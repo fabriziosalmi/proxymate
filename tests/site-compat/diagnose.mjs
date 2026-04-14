@@ -144,8 +144,25 @@ page.on('console', (msg) => {
   }
 });
 
+// pageerror patterns emitted by blocked tracking/consent SDKs — when
+// our WAF returns a 403 HTML page instead of the expected JS bundle,
+// the vendor loader throws a SyntaxError or "No options detected" etc.
+// The user can still navigate; these are not UX failures.
+const BENIGN_PAGE_ERROR_RE = new RegExp([
+  "Unexpected token '<'",              // SDK got HTML (blocked) instead of JS
+  "No options detected.*consult documentation",  // OneTrust / IAB CMP loader
+  'isElementWithIdHiddenByDisplayNone', // iubenda / consent helper
+  'Refused to execute script.*MIME type',  // CSP rejecting blocked tracker
+  'Loading chunk .* failed',           // webpack chunk from blocked CDN
+  'gtag is not defined',
+  '_paq is not defined',               // Matomo
+  'adsbygoogle',
+].join('|'));
+
 page.on('pageerror', (err) => {
-  pageErrors.push({ name: err.name, message: err.message });
+  const msg = err.message || '';
+  const benign = BENIGN_PAGE_ERROR_RE.test(msg) || BENIGN_PAGE_ERROR_RE.test(err.name || '');
+  pageErrors.push({ name: err.name, message: msg, benign });
 });
 
 page.on('response', async (resp) => {
@@ -352,5 +369,8 @@ if (navError) {
 
 // Actionable failures only — tracking/aborted fetches don't count.
 // Soft nav timeout (page loaded, no hard failures) is not a FAIL.
+// pageErrors from known-benign tracker/consent SDK failures (our WAF
+// returning 403 → vendor loader throws SyntaxError) don't count either.
 const hardNavError = navError && !navTimedOutSoftly;
-process.exit(signals.length || pageErrors.length || realFails || hardNavError ? 1 : 0);
+const realPageErrors = pageErrors.filter(e => !e.benign).length;
+process.exit(signals.length || realPageErrors || realFails || hardNavError ? 1 : 0);
