@@ -1,10 +1,19 @@
+# Proxymate CI — currently disabled
+#
+# This project targets macOS 26 (Tahoe) and uses macOS-26-only APIs
+# (modern NSPanel, SMAppService 26, etc.). GitHub Actions does not yet
+# publish macos-26 runner images — the newest available is macos-15
+# with Xcode 16.4 + SDK 15.5, which refuses to build a macOS-26 target.
+# Not a code issue, an unsupported-platform issue on the CI side.
+#
+# Authoritative release pipeline: ./scripts/build-dmg.sh on a Mac
+# running macOS 26. Workflow preserved for one-diff reactivation when
+# GH ships macos-26 runners — bump runs-on and restore push/PR triggers.
+
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   build-and-test:
