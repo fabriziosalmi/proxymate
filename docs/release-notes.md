@@ -1,5 +1,36 @@
 # Release notes
 
+## 0.9.50 — sidecar startup race fix
+
+*Released 2026-04-14*
+
+Point release fixing a single observable regression in 0.9.49: the first request after enabling the proxy could fail with `Connection refused` before the `mitmproxy` sidecar had finished binding its listener.
+
+### Root cause
+
+`Process.run()` returns as soon as `exec(2)` succeeds. `mitmdump` then spends ~1.5 s importing CPython modules and initializing its TLS machinery before it calls `bind()` + `listen()`. During that window, `MITMProxySidecar.start()` had already marked `_isRunning = true` and returned, so `LocalProxy` happily forwarded the first CONNECT into a port that nothing was listening on yet. The failure surfaced in Console.app as:
+
+```
+nw_socket_handle_socket_event [C2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C2 127.0.0.1:18080 ...] already failing
+```
+
+### Fix
+
+Both `MITMProxySidecar.start()` and `SquidSidecar.start()` now poll the listener port via a raw Darwin `connect()` every 100 ms until the kernel accepts the handshake. Timeouts: 10 s for mitmdump, 15 s for Squid (slower cold-start because of its config parse + cache dir init). On timeout the subprocess is terminated and the caller receives a `launchFailed` error with a descriptive message rather than a false success.
+
+No other behavioural changes; 0.9.50 is 0.9.49 plus the two `waitForLocalPort` calls.
+
+### Artifact
+
+```
+File:    Proxymate-0.9.50.dmg
+Size:    64 MB
+SHA-256: <filled in by CI on release>
+Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
+Notary:  Accepted, stapled, spctl-verified
+```
+
 ## 0.9.49 — UI robustness + lifecycle hardening
 
 *Released 2026-04-14*
