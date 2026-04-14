@@ -1,0 +1,14 @@
+{
+  "sites": [
+    { "url": "https://github.com/fabriziosalmi/proxymate", "label": "github" },
+    { "url": "https://www.linkedin.com", "label": "linkedin" },
+    { "url": "https://www.rai.it", "label": "rai" },
+    { "url": "https://www.mediaset.it", "label": "mediaset" },
+    { "url": "https://www.la7.it", "label": "la7" },
+    { "url": "https://www.twitch.tv", "label": "twitch" },
+    { "url": "https://gmail.com", "label": "gmail" },
+    { "url": "https://www.icloud.com", "label": "icloud" },
+    { "url": "https://news.ycombinator.com", "label": "hn" },
+    { "url": "https://www.intesasanpaolo.com", "label": "intesa" }
+  ]
+}

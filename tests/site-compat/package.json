@@ -1,0 +1,14 @@
+{
+  "name": "proxymate-site-compat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "install-browsers": "playwright install chromium firefox",
+    "diagnose": "node diagnose.mjs",
+    "suite": "node suite.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}
