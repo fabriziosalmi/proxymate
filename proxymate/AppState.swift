@@ -152,8 +152,13 @@ final class AppState: ObservableObject {
 
         NotificationManager.shared.setup()
 
-        // Check CA certificate expiry (#43) — async to avoid blocking main thread
+        // Check CA certificate expiry (#43) — async to avoid blocking main thread.
+        // Also run the CA-encryption migration here (idempotent, ~5 ms when
+        // already encrypted): otherwise users with a warm leaf-cert cache
+        // never trigger the lazy migration in identityForHost and the CA
+        // key stays in plaintext forever.
         Task.detached(priority: .utility) {
+            TLSManager.shared.migrateCAEncryptionIfNeeded()
             let days = TLSManager.shared.caExpiryDays()
             await MainActor.run { [weak self] in
                 guard let self, let days, days < 30 else { return }

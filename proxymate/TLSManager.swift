@@ -637,6 +637,19 @@ nonisolated final class TLSManager: @unchecked Sendable {
     /// (leaves were signed without a passphrase — still valid cryptographically
     /// but cached P12s were encrypted under the hardcoded leaf passphrase
     /// and won't import with the new random one).
+    /// Public entry point so the migration can be triggered proactively at
+    /// app launch (AppState.init), not lazily on first leaf signing. Without
+    /// this, a user whose leaf-cert cache is warm from previous sessions
+    /// never hits identityForHost's slow path and the plaintext CA stays
+    /// plaintext indefinitely. Idempotent — early-returns when the file is
+    /// already encrypted, so calling on every launch costs essentially zero.
+    func migrateCAEncryptionIfNeeded() {
+        queue.sync {
+            do { try ensureCAKeyEncrypted() }
+            catch { NSLog("[TLSManager] CA encryption migration failed: \(error)") }
+        }
+    }
+
     private func ensureCAKeyEncrypted() throws {
         guard FileManager.default.fileExists(atPath: caKeyPath) else { return }
         let head: String
