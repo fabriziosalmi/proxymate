@@ -44,7 +44,16 @@ nonisolated final class SOCKS5Listener: @unchecked Sendable {
                 return
             }
             params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: nwPort)
-            guard let l = try? NWListener(using: params) else { return }
+            let l: NWListener
+            do {
+                l = try NWListener(using: params)
+            } catch {
+                // Port already bound (another proxymate instance, or a
+                // foreign process). Surface this — before today the toggle
+                // stayed green with no listener running.
+                onEvent?(.log(.error, "SOCKS5 bind on :\(port) failed: \(error.localizedDescription)"))
+                return
+            }
             l.newConnectionHandler = { [weak self] conn in
                 self?.handleClient(conn)
             }

@@ -53,13 +53,25 @@ nonisolated final class PACServer: @unchecked Sendable {
             self.directDomains = directDomains
 
             guard settings.port > 0 && settings.port <= 65535,
-                  let nwPort = NWEndpoint.Port(rawValue: UInt16(settings.port)) else { return }
+                  let nwPort = NWEndpoint.Port(rawValue: UInt16(settings.port)) else {
+                // Previously returned silently — UI toggle could stay "on"
+                // with an out-of-range port (0, 70000) and no server. Log
+                // loudly so it surfaces in the app log + Console.
+                NSLog("[PACServer] invalid port \(settings.port) — server not started")
+                return
+            }
 
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
             params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: nwPort)
 
-            guard let l = try? NWListener(using: params) else { return }
+            let l: NWListener
+            do {
+                l = try NWListener(using: params)
+            } catch {
+                NSLog("[PACServer] bind on :\(settings.port) failed: \(error.localizedDescription)")
+                return
+            }
             l.newConnectionHandler = { [weak self] conn in
                 self?.handleRequest(conn)
             }

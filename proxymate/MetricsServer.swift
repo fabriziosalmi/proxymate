@@ -30,9 +30,21 @@ nonisolated final class MetricsServer: @unchecked Sendable {
             self.stop()
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
-            guard let nwPort = NWEndpoint.Port(rawValue: port) else { return }
+            guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+                NSLog("[MetricsServer] invalid port \(port) — server not started")
+                return
+            }
             params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: nwPort)
-            guard let listener = try? NWListener(using: params) else { return }
+            let listener: NWListener
+            do {
+                listener = try NWListener(using: params)
+            } catch {
+                // Before today: UI toggle stayed green when port already
+                // bound; users thought Prometheus scrape was live but
+                // curl got connection refused.
+                NSLog("[MetricsServer] bind on :\(port) failed: \(error.localizedDescription)")
+                return
+            }
             listener.newConnectionHandler = { [weak self] conn in
                 self?.handle(conn)
             }
