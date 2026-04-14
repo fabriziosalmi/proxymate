@@ -23,7 +23,7 @@ This does not break sites — HTTP/3 is an optimization, not a requirement. It d
 ```
 File:    Proxymate-0.9.54.dmg
 Size:    64 MB
-SHA-256: __SHA__
+SHA-256: 591bcb53225ea562927e7c367f9cff7455691371cdf719b7e056a412447306ce
 Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
 Notary:  Accepted, stapled, spctl-verified
 ```
