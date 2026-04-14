@@ -86,11 +86,29 @@ page.on('request', (req) => {
 // these on purpose. A failure on one of these hosts is not a real
 // browsing issue for a human user.
 const TRACKING_HOST_RE = new RegExp([
+  // Generic tokens
   'tracking', 'telemetry', 'analytics', 'beacon', 'pixel', 'logging',
-  'ponf\\.', 'metrics\\.', 'stats\\.', 'collect\\.',
+  'ponf\\.', 'metrics\\.', 'stats\\.', 'collect\\.', 'events?\\.',
+  // Google/Meta
   'doubleclick', 'google-analytics', 'googletagmanager', 'googleadservices',
+  'googlesyndication', 'fundingchoicesmessages\\.google',
+  'connect\\.facebook\\.net', 'facebook\\.com/tr',
+  // SaaS analytics
   'segment\\.io', 'mixpanel', 'amplitude', 'hotjar', 'fullstory',
-  'datadoghq', 'newrelic', 'sentry\\.io',
+  'datadoghq', 'newrelic', 'sentry\\.io', 'bugsnag',
+  'chartbeat\\.com', 'quantserve', 'quantcast',
+  'optimizely', 'mouseflow', 'logrocket', 'smartlook',
+  // Ad networks / RTB
+  'taboola', 'outbrain', 'criteo', 'revcontent', 'moatads',
+  'adsrvr\\.org', 'adnxs\\.com', 'adform\\.net', 'rubiconproject',
+  'pubmatic', 'openx\\.net', 'media\\.net', 'smartadserver',
+  'insurads', 'confiant', 'permutive', 'tiqcdn', 'tealium',
+  // Attribution / consent vendors
+  'demdex\\.net', 'omtrdc\\.net', 'adobedtm', 'sc\\.omtrdc',
+  'onetrust', 'cookielaw', 'trustarc', 'quantcast\\.mgr',
+  // Media measurement
+  'imrworldwide', 'youbora', 'nielsen\\.com', 'comscore',
+  'scorecardresearch', 'adobe-analytics',
 ].join('|'), 'i');
 
 function isTrackingHost(host) {
