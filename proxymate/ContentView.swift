@@ -2532,6 +2532,9 @@ struct PrivacyView: View {
                             Spacer()
                             Button("Trust") { state.trustMITMCA() }
                                 .buttonStyle(.bordered).controlSize(.mini)
+                            Button("Export") { state.exportMITMCA() }
+                                .buttonStyle(.bordered).controlSize(.mini)
+                                .help("Save the CA to ~/Downloads for Firefox import")
                             Button("Remove") { confirmingRemoveCA = true }
                                 .buttonStyle(.bordered).controlSize(.mini)
                                 .foregroundStyle(.red)

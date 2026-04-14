@@ -1,5 +1,39 @@
 # Release notes
 
+## 0.9.56 — fix Root CA generation on macOS, add Export CA button, site-compat harness
+
+*Released 2026-04-14*
+
+Three unrelated fixes/additions bundled.
+
+### 1. Root CA generation no longer fails on macOS out-of-the-box
+
+macOS ships LibreSSL as `/usr/bin/openssl`, and both LibreSSL and modern OpenSSL 3.x have removed `-aes256` as an inline flag for `req -newkey`. The single-command CA generation in earlier builds silently depended on a legacy form that no longer works on a stock macOS — the UI reported `openssl req -x509 failed` and MITM was unusable until the user manually copied a CA in place.
+
+Fix: generation is now two `openssl` invocations — `genpkey -aes-256-cbc` for the encrypted key, then `req -x509 -new -key` for the self-signed cert. Portable across LibreSSL and OpenSSL 3.x. No user-visible change beyond "it works".
+
+### 2. Export Root CA button in the MITM section
+
+Firefox uses its own certificate store and doesn't read the macOS system keychain. Users importing Proxymate's CA into Firefox needed to know the on-disk path (`~/Library/Application Support/Proxymate/ca/ca.pem`) — undiscoverable without the docs.
+
+Preferences → Privacy → TLS Interception now has an **Export** button next to Trust / Remove that copies the CA to `~/Downloads/proxymate-ca.pem` and reveals it in Finder. Drag-drop straight into Firefox → Certificates → Authorities → Import.
+
+### 3. `tests/site-compat/` — Playwright diagnostic harness
+
+New on-demand tool for when a user reports "site X doesn't work." `./scripts/diagnose-site.sh https://example.com` drives a real browser through Proxymate, captures failed requests, console/CORS errors, page errors; cross-references each failed host against the live proxy log to classify as **BYPASS** (never reached the proxy), **PROXY_ERROR** (reached the proxy but got 4xx/5xx), or **BROWSER** (reached the proxy fine; browser surfaced the failure anyway).
+
+Suite mode (`--suite`) runs across a canonical list of sites and supports baseline (`--no-proxy`), MITM-off/on tagging, and cross-mode diff (`--compare direct proxy-mitm-on`). Zero telemetry outbound — all local. Full docs in `tests/site-compat/README.md`.
+
+### Artifact
+
+```
+File:    Proxymate-0.9.56.dmg
+Size:    64 MB
+SHA-256: __SHA__
+Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
+Notary:  Accepted, stapled, spctl-verified
+```
+
 ## 0.9.55 — disable HTTP/2 downstream to stop browser connection coalescing
 
 *Released 2026-04-14*

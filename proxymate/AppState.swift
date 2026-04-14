@@ -649,6 +649,26 @@ final class AppState: ObservableObject {
         TLSManager.shared.promptUserToTrust()
     }
 
+    /// Copy the Root CA PEM into ~/Downloads and reveal it in Finder so the
+    /// user can drag-drop it into Firefox's Certificate Authorities import
+    /// dialog. Firefox doesn't read the macOS system keychain — this file
+    /// is the source of truth for importing our CA into Firefox's own
+    /// cert9.db. No extra prompt, no admin: plain file copy into a
+    /// user-owned directory.
+    func exportMITMCA() {
+        let caPath = NSHomeDirectory() + "/Library/Application Support/Proxymate/ca/ca.pem"
+        let dest = NSHomeDirectory() + "/Downloads/proxymate-ca.pem"
+        do {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: dest) { try fm.removeItem(atPath: dest) }
+            try fm.copyItem(atPath: caPath, toPath: dest)
+            NSWorkspace.shared.selectFile(dest, inFileViewerRootedAtPath: "")
+            log(.info, "Root CA exported to \(dest)")
+        } catch {
+            log(.error, "Export CA failed: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - AI
 
     func updateAISettings(_ s: AISettings) {

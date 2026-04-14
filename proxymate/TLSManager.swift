@@ -149,12 +149,26 @@ nonisolated final class TLSManager: @unchecked Sendable {
             let caPass = try getOrCreatePassphrase(account: caPassphraseAccount)
 
             // 1. Generate AES-256-encrypted CA key + self-signed cert via openssl.
-            //    -passout env:VAR reads the passphrase from the env we pass to
-            //    Process; it never hits argv or the filesystem.
+            //    Split into two steps (genpkey then req -x509 -key) because
+            //    neither LibreSSL nor OpenSSL 3.x accepts `-aes256` as an
+            //    inline flag to `req -newkey` — it was removed/renamed.
+            //    genpkey + -aes-256-cbc is the portable form that works
+            //    against /usr/bin/openssl (LibreSSL on macOS) and brew
+            //    OpenSSL 3.x alike.
+            //    -pass/-passout env:VAR reads the passphrase from the env
+            //    we pass to Process; it never hits argv or the filesystem.
             guard shellWithEnv("/usr/bin/openssl", args: [
-                "req", "-x509", "-new", "-newkey", "rsa:2048", "-aes256",
-                "-passout", "env:PROXYMATE_CA_PASS",
-                "-keyout", caKeyPath, "-out", caCertPath, "-days", "3650",
+                "genpkey", "-algorithm", "RSA",
+                "-pkeyopt", "rsa_keygen_bits:2048",
+                "-aes-256-cbc", "-pass", "env:PROXYMATE_CA_PASS",
+                "-out", caKeyPath
+            ], env: ["PROXYMATE_CA_PASS": caPass]) == 0 else {
+                throw TLSError.keyGenFailed("openssl genpkey failed")
+            }
+            guard shellWithEnv("/usr/bin/openssl", args: [
+                "req", "-x509", "-new",
+                "-key", caKeyPath, "-passin", "env:PROXYMATE_CA_PASS",
+                "-out", caCertPath, "-days", "3650",
                 "-subj", "/CN=\(caLabel)/O=Proxymate/C=US"
             ], env: ["PROXYMATE_CA_PASS": caPass]) == 0 else {
                 throw TLSError.keyGenFailed("openssl req -x509 failed")
