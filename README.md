@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://fabriziosalmi.github.io/proxymate/"><img src="https://img.shields.io/badge/docs-live-0A84FF.svg" alt="Documentation"></a>
-  <a href="https://github.com/fabriziosalmi/proxymate/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.49-blue.svg" alt="Latest release"></a>
+  <a href="https://github.com/fabriziosalmi/proxymate/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.50-blue.svg" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/macOS-26%2B-black.svg" alt="macOS 26+">
   <img src="https://img.shields.io/badge/notarized-yes-success.svg" alt="Notarized">
   <img src="https://img.shields.io/badge/telemetry-zero-purple.svg" alt="Zero telemetry">
@@ -32,11 +32,11 @@ brew install --cask proxymate
 
 ### DMG
 
-Download `Proxymate-0.9.49.dmg` from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest), verify the hash, and drag the app into `/Applications`:
+Download `Proxymate-0.9.50.dmg` from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest), verify the hash, and drag the app into `/Applications`:
 
 ```bash
-shasum -a 256 ~/Downloads/Proxymate-0.9.49.dmg
-# e972121acbba37a2e5042ef2d2654d0ef81fbc8e7a9440ecb35b7b3fb4a9201f
+shasum -a 256 ~/Downloads/Proxymate-0.9.50.dmg
+# db313cc0e7757cab97f79517c73304c3dd608f6794e0cb96572e2e499ad475e6
 ```
 
 The DMG is notarized and stapled — no "Cannot verify developer" dialog. Requires macOS 26 (Tahoe) or newer, Apple Silicon.

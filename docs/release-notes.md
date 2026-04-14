@@ -26,7 +26,7 @@ No other behavioural changes; 0.9.50 is 0.9.49 plus the two `waitForLocalPort` c
 ```
 File:    Proxymate-0.9.50.dmg
 Size:    64 MB
-SHA-256: <filled in by CI on release>
+SHA-256: db313cc0e7757cab97f79517c73304c3dd608f6794e0cb96572e2e499ad475e6
 Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
 Notary:  Accepted, stapled, spctl-verified
 ```
