@@ -981,6 +981,7 @@ struct StatsView: View {
                 }
 
                 // Host profiling
+                let _ = state.statsTick  // 1Hz dependency — see AppState.statsTick
                 let topHosts = HostMemory.shared.topHosts(limit: 5)
                 if !topHosts.isEmpty {
                     Divider()
@@ -2162,6 +2163,7 @@ struct CacheView: View {
                             .font(.caption).toggleStyle(.switch).controlSize(.small)
                     }
 
+                    let _ = state.statsTick  // 1Hz dependency — see AppState.statsTick
                     let cacheStats = CacheManager.shared.stats
                     privacySection("Statistics") {
                         HStack(spacing: 16) {
@@ -2215,6 +2217,7 @@ struct CacheView: View {
                             }.pickerStyle(.menu).frame(width: 100)
                         }
 
+                        let _ = state.statsTick  // 1Hz dependency — see AppState.statsTick
                         let diskStats = DiskCache.shared.stats
                         HStack(spacing: 16) {
                             VStack(alignment: .leading) {
@@ -2380,6 +2383,7 @@ struct PrivacyView: View {
                             TextField("DoH URL", text: dnsBinding(\.customURL))
                                 .textFieldStyle(.roundedBorder).font(.caption)
                         }
+                        let _ = state.statsTick  // 1Hz dependency — see AppState.statsTick
                         let dnsStats = DNSResolver.shared.stats
                         HStack(spacing: 12) {
                             VStack(alignment: .leading) {

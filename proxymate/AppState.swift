@@ -67,6 +67,13 @@ final class AppState: ObservableObject {
     /// req/sec chart never refreshed after the first render.
     private var cancellables = Set<AnyCancellable>()
 
+    /// Monotonic 1 Hz counter views can read (`_ = state.statsTick`) to pick
+    /// up changes from singletons that aren't ObservableObject (CacheManager,
+    /// DiskCache, DNSResolver, HostMemory). Without this, their UI panels
+    /// rendered once and then froze until some other event forced a redraw.
+    @Published private(set) var statsTick: Int = 0
+    private var statsTickTimer: Timer?
+
     nonisolated struct Stats: Sendable {
         var requestsAllowed: Int = 0
         var requestsBlocked: Int = 0
@@ -209,6 +216,21 @@ final class AppState: ObservableObject {
         timeSeries.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+
+        // 1 Hz tick for panels that read singleton stats (CacheManager /
+        // DiskCache / DNSResolver / HostMemory). Their stats structs are not
+        // ObservableObject so SwiftUI can't observe them; reading
+        // `state.statsTick` in those views establishes a dependency that
+        // re-renders once per second.
+        statsTickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.statsTick &+= 1
+            }
+        }
+    }
+
+    deinit {
+        statsTickTimer?.invalidate()
     }
 
     // MARK: - Selection
