@@ -273,6 +273,7 @@ struct ProxiesView: View {
 struct QuickProxiesSection: View {
     @EnvironmentObject var state: AppState
     @State private var showingAdd = false
+    @State private var pendingDelete: ProxyConfig?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -300,7 +301,7 @@ struct QuickProxiesSection: View {
                                     state.createPoolFromProxy(p)
                                 }
                                 Divider()
-                                Button("Delete", role: .destructive) { state.removeProxy(p.id) }
+                                Button("Delete", role: .destructive) { pendingDelete = p }
                             }
                             .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
                     }
@@ -326,6 +327,20 @@ struct QuickProxiesSection: View {
                 state.select(p.id)
             }
         }
+        .confirmationDialog("Delete proxy?",
+                            isPresented: Binding(
+                                get: { pendingDelete != nil },
+                                set: { if !$0 { pendingDelete = nil } }),
+                            titleVisibility: .visible,
+                            presenting: pendingDelete) { proxy in
+            Button("Delete \(proxy.name)", role: .destructive) {
+                state.removeProxy(proxy.id)
+                pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { proxy in
+            Text("\(proxy.host):\(proxy.port) — this action can't be undone.")
+        }
     }
 }
 
@@ -335,6 +350,8 @@ struct PoolsSection: View {
     @EnvironmentObject var state: AppState
     @State private var showingAdd = false
     @State private var showingOverride = false
+    @State private var pendingPoolDelete: UpstreamPool?
+    @State private var pendingOverrideDelete: PoolOverride?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -362,7 +379,7 @@ struct PoolsSection: View {
                                     .disabled(pool.isDefault)
                                     Divider()
                                     Button("Delete", role: .destructive) {
-                                        state.removePool(pool.id)
+                                        pendingPoolDelete = pool
                                     }
                                 }
                         }
@@ -377,7 +394,7 @@ struct PoolsSection: View {
                                             poolName: state.pools.first { $0.id == ov.poolId }?.name ?? "?")
                                     .contextMenu {
                                         Button("Delete", role: .destructive) {
-                                            state.removePoolOverride(ov.id)
+                                            pendingOverrideDelete = ov
                                         }
                                     }
                             }
@@ -408,6 +425,51 @@ struct PoolsSection: View {
         .sheet(isPresented: $showingOverride) {
             AddOverrideSheet(pools: state.pools) { state.addPoolOverride($0) }
         }
+        .modifier(PoolsConfirmations(pendingPoolDelete: $pendingPoolDelete,
+                                     pendingOverrideDelete: $pendingOverrideDelete,
+                                     state: state))
+    }
+}
+
+/// Extracted as a ViewModifier because attaching two confirmationDialogs
+/// directly on PoolsSection's body pushed SwiftUI's type-checker past its
+/// reasonable-time threshold. The modifier carries the binding state in
+/// and invokes the same mutations that would have happened inline.
+private struct PoolsConfirmations: ViewModifier {
+    @Binding var pendingPoolDelete: UpstreamPool?
+    @Binding var pendingOverrideDelete: PoolOverride?
+    let state: AppState
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("Delete pool?",
+                                isPresented: Binding(
+                                    get: { pendingPoolDelete != nil },
+                                    set: { if !$0 { pendingPoolDelete = nil } }),
+                                titleVisibility: .visible,
+                                presenting: pendingPoolDelete) { pool in
+                Button("Delete \(pool.name)", role: .destructive) {
+                    state.removePool(pool.id)
+                    pendingPoolDelete = nil
+                }
+                Button("Cancel", role: .cancel) { pendingPoolDelete = nil }
+            } message: { pool in
+                Text("\(pool.members.count) member(s) — routing overrides referencing this pool will also break.")
+            }
+            .confirmationDialog("Delete routing override?",
+                                isPresented: Binding(
+                                    get: { pendingOverrideDelete != nil },
+                                    set: { if !$0 { pendingOverrideDelete = nil } }),
+                                titleVisibility: .visible,
+                                presenting: pendingOverrideDelete) { ov in
+                Button("Delete", role: .destructive) {
+                    state.removePoolOverride(ov.id)
+                    pendingOverrideDelete = nil
+                }
+                Button("Cancel", role: .cancel) { pendingOverrideDelete = nil }
+            } message: { ov in
+                Text("Pattern \"\(ov.hostPattern)\" will no longer route to its pool.")
+            }
     }
 }
 
@@ -729,6 +791,7 @@ struct LogsView: View {
     @State private var search = ""
     @State private var debouncedSearch = ""
     @State private var levelFilter: LogEntry.Level?
+    @State private var confirmingClear = false
 
     private var filteredLogs: [LogEntry] {
         state.logs.filter { entry in
@@ -843,7 +906,7 @@ struct LogsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Clear") { state.clearLogs() }
+                Button("Clear") { confirmingClear = true }
                     .buttonStyle(.borderless)
                     .disabled(state.logs.isEmpty)
             }
@@ -852,6 +915,16 @@ struct LogsView: View {
         .task(id: search) {
             try? await Task.sleep(for: .milliseconds(300))
             if !Task.isCancelled { debouncedSearch = search }
+        }
+        .confirmationDialog("Clear all log entries?",
+                            isPresented: $confirmingClear,
+                            titleVisibility: .visible) {
+            Button("Clear \(state.logs.count) entries", role: .destructive) {
+                state.clearLogs()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Log history can't be recovered. Persistent disk logs are kept.")
         }
     }
 }
@@ -1129,6 +1202,7 @@ struct WAFRulesSection: View {
     @EnvironmentObject var state: AppState
     @State private var showingAdd = false
     @State private var showingImport = false
+    @State private var pendingRuleDelete: WAFRule?
 
     private var grouped: [(category: String, rules: [WAFRule])] {
         let dict = Dictionary(grouping: state.rules) { $0.category.isEmpty ? "Custom" : $0.category }
@@ -1170,7 +1244,7 @@ struct WAFRulesSection: View {
                             }
                             Divider()
                             Button("Delete", role: .destructive) {
-                                state.removeRule(rule.id)
+                                pendingRuleDelete = rule
                             }
                         }
                         .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 8))
@@ -1206,6 +1280,20 @@ struct WAFRulesSection: View {
         }
         .sheet(isPresented: $showingImport) {
             ImportRulesSheet()
+        }
+        .confirmationDialog("Delete WAF rule?",
+                            isPresented: Binding(
+                                get: { pendingRuleDelete != nil },
+                                set: { if !$0 { pendingRuleDelete = nil } }),
+                            titleVisibility: .visible,
+                            presenting: pendingRuleDelete) { rule in
+            Button("Delete", role: .destructive) {
+                state.removeRule(rule.id)
+                pendingRuleDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingRuleDelete = nil }
+        } message: { rule in
+            Text("\(rule.kind.rawValue) — \(rule.pattern)")
         }
     }
 }
@@ -2342,6 +2430,7 @@ struct CacheView: View {
 struct PrivacyView: View {
     @EnvironmentObject var state: AppState
     @State private var showWizard = false
+    @State private var confirmingRemoveCA = false
 
     var body: some View {
         ScrollView {
@@ -2416,7 +2505,7 @@ struct PrivacyView: View {
                             Spacer()
                             Button("Trust") { state.trustMITMCA() }
                                 .buttonStyle(.bordered).controlSize(.mini)
-                            Button("Remove") { state.removeMITMCA() }
+                            Button("Remove") { confirmingRemoveCA = true }
                                 .buttonStyle(.bordered).controlSize(.mini)
                                 .foregroundStyle(.red)
                         }
@@ -2484,11 +2573,20 @@ struct PrivacyView: View {
             .padding(12)
         }
         .sheet(isPresented: $showWizard) {
+            // Same rule as the first-launch wizard: don't flip onboarded
+            // on dismissal. The wizard persists the flag itself when the
+            // user finishes. (Fixed asymmetrically in bcf7095 — this
+            // duplicate site was missed in that pass.)
             OnboardingView(isPresented: $showWizard)
                 .environmentObject(state)
-                .onDisappear {
-                    UserDefaults.standard.set(true, forKey: "proxymate.onboarded")
-                }
+        }
+        .confirmationDialog("Remove Proxymate Root CA?",
+                            isPresented: $confirmingRemoveCA,
+                            titleVisibility: .visible) {
+            Button("Remove", role: .destructive) { state.removeMITMCA() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("HTTPS inspection will stop working until you install a new CA. Existing leaf cert caches are purged.")
         }
     }
 
