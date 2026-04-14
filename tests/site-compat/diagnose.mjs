@@ -152,7 +152,20 @@ try {
 
 const runEndMs = Date.now();
 
-await page.screenshot({ path: resolve(reportDir, 'screenshot.png'), fullPage: true });
+// Screenshot is best-effort. Sites with slow / blocking web fonts can
+// hang Playwright's 'waiting for fonts to load' preamble past its own
+// internal timeout and throw. We'd rather write a report without image
+// than crash before report.json lands on disk.
+try {
+  await page.screenshot({ path: resolve(reportDir, 'screenshot.png'), fullPage: true, timeout: 8000 });
+} catch (e) {
+  try {
+    // Fallback: viewport-only, no fullPage font wait
+    await page.screenshot({ path: resolve(reportDir, 'screenshot.png'), timeout: 5000 });
+  } catch {
+    // give up on image — report.json is the thing that matters
+  }
+}
 await browser.close();
 
 const hostsFailed = new Set();
