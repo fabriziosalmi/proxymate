@@ -51,11 +51,18 @@ const pageErrors = [];
 const responses = [];
 
 page.on('requestfailed', (req) => {
+  const errText = req.failure()?.errorText || 'unknown';
+  // net::ERR_ABORTED on fetch/xhr is almost always the page cancelling its
+  // own deferred hovercard/prefetch requests during navigation — not a
+  // real network failure. Record but flag as benign for exit-code purposes.
+  const benign = errText === 'net::ERR_ABORTED' &&
+    ['fetch', 'xhr'].includes(req.resourceType());
   failures.push({
     url: req.url(),
     method: req.method(),
     resourceType: req.resourceType(),
-    failure: req.failure()?.errorText || 'unknown',
+    failure: errText,
+    benign,
   });
 });
 
@@ -141,7 +148,8 @@ console.log(`target    ${targetUrl}`);
 console.log(`browser   ${browserKind}`);
 console.log(`report    ${reportDir}`);
 console.log(line);
-console.log(`failed requests      ${failures.length}`);
+const benignCount = failures.filter(f => f.benign).length;
+console.log(`failed requests      ${failures.length} (${benignCount} benign, ${failures.length - benignCount} real)`);
 console.log(`console errors       ${consoleErrors.length}`);
 console.log(`page errors          ${pageErrors.length}`);
 console.log(`non-2xx responses    ${responses.length}`);
@@ -157,4 +165,8 @@ if (navError) {
   console.log(`\nnav error: ${navError}`);
 }
 
-process.exit(signals.length || failures.length ? 1 : 0);
+// Exit non-zero only if we have actionable signal: classified pattern,
+// page-level errors, or at least one non-benign network failure. Plain
+// ERR_ABORTED hovercards alone don't make a site "broken".
+const realFailures = failures.filter(f => !f.benign).length;
+process.exit(signals.length || pageErrors.length || realFailures ? 1 : 0);
