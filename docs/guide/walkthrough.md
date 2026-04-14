@@ -34,16 +34,16 @@ The tap lives at [github.com/fabriziosalmi/homebrew-proxymate](https://github.co
 ### Direct DMG
 
 ```bash
-curl -LO https://github.com/fabriziosalmi/proxymate/releases/latest/download/Proxymate-0.9.50.dmg
-shasum -a 256 Proxymate-0.9.50.dmg
-# expected: db313cc0e7757cab97f79517c73304c3dd608f6794e0cb96572e2e499ad475e6
+curl -LO https://github.com/fabriziosalmi/proxymate/releases/latest/download/Proxymate-0.9.51.dmg
+shasum -a 256 Proxymate-0.9.51.dmg
+# expected: db11e2499397453035a88587032df7355a562e60cd3f9220476de7caabc47f6a
 ```
 
-Verify the SHA before mounting. The release page publishes the same hash in `Proxymate-0.9.50.dmg.sha256`. Because the DMG is notarized and stapled, `spctl` accepts it without a network round-trip:
+Verify the SHA before mounting. The release page publishes the same hash in `Proxymate-0.9.51.dmg.sha256`. Because the DMG is notarized and stapled, `spctl` accepts it without a network round-trip:
 
 ```bash
-spctl -a -t open --context context:primary-signature Proxymate-0.9.50.dmg
-# /path/to/Proxymate-0.9.50.dmg: accepted
+spctl -a -t open --context context:primary-signature Proxymate-0.9.51.dmg
+# /path/to/Proxymate-0.9.51.dmg: accepted
 ```
 
 Mount, drag `Proxymate.app` to `/Applications`, eject. The first launch is silent — no Gatekeeper dialog, no right-click-then-Open workaround.

@@ -22,16 +22,40 @@ Fix: batched both networksetup transactions into a single shell that's run by on
 
 Net effect: Enable = 1 prompt regardless of PAC. Disable = 1 prompt regardless of PAC. Wake/path-change = 0 prompts (idempotent skip on the synthetic config still works).
 
-### Bonus: scripts/diagnose.sh
+### Bonus: scripts/diagnose.sh v2
 
-A single-pass health snapshot script added in commit `68c2ce4` (just before this release). Eight sections — versions, process, listeners, system proxy, CA state, last 30 log lines, live forward test, settings sizes — for when something looks off and we need a fast triage. Tester sessions now begin with `./scripts/diagnose.sh` and skip three round-trips of "what does `scutil --proxy` show?".
+The triage tool added at the end of the 0.9.50 cycle is now exhaustive — 19 sections, OK/WARN/FAIL verdict tags on every check, summary at the end with an exit code. Coverage:
+
+1. Environment (macOS, arch, kernel, uptime)
+2. Process (PID, RSS, fd count, build identity)
+3. Code signature (codesign --strict, spctl, stapler ticket)
+4. Entitlements (every required key)
+5. Listeners + sidecar port conflict scan
+6. System proxy state (with explicit detection of the NWPathMonitor hijack signature)
+7. Sidecar process tree with parent-PID validation
+8. Root CA on disk (perms + encryption envelope + expiry days)
+9. Root CA in keychain (system + login + trust verdict)
+10. Keychain passphrases (presence only — never values)
+11. UserDefaults size snapshot for every settings key
+12. Persistent log entry counts by level + last 50 lines
+13. Live forward test (HTTP, HTTPS CONNECT, POST body integrity)
+14. DoH endpoint reachability (if enabled)
+15. Active network interfaces with IP
+16. Recent crash reports (last 7 days)
+17. OSLog errors filtered to proxymate (last 1h)
+18. Bundled sidecar binary signatures
+19. Memory pressure event history
+
+Each verdict is a grep-friendly token (`[OK]`, `[WARN]`, `[FAIL]`, `[SKIP]`); the script exits 0 when clean, 1 on warnings, 2 on hard failures so it slots into CI or a launchd healthcheck without further parsing.
+
+Self-test on this release found the new release's binary clean. On the bug it surfaces (the system-proxy hijack), the diagnose now prints the exact `[FAIL]` line referencing the hijack and naming this release as the fix.
 
 ### Artifact
 
 ```
 File:    Proxymate-0.9.51.dmg
 Size:    64 MB
-SHA-256: <filled in after notarize>
+SHA-256: db11e2499397453035a88587032df7355a562e60cd3f9220476de7caabc47f6a
 Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
 Notary:  Accepted, stapled, spctl-verified
 ```
