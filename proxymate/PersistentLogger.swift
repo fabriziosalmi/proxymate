@@ -61,6 +61,14 @@ nonisolated final class PersistentLogger: @unchecked Sendable {
         }
     }
 
+    /// Force-flush any buffered entries synchronously. Called from
+    /// applicationWillTerminate so the last few log lines before quit
+    /// reach disk — under normal operation the 0.5s timer covers this,
+    /// but a quit within the tick window would drop them.
+    func flushNow() {
+        queue.sync { self.flushBuffer() }
+    }
+
     private func flushBuffer() {
         // Must be called on self.queue
         guard !buffer.isEmpty else { return }

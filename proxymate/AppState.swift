@@ -241,6 +241,12 @@ final class AppState: ObservableObject {
 
     deinit {
         statsTickTimer?.invalidate()
+        // DispatchSources must be cancelled before release, otherwise
+        // pending events can fire after the handler's self goes away.
+        // Singleton in practice — but defensive if a future refactor adds
+        // a non-singleton instance path (tests, preview, etc.).
+        memoryPressureSource?.cancel()
+        blacklistTimer?.invalidate()
     }
 
     // MARK: - Selection
@@ -254,6 +260,13 @@ final class AppState: ObservableObject {
         selectedProxyID = id
         save()
         if isEnabled, let p = selectedProxy, let port = UInt16(exactly: p.port) {
+            // Mirror the logic from enable(): if the new upstream points at
+            // a bundled sidecar (127.0.0.1:3128 Squid), make sure it's
+            // running before we forward requests to it. Without this, a
+            // user switching from an external proxy to "Local Squid" while
+            // enabled would see every request 502 until they toggled off
+            // and back on.
+            ensureLocalSidecarForUpstream(host: p.host, port: port)
             localProxy.updateUpstream(.init(host: p.host, port: port))
             log(.info, "Switched upstream to \(p.name)")
         }

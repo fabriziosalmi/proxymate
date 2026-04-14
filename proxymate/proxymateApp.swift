@@ -145,19 +145,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MITMProxySidecar.shared.stop()
         SquidSidecar.shared.stop()
 
+        // Flush any log entries still buffered (the 0.5s timer covers
+        // normal operation, but a quit within that tick would drop the
+        // last few lines — exactly the lines a tester would want when
+        // the quit was itself suspect).
+        PersistentLogger.shared.flushNow()
+
         if UserDefaults.standard.bool(forKey: "proxymate.wasEnabled") {
             UserDefaults.standard.set(false, forKey: "proxymate.wasEnabled")
             // Run cleanup on a detached Task (NOT the main actor) so async
             // hops inside ProxyManager.disable()/PACServer.clearSystemPAC()
             // don't deadlock waiting for the main thread that's blocked on
             // the semaphore below.
+            //
+            // Timeout was 3 s originally; bumped to 8 s because both calls
+            // shell out to networksetup via osascript under the admin
+            // privilege prompt pathway. On a cold run where
+            // SystemConfiguration sockets are slow to respond (wake-from-
+            // sleep quit, authenticated dialog stall), 3 s wasn't enough
+            // and the app exited with system proxy still pointing at a
+            // listener that was about to vanish — leaving the user with
+            // a stale config that breaks the network until manual reset.
             let sem = DispatchSemaphore(value: 0)
             Task.detached(priority: .userInitiated) {
                 try? await ProxyManager.disable()
                 try? await PACServer.clearSystemPAC()
                 sem.signal()
             }
-            _ = sem.wait(timeout: .now() + 3)
+            _ = sem.wait(timeout: .now() + 8)
         }
     }
 }

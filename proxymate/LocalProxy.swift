@@ -134,6 +134,12 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             self.listener?.cancel()
             self.listener = nil
             self.upstream = nil
+            // Drain in-flight sessions: each finish() cancels its connections
+            // and its own 5-minute cleanup timer would otherwise eventually
+            // do this — but without explicit cleanup here, an enable/disable/
+            // re-enable cycle stacks zombies for up to 5 minutes each round.
+            for session in self.activeSessions.values { session.finish() }
+            self.activeSessions.removeAll()
             MITMProxySidecar.shared.stop()
             self.onEvent?(.stopped)
         }
