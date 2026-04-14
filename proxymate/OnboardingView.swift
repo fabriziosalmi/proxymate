@@ -95,17 +95,32 @@ struct OnboardingView: View {
                 if step > 0 {
                     Button("Back") { step -= 1 }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .accessibilityLabel("Go back to previous step")
+                } else {
+                    // On the first step, "Back" becomes "Skip" — closes the
+                    // wizard without applying settings but KEEPS the user
+                    // un-onboarded so it re-appears on next launch. That
+                    // way someone who accidentally opens the wizard doesn't
+                    // commit to anything yet — the previous behaviour of
+                    // cmd-W dismissing silently marked them done forever.
+                    Button("Skip for now") { isPresented = false }
+                        .buttonStyle(.plain).foregroundStyle(.tertiary)
+                        .accessibilityLabel("Skip the wizard — it will re-appear next launch")
                 }
                 Spacer()
                 if step < totalSteps - 1 {
                     Button("Next") { step += 1 }
                         .buttonStyle(.borderedProminent).controlSize(.small)
                         .disabled(!canAdvance)
+                        .accessibilityLabel("Go to next step")
                 } else {
                     Button(enableOnFinish ? "Finish & Enable" : "Finish") {
                         applyAndDismiss()
                     }
                     .buttonStyle(.borderedProminent).controlSize(.small)
+                    .accessibilityLabel(enableOnFinish
+                        ? "Finish setup and enable the proxy"
+                        : "Finish setup without enabling")
                 }
             }
             .padding(16)
@@ -145,8 +160,22 @@ struct OnboardingView: View {
                                        in: RoundedRectangle(cornerRadius: 6))
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("\(profile.rawValue) profile")
+                        .accessibilityHint(profile.subtitle)
+                        .accessibilityAddTraits(selectedProfile == profile ? [.isSelected] : [])
                     }
                 }
+            }
+            if selectedProfile == .minimal {
+                // Flag the empty-starting-state explicitly so users who pick
+                // Minimal don't reach the summary wondering why nothing is
+                // toggled on. They can still enable pieces manually afterwards.
+                Label("No blacklists, no privacy actions, no cache — you configure everything manually.",
+                      systemImage: "info.circle")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, 20).padding(.top, 8)
@@ -213,6 +242,11 @@ struct OnboardingView: View {
 
             Slider(value: $privacyLevel, in: 0...2, step: 1)
                 .padding(.horizontal, 20)
+                .accessibilityLabel("Privacy level")
+                .accessibilityValue(
+                    privacyLevel >= 2 ? "Maximum"
+                    : privacyLevel >= 1 ? "Moderate"
+                    : "Minimal")
 
             HStack {
                 Text("Minimal").font(.caption2).foregroundStyle(.secondary)
