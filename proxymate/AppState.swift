@@ -266,6 +266,13 @@ final class AppState: ObservableObject {
         isBusy = true
         defer { isBusy = false }
 
+        // If the selected upstream is one of the bundled sidecars (Local Squid
+        // on 3128, Local mitmproxy on 8080), make sure the sidecar is running
+        // before we forward to it. Otherwise a fresh install with the default
+        // "Local Squid" selection would answer every request with 502
+        // because nothing is listening on 3128.
+        ensureLocalSidecarForUpstream(host: proxy.host, port: upstreamPort)
+
         let port: UInt16
         do {
             port = try await startLocalProxy(
@@ -310,6 +317,28 @@ final class AppState: ObservableObject {
 
     private let socks5Listener = SOCKS5Listener()
 
+    /// Best-effort auto-launch of a bundled sidecar when the user picks an
+    /// upstream that points at it. Squid on :3128, mitmproxy on :8080 —
+    /// these are the defaults seeded at first run. If the port is already
+    /// bound (user has their own Squid via brew, or mitmproxy running in a
+    /// terminal) SquidSidecar.start returns the existing port silently
+    /// instead of competing for the bind. Any start error is logged, not
+    /// fatal: the enable continues and the user gets 502 responses if the
+    /// upstream is truly unreachable — which is still better than a silent
+    /// failure with no diagnostics.
+    private func ensureLocalSidecarForUpstream(host: String, port: UInt16) {
+        guard host == "127.0.0.1" || host == "::1" || host == "localhost" else { return }
+        if port == 3128 {
+            do {
+                _ = try SquidSidecar.shared.start(listenPort: port)
+            } catch {
+                log(.warn, "Local Squid sidecar not started: \(error.localizedDescription) — upstream must be reachable by other means")
+            }
+        }
+        // Local mitmproxy on :8080 is started inside LocalProxy.start when
+        // MITM is enabled; no extra bootstrap here to avoid double-launches.
+    }
+
     private func startSOCKS5() {
         guard socks5Settings.port > 0 && socks5Settings.port <= 65535 else {
             log(.error, "Invalid SOCKS5 port: \(socks5Settings.port)")
@@ -333,6 +362,10 @@ final class AppState: ObservableObject {
         socks5Listener.stop()
         PACServer.shared.stop()
         ConnectionPool.shared.drain()
+        // Tear down the auto-started Squid sidecar if it was ours. If a
+        // user-managed Squid was reused, stop() is a no-op on the foreign
+        // process — SquidSidecar only kills processes it spawned.
+        SquidSidecar.shared.stop()
         if pacSettings.enabled {
             Task { try? await PACServer.clearSystemPAC() }
         }

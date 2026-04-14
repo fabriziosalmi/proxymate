@@ -65,11 +65,13 @@ struct ContentView: View {
                  : "Are you sure you want to quit?")
         }
         .sheet(isPresented: $showOnboarding) {
+            // Do NOT flip the onboarded flag on onDisappear — dismissing via
+            // ESC / clicking outside / closing the window would permanently
+            // skip the wizard without applying any settings. The wizard marks
+            // itself completed only from applyAndDismiss() after the user
+            // actually clicks Finish.
             OnboardingView(isPresented: $showOnboarding)
                 .environmentObject(state)
-                .onDisappear {
-                    UserDefaults.standard.set(true, forKey: "proxymate.onboarded")
-                }
         }
     }
 

@@ -61,6 +61,7 @@ struct OnboardingView: View {
     }
 
     @State private var certInstalled = false
+    @State private var enableOnFinish = true
     private let totalSteps = 6
 
     var body: some View {
@@ -99,9 +100,12 @@ struct OnboardingView: View {
                 if step < totalSteps - 1 {
                     Button("Next") { step += 1 }
                         .buttonStyle(.borderedProminent).controlSize(.small)
+                        .disabled(!canAdvance)
                 } else {
-                    Button("Start Proxying") { applyAndDismiss() }
-                        .buttonStyle(.borderedProminent).controlSize(.small)
+                    Button(enableOnFinish ? "Finish & Enable" : "Finish") {
+                        applyAndDismiss()
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
                 }
             }
             .padding(16)
@@ -154,7 +158,8 @@ struct OnboardingView: View {
         VStack(spacing: 14) {
             Image(systemName: "network").font(.title2).foregroundStyle(.blue)
             Text("Upstream Proxy").font(.headline)
-            Text("Do you have an existing proxy server?").font(.caption).foregroundStyle(.secondary)
+            Text("Do you have an existing proxy server you want to route through?")
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
 
             Toggle("I have an upstream proxy", isOn: $hasUpstream)
                 .font(.caption).toggleStyle(.switch).controlSize(.small)
@@ -163,17 +168,40 @@ struct OnboardingView: View {
                 HStack {
                     TextField("Host (e.g. 127.0.0.1)", text: $proxyHost)
                         .textFieldStyle(.roundedBorder).font(.caption)
+                        .onChange(of: proxyHost) { _, new in
+                            // Mild auto-clean: strip whitespace so the validator
+                            // doesn't lock users out because of a trailing space
+                            // from copy/paste.
+                            let trimmed = new.trimmingCharacters(in: .whitespaces)
+                            if trimmed != new { proxyHost = trimmed }
+                        }
                     TextField("Port", text: $proxyPort)
                         .textFieldStyle(.roundedBorder).font(.caption).frame(width: 60)
                 }
+                if !canAdvance {
+                    Label(hostPortHint, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
             } else {
-                Text("Proxymate will work in direct mode with its local proxy for WAF, privacy, and caching.")
+                Text("Proxymate will use the bundled local proxies (Squid / mitmproxy) so the WAF, privacy, and caching still run. You can always point at a different upstream later.")
                     .font(.caption2).foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
             }
             Spacer()
         }
         .padding(.horizontal, 20).padding(.top, 16)
+    }
+
+    /// Short user-facing hint shown below the Step-2 inputs when they don't
+    /// pass validation. Kept terse — the full rule set is elsewhere.
+    private var hostPortHint: String {
+        let host = proxyHost.trimmingCharacters(in: .whitespaces)
+        if host.isEmpty { return "Host cannot be empty" }
+        if !isValidProxyHost(host) { return "Host contains invalid characters" }
+        if Int(proxyPort).map({ !(1...65535).contains($0) }) ?? true {
+            return "Port must be 1–65535"
+        }
+        return ""
     }
 
     // MARK: - Step 3: Privacy
@@ -255,39 +283,115 @@ struct OnboardingView: View {
 
     // MARK: - Step 5: Certificate (#37)
 
+    @State private var certInstalling = false
+    @State private var certTrusted = false
+    @State private var certError: String?
+
     private var stepCertificate: some View {
         VStack(spacing: 14) {
             Image(systemName: "lock.shield.fill")
                 .font(.title2).foregroundStyle(.orange)
             Text("HTTPS Inspection").font(.headline)
-            Text("To inspect encrypted HTTPS traffic (TLS interception), Proxymate needs to install a local CA certificate. Your admin password will be requested once.")
+            Text("To inspect encrypted HTTPS traffic, Proxymate needs to install a local root CA. Your admin password will be requested once to add it to the system keychain.")
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .padding(.horizontal)
 
-            if certInstalled || TLSManager.shared.isCAInstalled {
-                Label("Certificate installed", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green).font(.caption)
-            } else {
-                Button("Install Certificate") {
-                    Task {
-                        do {
-                            _ = try TLSManager.shared.generateCA()
-                            TLSManager.shared.promptUserToTrust()
-                            certInstalled = true
-                        } catch {
-                            // Will be logged by TLSManager
-                        }
+            Group {
+                if certTrusted {
+                    Label("Certificate installed & trusted", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green).font(.caption)
+                } else if certInstalled {
+                    // Keys + cert generated but system trust pending (user hasn't
+                    // entered admin password yet, or cancelled the dialog).
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Waiting for trust confirmation…").font(.caption).foregroundStyle(.secondary)
                     }
+                } else if certInstalling {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Generating certificate…").font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button("Install Certificate") { installCertificate() }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
                 }
-                .buttonStyle(.borderedProminent).controlSize(.small)
             }
 
-            Text("This is optional — HTTP-only monitoring works without it. You can always set this up later in Settings.")
+            if let err = certError {
+                Label(err, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2).foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+            }
+
+            Text("Optional — HTTP-only monitoring works without it. You can always set this up later in Settings.")
                 .font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center)
                 .padding(.horizontal)
             Spacer()
         }
         .padding(.horizontal, 20).padding(.top, 16)
+        .task {
+            // If the CA exists from a previous run, don't pretend trust is
+            // settled until we've actually verified it via SecTrust. This
+            // prevents stale "installed" checkmarks when a user regenerates
+            // the CA without re-trusting.
+            refreshCertState()
+        }
+    }
+
+    private func installCertificate() {
+        certError = nil
+        certInstalling = true
+        Task {
+            // Generate CA file on a background queue — openssl subprocess is
+            // blocking, we don't want to stall the UI.
+            do {
+                _ = try await Task.detached {
+                    try TLSManager.shared.generateCA()
+                }.value
+                await MainActor.run {
+                    certInstalling = false
+                    certInstalled = true
+                }
+                // Kick off the privileged trust install. promptUserToTrust
+                // spawns its own Task; we poll for completion rather than
+                // trying to bridge its result directly.
+                TLSManager.shared.promptUserToTrust()
+                await pollForTrust()
+            } catch {
+                await MainActor.run {
+                    certInstalling = false
+                    certError = "Could not generate certificate — check logs."
+                }
+            }
+        }
+    }
+
+    /// Polls SecTrustEvaluate every 500 ms for up to 15 s. Succeeds as soon
+    /// as the system keychain reports the CA as trusted (i.e. the user
+    /// entered their admin password). Gives up silently after the timeout
+    /// so a cancelled or ignored prompt doesn't spin forever.
+    private func pollForTrust() async {
+        for _ in 0..<30 {
+            try? await Task.sleep(for: .milliseconds(500))
+            if await Task.detached(priority: .utility, operation: {
+                TLSManager.shared.isCATrusted()
+            }).value {
+                await MainActor.run { certTrusted = true }
+                return
+            }
+        }
+        await MainActor.run {
+            certError = "Admin prompt was cancelled or timed out. Install can be retried from Settings."
+            certInstalled = false
+        }
+    }
+
+    private func refreshCertState() {
+        let installed = TLSManager.shared.isCAInstalled
+        let trusted = installed && TLSManager.shared.isCATrusted()
+        certInstalled = installed
+        certTrusted = trusted
     }
 
     // MARK: - Step 6: Summary
@@ -308,6 +412,16 @@ struct OnboardingView: View {
             .padding(12)
             .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
 
+            Toggle(isOn: $enableOnFinish) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Enable the proxy now").font(.caption.weight(.medium))
+                    Text("Asks for admin password to configure system proxy.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch).controlSize(.small)
+            .padding(.horizontal, 4)
+
             Text("You can change everything later in the app settings.")
                 .font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center)
             Spacer()
@@ -321,6 +435,35 @@ struct OnboardingView: View {
             Spacer()
             Text(value).font(.caption.weight(.medium))
         }
+    }
+
+    // MARK: - Per-step gating
+
+    /// Whether the Next button should be enabled for the current step.
+    /// Step 1 (proxy) is the only one that can be put into an invalid state
+    /// — everything else either has no input or has a sane default.
+    private var canAdvance: Bool {
+        switch step {
+        case 1:
+            if !hasUpstream { return true }
+            let host = proxyHost.trimmingCharacters(in: .whitespaces)
+            guard !host.isEmpty, isValidProxyHost(host) else { return false }
+            guard let p = Int(proxyPort), (1...65535).contains(p) else { return false }
+            return true
+        default:
+            return true
+        }
+    }
+
+    /// Conservative hostname/IP validator mirroring ProxyManager.validate().
+    /// Rejects every shell metacharacter — whitespace, quotes, backticks,
+    /// semicolons — so an invalid upstream can't reach the privileged shell
+    /// at the other end.
+    private func isValidProxyHost(_ s: String) -> Bool {
+        guard !s.isEmpty, s.count <= 253 else { return false }
+        let allowed = CharacterSet(charactersIn:
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:")
+        return s.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
 
     // MARK: - Apply
@@ -382,7 +525,19 @@ struct OnboardingView: View {
 
         state.loadExampleRules()
         state.log(.info, "Onboarding complete: \(selectedProfile.rawValue) profile")
+        // Persist the completion flag here, inside applyAndDismiss, so a
+        // premature sheet dismissal (ESC, click outside, window close) never
+        // marks the user as onboarded when no settings were actually applied.
+        UserDefaults.standard.set(true, forKey: "proxymate.onboarded")
         isPresented = false
+
+        // Optional: auto-enable the proxy once settings are committed so the
+        // user lands in a running state. The admin dialog will appear for the
+        // `networksetup` call; that behaviour is called out on the summary
+        // screen's toggle label.
+        if enableOnFinish {
+            Task { await state.enable() }
+        }
     }
 }
 
