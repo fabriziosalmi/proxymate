@@ -25,7 +25,7 @@ Per-browser CA trust matrix (Safari auto, Chromium via system keychain, Firefox 
 ```
 File:    Proxymate-0.9.53.dmg
 Size:    64 MB
-SHA-256: __SHA__
+SHA-256: b185708c366bbfbfa3e6b777a3466450f283ee5e63cfa4df73ad7048368fd9b7
 Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
 Notary:  Accepted, stapled, spctl-verified
 ```
