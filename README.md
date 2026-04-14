@@ -32,10 +32,10 @@ brew install --cask proxymate
 
 ### DMG
 
-Download `Proxymate-0.9.54.dmg` from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest), verify the hash, and drag the app into `/Applications`:
+Download `Proxymate-0.9.55.dmg` from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest), verify the hash, and drag the app into `/Applications`:
 
 ```bash
-shasum -a 256 ~/Downloads/Proxymate-0.9.54.dmg
+shasum -a 256 ~/Downloads/Proxymate-0.9.55.dmg
 # 6670f2d66ad5e50bb84d79c6a41a4bb03abcf6185613a21be0b845fbda81b8c8
 ```
 

@@ -81,6 +81,20 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
                 "--ssl-insecure",  // don't verify upstream (Squid) certs
                 "--set", "connection_strategy=lazy",
                 "--set", "flow_detail=0",
+                // Disable HTTP/2. With H/2 enabled downstream, browsers (Firefox
+                // in particular, per Bugzilla 1420777) coalesce connections
+                // across different hosts that share IPs / wildcard certs —
+                // e.g. github.com + github.githubassets.com on Fastly, or
+                // www.linkedin.com + static.licdn.com. The browser then sends
+                // subresource requests with an :authority that doesn't match
+                // the stream's origin, mitmproxy resets the stream, and the
+                // browser surfaces the failure as "CORS request failed,
+                // status=(null)" on <script type="module" crossorigin>.
+                // Forcing H/1.1 downstream means browsers open separate
+                // connections per host, which eliminates coalescing entirely.
+                // The upstream leg (mitmproxy → Squid) is already H/1.1, so
+                // there's no protocol downgrade on that side.
+                "--set", "http2=false",
                 "--quiet",
             ]
             if let addon = addonPath {

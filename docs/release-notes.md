@@ -1,5 +1,33 @@
 # Release notes
 
+## 0.9.55 — disable HTTP/2 downstream to stop browser connection coalescing
+
+*Released 2026-04-14*
+
+Finishes the MITM reliability work started in 0.9.54. The Alt-Svc strip closed the QUIC bypass; this closes the HTTP/2 coalescing hole that was breaking GitHub, LinkedIn, and any site whose assets live on a sibling CDN host under the same edge.
+
+### The mechanism
+
+Browsers — Firefox most aggressively ([Bugzilla 1420777](https://bugzilla.mozilla.org/show_bug.cgi?id=1420777)) — reuse a single HTTP/2 connection across different hosts that resolve to the same IP and are covered by a compatible certificate. `github.com` + `github.githubassets.com` (Fastly), `www.linkedin.com` + `static.licdn.com`. When mitm is in the middle the per-host leaf certs should break the heuristic, but Firefox bases it partly on destination IP and coalesces anyway. The browser then sends subresource requests with an `:authority` that doesn't match the stream's SNI, mitmproxy treats that as a protocol violation and resets the stream, and everything surfaces as `CORS request failed. Status code: (null)` on `<script type="module" crossorigin>` tags. Invisible in the Logs tab because no flow ever completes.
+
+### The fix
+
+`--set http2=false` passed to mitmdump. Browser ↔ mitm traffic falls back to HTTP/1.1 which has no coalescing — one connection per host, no `:authority` mismatch. The upstream leg (mitm → Squid) was already HTTP/1.1 so there is no protocol downgrade on that side.
+
+Cost: a few extra TCP connections to the loopback port. On localhost this is free.
+
+Reference: [mitmproxy #7191 — HTTP/2 fails, HTTP/1.1 works](https://github.com/mitmproxy/mitmproxy/discussions/7191) documents the same pattern from the other direction.
+
+### Artifact
+
+```
+File:    Proxymate-0.9.55.dmg
+Size:    64 MB
+SHA-256: __SHA__
+Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
+Notary:  Accepted, stapled, spctl-verified
+```
+
 ## 0.9.54 — strip Alt-Svc to keep browsers on HTTP/2 inside the MITM tunnel
 
 *Released 2026-04-14*

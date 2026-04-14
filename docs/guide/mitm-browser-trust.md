@@ -11,6 +11,16 @@ When MITM is enabled and you've installed Proxymate's root CA into the macOS sys
 | Firefox | No (independent root store) | Import the CA into Firefox preferences |
 | App-level pinned (Signal, WhatsApp, banking) | N/A — pinning bypasses CA trust entirely | Add to MITM exclude list (auto-detected after 3 failed handshakes) |
 
+## Why HTTP/2 downstream is disabled (browser ↔ mitm)
+
+HTTP/2 allows a browser to reuse one connection for multiple hosts that share an IP and a compatible certificate — this is called **connection coalescing**. Firefox in particular ([Bugzilla 1420777](https://bugzilla.mozilla.org/show_bug.cgi?id=1420777)) is aggressive about this: `github.com` and `github.githubassets.com` both resolve to Fastly, share a wildcard cert, and the browser sends requests for both hosts down the same HTTP/2 stream. Same for `www.linkedin.com` + `static.licdn.com`.
+
+When mitmproxy sits in the middle, it issues per-host leaf certificates — so the browser's coalescing heuristic *shouldn't* trigger. In practice it still does, because Firefox also bases the decision on the destination IP. The browser then sends subresource requests with an `:authority` header that doesn't match the stream's TLS SNI, mitmproxy treats the mismatch as a protocol violation and resets the stream, and the browser surfaces the reset as `CORS request failed. Status code: (null)` on the affected `<script type="module" crossorigin>` tags.
+
+Proxymate works around this by passing `--set http2=false` to mitmdump, which forces the browser-facing side to HTTP/1.1. HTTP/1.1 has no coalescing — each host gets its own connection — and the issue disappears. The upstream leg (mitmproxy → Squid) is already HTTP/1.1 for independent reasons, so there is no protocol downgrade on that side.
+
+Cost: marginally more TCP connections from the browser to the loopback mitm port. On localhost this is free. The tradeoff is favourable for every site that uses multi-host CDN coalescing (most modern large sites).
+
 ## Why HTTP/3 (QUIC) is stripped, not supported
 
 macOS system proxies (`networksetup -setwebproxy` / `-setsecurewebproxy`) only proxy **TCP**. UDP — which is what HTTP/3 / QUIC rides on — has no system-level proxy hook. If the browser successfully opens a QUIC connection to an origin on UDP/443, it bypasses Proxymate entirely: no TLS interception, no WAF inspection, no logging.
