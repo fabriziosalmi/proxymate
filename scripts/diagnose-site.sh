@@ -16,12 +16,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 TESTS_DIR="${PROJECT_DIR}/tests/site-compat"
 
-# Resolve Proxymate listener port from scutil --proxy
-PORT="$(scutil --proxy | awk '/HTTPSPort/ {print $3; exit}')"
-if [[ -z "${PORT}" || "${PORT}" == "0" ]]; then
-    echo "Proxymate doesn't appear to be the active system proxy."
-    echo "Enable it from the menu-bar before running this script."
-    exit 2
+# Resolve Proxymate listener port from scutil --proxy (skip if --no-proxy)
+PORT=""
+if ! printf '%s\n' "$@" | grep -qx -- '--no-proxy'; then
+    PORT="$(scutil --proxy | awk '/HTTPSPort/ {print $3; exit}')"
+    if [[ -z "${PORT}" || "${PORT}" == "0" ]]; then
+        echo "Proxymate doesn't appear to be the active system proxy."
+        echo "Enable it from the menu-bar, or pass --no-proxy for baseline mode."
+        exit 2
+    fi
 fi
 
 cd "${TESTS_DIR}"
@@ -33,17 +36,45 @@ if [[ ! -d node_modules/playwright ]]; then
     npx playwright install chromium firefox
 fi
 
-export PROXYMATE_PORT="${PORT}"
+[[ -n "${PORT}" ]] && export PROXYMATE_PORT="${PORT}"
 export PROXYMATE_CA_PATH="${HOME}/Library/Application Support/Proxymate/ca/ca.pem"
+export PROXYMATE_LOG_DIR="${HOME}/Library/Application Support/Proxymate/logs"
 
 case "${1:-}" in
     --suite)
-        BROWSER="${2:-chromium}"
-        exec node suite.mjs "${BROWSER}"
+        shift
+        exec node suite.mjs "$@"
+        ;;
+    --compare)
+        shift
+        exec node compare.mjs "$@"
         ;;
     ""|-h|--help)
-        echo "Usage: $0 <url> [chromium|firefox] [label]"
-        echo "       $0 --suite [chromium|firefox]"
+        cat <<EOF
+Proxymate site-compat diagnostic
+
+Single URL:
+  $0 <url> [--browser chromium|firefox] [--label tag]
+  $0 <url> --no-proxy                        # baseline without proxy
+  $0 <url> --mitm on|off                     # tag run by MITM state
+
+Suite (runs all of sites.json):
+  $0 --suite [--browser ...] [--no-proxy] [--mitm on|off]
+
+Compare latest runs across modes:
+  $0 --compare <modeA> <modeB>
+  e.g. $0 --compare direct proxy-mitm-on
+       $0 --compare proxy-mitm-off proxy-mitm-on
+
+Workflow to isolate a regression:
+  1. $0 --suite --no-proxy                   # baseline, MITM state irrelevant
+  2. Enable Proxymate + disable MITM
+     $0 --suite --mitm off
+  3. Enable MITM
+     $0 --suite --mitm on
+  4. $0 --compare direct proxy-mitm-on       # regressions caused by proxy+MITM
+     $0 --compare proxy-mitm-off proxy-mitm-on  # regressions caused by MITM alone
+EOF
         exit 2
         ;;
     *)

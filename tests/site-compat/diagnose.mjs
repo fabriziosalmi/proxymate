@@ -1,45 +1,68 @@
-// Diagnose a single URL via Playwright using Proxymate as upstream proxy.
+// Diagnose a single URL via Playwright, optionally routed through Proxymate.
 //
-// Usage:  node diagnose.mjs <url> [chromium|firefox] [label]
-// Env:    PROXYMATE_PORT (required), PROXYMATE_CA_PATH (optional, Firefox only)
+// Usage:
+//   node diagnose.mjs <url> [--browser chromium|firefox] [--label <tag>]
+//                          [--no-proxy] [--mitm on|off]
 //
-// Output: JSON + screenshot under ./reports/<label>/<timestamp>/
-// Stdout: human-readable summary + path to report dir
+// Env: PROXYMATE_PORT (required unless --no-proxy)
+//      PROXYMATE_LOG_DIR (default: ~/Library/Application Support/Proxymate/logs)
 //
-// Collects: failed requests, console errors, non-2xx responses, page errors.
-// Classifies bypass patterns (QUIC, ECH, pinning) from observed signal.
+// Output: JSON + screenshot under ./reports/<label>/<mode>/<timestamp>/
+//   where mode = "direct" | "proxy-mitm-on" | "proxy-mitm-off" | "proxy-mitm-unknown"
+//
+// Collects failures, console errors, page errors, non-2xx responses.
+// Correlates per-host failures with the Proxymate log in the same time
+// window to classify each failed host as BYPASS / PROXY_ERROR / BROWSER.
 
 import { chromium, firefox } from 'playwright';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
 import { URL } from 'node:url';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { homedir } from 'node:os';
 
-const [, , targetUrl, browserKind = 'chromium', labelArg] = process.argv;
+const rawArgs = process.argv.slice(2);
+const positional = [];
+const opts = {};
+for (let i = 0; i < rawArgs.length; i++) {
+  const a = rawArgs[i];
+  if (a === '--no-proxy') opts.noProxy = true;
+  else if (a.startsWith('--')) { opts[a.slice(2)] = rawArgs[i + 1]; i++; }
+  else positional.push(a);
+}
+const targetUrl = positional[0];
+const browserKind = opts.browser || 'chromium';
+const labelArg = opts.label || null;
+const noProxy = !!opts.noProxy;
+const mitmArg = opts.mitm || null;
+
 if (!targetUrl) {
-  console.error('usage: node diagnose.mjs <url> [chromium|firefox] [label]');
+  console.error('usage: node diagnose.mjs <url> [--browser chromium|firefox] [--label <tag>] [--no-proxy] [--mitm on|off]');
   process.exit(2);
 }
 
 const proxyPort = process.env.PROXYMATE_PORT;
-if (!proxyPort) {
-  console.error('PROXYMATE_PORT env var required (see scripts/diagnose-site.sh)');
+if (!noProxy && !proxyPort) {
+  console.error('PROXYMATE_PORT env var required (or pass --no-proxy for baseline)');
   process.exit(2);
 }
 
 const parsed = new URL(targetUrl);
 const label = labelArg || parsed.host.replace(/[^a-z0-9]+/gi, '-');
+const mode = noProxy ? 'direct' : `proxy-mitm-${mitmArg || 'unknown'}`;
 const ts = new Date().toISOString().replace(/[:.]/g, '-');
-const reportDir = resolve('./reports', label, ts);
+const reportDir = resolve('./reports', label, mode, ts);
 await mkdir(reportDir, { recursive: true });
+
+const runStartMs = Date.now();
 
 const launcher = browserKind === 'firefox' ? firefox : chromium;
 const browser = await launcher.launch({
-  proxy: { server: `http://127.0.0.1:${proxyPort}` },
+  proxy: noProxy ? undefined : { server: `http://127.0.0.1:${proxyPort}` },
   headless: true,
 });
 
 const context = await browser.newContext({
-  ignoreHTTPSErrors: true,  // let Playwright see failures even if our CA isn't in its trust store
+  ignoreHTTPSErrors: true,
   viewport: { width: 1400, height: 900 },
 });
 
@@ -49,12 +72,14 @@ const failures = [];
 const consoleErrors = [];
 const pageErrors = [];
 const responses = [];
+const hostsTouched = new Set();
+
+page.on('request', (req) => {
+  try { hostsTouched.add(new URL(req.url()).host); } catch {}
+});
 
 page.on('requestfailed', (req) => {
   const errText = req.failure()?.errorText || 'unknown';
-  // net::ERR_ABORTED on fetch/xhr is almost always the page cancelling its
-  // own deferred hovercard/prefetch requests during navigation — not a
-  // real network failure. Record but flag as benign for exit-code purposes.
   const benign = errText === 'net::ERR_ABORTED' &&
     ['fetch', 'xhr'].includes(req.resourceType());
   failures.push({
@@ -90,46 +115,132 @@ try {
   navError = String(e.message || e);
 }
 
-await page.screenshot({ path: resolve(reportDir, 'screenshot.png'), fullPage: true });
+const runEndMs = Date.now();
 
-const hostsRequested = new Set();
+await page.screenshot({ path: resolve(reportDir, 'screenshot.png'), fullPage: true });
+await browser.close();
+
 const hostsFailed = new Set();
 for (const f of failures) {
+  if (f.benign) continue;
   try { hostsFailed.add(new URL(f.url).host); } catch {}
 }
 
-// Heuristic classification
+// -----------------------------------------------------------------------
+// Proxymate log cross-reference
+//
+// Scan proxymate.log for lines within [runStart-2s, runEnd+5s]. For each
+// host the browser actually failed on, decide:
+//
+//   BYPASS       — host never seen in proxy log during window
+//                  (traffic went around the proxy: QUIC/HTTPS-RR/direct)
+//   PROXY_ERROR  — host seen with 4xx/5xx/handshake fail in proxy log
+//                  (proxy touched it but something broke upstream)
+//   BROWSER      — host seen with 2xx in proxy log — browser reported
+//                  failure anyway (SRI / CORS / SNI mismatch / coalescing)
+// -----------------------------------------------------------------------
+
+const hostClassification = {};
+const logDirEnv = process.env.PROXYMATE_LOG_DIR;
+const logDir = logDirEnv || join(homedir(), 'Library/Application Support/Proxymate/logs');
+const logFile = join(logDir, 'proxymate.log');
+
+let logHosts = null;
+try {
+  await stat(logFile);
+  const raw = await readFile(logFile, 'utf8');
+  const inWindow = [];
+  for (const line of raw.split('\n')) {
+    if (!line) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    const t = Date.parse(entry.timestamp);
+    if (!Number.isFinite(t)) continue;
+    // window = [runStart - 2s, runEnd + 5s]
+    if (t >= runStartMs - 2000 && t <= runEndMs + 5000) {
+      inWindow.push(entry);
+    }
+  }
+
+  // Build host → {seen, statuses} from "MITM response: host (code)" pattern
+  // plus any message that contains a known host substring.
+  logHosts = new Map();  // host -> { statuses: Set<int>, errors: Set<string> }
+  for (const entry of inWindow) {
+    const msg = entry.message || '';
+    let m = msg.match(/MITM response:\s+([a-z0-9.-]+)\s+\((\d+)\)/i);
+    if (m) {
+      const [, h, code] = m;
+      if (!logHosts.has(h)) logHosts.set(h, { statuses: new Set(), errors: new Set() });
+      logHosts.get(h).statuses.add(Number(code));
+      continue;
+    }
+    m = msg.match(/(tls|handshake|certificate|pinning).*?([a-z0-9-]+\.[a-z0-9.-]+)/i);
+    if (m) {
+      const h = m[2];
+      if (!logHosts.has(h)) logHosts.set(h, { statuses: new Set(), errors: new Set() });
+      logHosts.get(h).errors.add(msg.slice(0, 120));
+    }
+  }
+
+  for (const h of hostsFailed) {
+    const rec = logHosts.get(h);
+    if (!rec) {
+      hostClassification[h] = 'BYPASS';
+    } else if (rec.errors.size > 0 || [...rec.statuses].some(s => s >= 400)) {
+      hostClassification[h] = 'PROXY_ERROR';
+    } else {
+      hostClassification[h] = 'BROWSER';
+    }
+  }
+} catch {
+  // log unavailable (no_proxy mode or file missing) — leave classification empty
+}
+
+// Heuristic signals derived from failure mix
 const signals = [];
 const failureTexts = failures.map(f => f.failure.toLowerCase()).join(' ');
-if (/net::err_cert|unknown_ca|ssl_error/.test(failureTexts)) {
+if (/net::err_cert|unknown_ca|ssl_error|sec_error/.test(failureTexts)) {
   signals.push('CA_NOT_TRUSTED — browser does not trust Proxymate CA in this context');
 }
-if (failures.some(f => f.failure === 'net::ERR_EMPTY_RESPONSE' || f.failure === 'NS_ERROR_NET_RESET')) {
-  signals.push('CONNECTION_RESET — likely H/2 stream reset (coalescing) or pinning');
+if (failures.some(f => f.failure === 'net::ERR_EMPTY_RESPONSE' || f.failure === 'NS_ERROR_NET_RESET' || /http2_protocol_error/i.test(f.failure))) {
+  signals.push('CONNECTION_RESET — H/2 stream reset (coalescing) or pinning mid-handshake');
 }
 if (failures.some(f => /ERR_QUIC|quic/i.test(f.failure))) {
-  signals.push('QUIC_FAILURE — HTTP/3 attempts failing, check Alt-Svc strip / HTTPS-RR');
+  signals.push('QUIC_FAILURE — HTTP/3 attempts failing');
 }
-const crossOriginModuleFail = consoleErrors.filter(c =>
+const corsModFail = consoleErrors.filter(c =>
   /CORS|cross-origin|module source URI/i.test(c.text)).length;
-if (crossOriginModuleFail > 5 && hostsFailed.size > 0) {
-  signals.push(`BYPASS_SUSPECTED — ${crossOriginModuleFail} CORS/module errors; browser likely bypassed proxy for subresource hosts (QUIC via HTTPS-RR / ECH / direct)`);
+if (corsModFail > 5 && hostsFailed.size > 0) {
+  signals.push(`MANY_CORS_MODULE_ERRORS — ${corsModFail} errors across ${hostsFailed.size} host(s)`);
+}
+const bypassHosts = Object.entries(hostClassification).filter(([, v]) => v === 'BYPASS').map(([k]) => k);
+if (bypassHosts.length) {
+  signals.push(`BYPASS_CONFIRMED — ${bypassHosts.length} host(s) never touched proxy: ${bypassHosts.slice(0, 5).join(', ')}${bypassHosts.length > 5 ? '...' : ''}`);
+}
+const proxyErrHosts = Object.entries(hostClassification).filter(([, v]) => v === 'PROXY_ERROR').map(([k]) => k);
+if (proxyErrHosts.length) {
+  signals.push(`PROXY_UPSTREAM_ERROR — ${proxyErrHosts.length} host(s) failed at the proxy layer: ${proxyErrHosts.slice(0, 5).join(', ')}`);
 }
 
 const report = {
   target: targetUrl,
   label,
+  mode,
   timestamp: ts,
   browser: browserKind,
-  proxyPort: Number(proxyPort),
+  proxyPort: noProxy ? null : Number(proxyPort),
   navError,
+  durationMs: runEndMs - runStartMs,
   counts: {
     failures: failures.length,
+    failuresReal: failures.filter(f => !f.benign).length,
     consoleErrors: consoleErrors.length,
     pageErrors: pageErrors.length,
     nonOkResponses: responses.length,
+    hostsTouched: hostsTouched.size,
   },
   hostsFailed: Array.from(hostsFailed).sort(),
+  hostClassification,
   signals,
   failures: failures.slice(0, 100),
   consoleErrors: consoleErrors.slice(0, 100),
@@ -139,34 +250,28 @@ const report = {
 
 await writeFile(resolve(reportDir, 'report.json'), JSON.stringify(report, null, 2));
 
-await browser.close();
-
 // Summary to stdout
 const line = '─'.repeat(60);
 console.log(line);
 console.log(`target    ${targetUrl}`);
-console.log(`browser   ${browserKind}`);
+console.log(`mode      ${mode}   browser: ${browserKind}`);
 console.log(`report    ${reportDir}`);
 console.log(line);
-const benignCount = failures.filter(f => f.benign).length;
-console.log(`failed requests      ${failures.length} (${benignCount} benign, ${failures.length - benignCount} real)`);
-console.log(`console errors       ${consoleErrors.length}`);
-console.log(`page errors          ${pageErrors.length}`);
-console.log(`non-2xx responses    ${responses.length}`);
+const realFails = failures.filter(f => !f.benign).length;
+console.log(`requests   ${hostsTouched.size} hosts touched, ${realFails} real failures, ${pageErrors.length} page errors`);
+console.log(`console    ${consoleErrors.length} errors/warnings`);
+if (Object.keys(hostClassification).length) {
+  console.log('\nFailed host verdict:');
+  for (const [h, v] of Object.entries(hostClassification)) {
+    console.log(`  [${v.padEnd(12)}] ${h}`);
+  }
+}
 if (signals.length) {
   console.log('\nSignals:');
   for (const s of signals) console.log('  • ' + s);
-}
-if (hostsFailed.size) {
-  console.log('\nHosts with failures:');
-  for (const h of hostsFailed) console.log('  - ' + h);
 }
 if (navError) {
   console.log(`\nnav error: ${navError}`);
 }
 
-// Exit non-zero only if we have actionable signal: classified pattern,
-// page-level errors, or at least one non-benign network failure. Plain
-// ERR_ABORTED hovercards alone don't make a site "broken".
-const realFailures = failures.filter(f => !f.benign).length;
-process.exit(signals.length || pageErrors.length || realFailures ? 1 : 0);
+process.exit(signals.length || pageErrors.length || realFails ? 1 : 0);

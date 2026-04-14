@@ -1,43 +1,84 @@
 # Site compatibility harness
 
-Playwright-driven diagnostic that loads real sites through Proxymate and captures everything the browser observes that the proxy cannot see from its own vantage point: failed subresource fetches, console/CORS errors, non-2xx responses, and pattern-classified bypass signals.
+Playwright-driven diagnostic that loads real sites through Proxymate (or directly, for baseline) and captures everything the browser observes that the proxy cannot see from its own vantage point: failed subresource fetches, CORS/module errors, page errors, non-2xx responses. Then cross-references each failed host against the live Proxymate log to classify the failure as **BYPASS**, **PROXY_ERROR**, or **BROWSER**.
 
 ## When to use
 
-- A tester reports "site X doesn't work" → reproduce in one command, attach the generated report dir instead of screenshots
-- Before shipping a MITM-adjacent change → run the full suite, spot regressions
-- Investigating navigation issues whose cause is outside the proxy's direct visibility (QUIC bypass, ECH, HTTPS-RR, H/2 coalescing)
+- A tester reports "site X doesn't work" → reproduce in one command, ship the generated report dir instead of screenshots
+- Before shipping a MITM-adjacent change → run baseline + MITM-on, compare, spot regressions
+- Debug navigation issues whose cause is outside the proxy's direct visibility (QUIC bypass, ECH, HTTPS-RR, H/2 coalescing)
 
-## Prerequisites
-
-- Proxymate is running and set as the system proxy (MITM enabled or disabled per the test you want)
-- Root CA is trusted in the system keychain (Chromium honors it automatically on macOS; Firefox requires a separate import — for diagnostic purposes `ignoreHTTPSErrors: true` is set so Playwright proceeds and still records the signal)
-
-## Run
+## Workflow to isolate a problem
 
 ```bash
-# single URL (Chromium by default)
-./scripts/diagnose-site.sh https://github.com
+# 1. Baseline without Proxymate (what the site looks like on this network,
+#    this OS, with this browser, with no proxy at all)
+./scripts/diagnose-site.sh --suite --no-proxy
 
-# specify browser
-./scripts/diagnose-site.sh https://www.linkedin.com firefox
+# 2. Enable Proxymate, disable MITM, re-run
+./scripts/diagnose-site.sh --suite --mitm off
 
-# full suite (sites.json)
-./scripts/diagnose-site.sh --suite
-./scripts/diagnose-site.sh --suite firefox
+# 3. Enable MITM, re-run
+./scripts/diagnose-site.sh --suite --mitm on
+
+# 4. Compute regressions
+./scripts/diagnose-site.sh --compare direct proxy-mitm-on
+./scripts/diagnose-site.sh --compare proxy-mitm-off proxy-mitm-on
 ```
 
-First run installs Playwright + browsers into `tests/site-compat/node_modules`. Reports land in `tests/site-compat/reports/<label>/<timestamp>/`:
+This separates three failure classes automatically:
 
-- `report.json` — structured record of every failure, error, and classified signal
-- `screenshot.png` — full-page screenshot at `networkidle`
+| Comparison | What a regression tells you |
+| --- | --- |
+| `direct` → `proxy-mitm-on`  | Proxy+MITM combined caused the break |
+| `direct` → `proxy-mitm-off` | Proxy alone caused the break (rare — check excludeHosts / forwarding) |
+| `proxy-mitm-off` → `proxy-mitm-on` | MITM alone caused the break — typical pinning / coalescing / SNI issue |
 
-## What the signals mean
+## Single-URL form
 
-- `CA_NOT_TRUSTED` — the browser would have refused Proxymate's cert. Expected on a fresh install before running the CA trust step.
-- `CONNECTION_RESET` — H/2 stream reset or cert-pinning mid-handshake. Check MITM exclude list.
-- `QUIC_FAILURE` — HTTP/3 attempts failing outright. Alt-Svc strip is working but the browser is still trying QUIC (HTTPS-RR / ECH).
-- `BYPASS_SUSPECTED` — many CORS/module errors while failures are concentrated on specific hosts. Browser likely bypassed the proxy entirely for those subresource hosts (HTTPS-RR record → direct QUIC, or ECH, or an OS-level routing rule).
+```bash
+./scripts/diagnose-site.sh https://github.com                 # proxy, current MITM state
+./scripts/diagnose-site.sh https://github.com --browser firefox
+./scripts/diagnose-site.sh https://github.com --no-proxy      # baseline
+./scripts/diagnose-site.sh https://github.com --mitm on       # tag run
+```
+
+## Host-level verdict
+
+For every host that failed in the browser, `report.json` contains a classification derived from `proxymate.log`:
+
+- **BYPASS** — the host never appeared in the proxy log during the run window. Traffic went around Proxymate: QUIC via HTTPS-RR, direct connection, or protocol the system proxy can't see.
+- **PROXY_ERROR** — the host did reach the proxy but got a 4xx/5xx or handshake failure there. Actionable on the proxy side (check excludes, upstream connectivity, cert chain).
+- **BROWSER** — the host got a successful 2xx through the proxy, but the browser surfaced a failure anyway. Root cause is browser-side: SRI mismatch, CORS, H/2 coalescing, SNI, ECH.
+
+## Top-level signal classifier
+
+- `CA_NOT_TRUSTED` — browser would have refused Proxymate's cert
+- `CONNECTION_RESET` — H/2 stream reset or pinning mid-handshake
+- `QUIC_FAILURE` — HTTP/3 attempts failing outright
+- `MANY_CORS_MODULE_ERRORS` — browser console reports many CORS/module errors; usually a downstream effect of a BYPASS or RESET
+- `BYPASS_CONFIRMED` — at least one failed host was never seen in the proxy log
+- `PROXY_UPSTREAM_ERROR` — at least one failed host was seen at the proxy layer with an error
+
+## Output layout
+
+```
+tests/site-compat/reports/
+  <label>/
+    direct/              # baseline runs
+      2026-04-14T.../
+        report.json
+        screenshot.png
+    proxy-mitm-on/       # proxied runs, MITM on
+      2026-04-14T.../
+        ...
+    proxy-mitm-off/
+      ...
+  _suite/
+    <mode>/<timestamp>/summary.json
+```
+
+First `--suite` run installs Playwright + Chromium + Firefox into `node_modules/` (one-time, ~300 MB).
 
 ## Extending
 
@@ -47,4 +88,4 @@ Add sites to `sites.json`:
 { "url": "https://example.com", "label": "example" }
 ```
 
-Labels become directory names — keep them short and filesystem-safe.
+Labels become directory names — keep them short and filesystem-safe. Default timeout is 30 s per site.
