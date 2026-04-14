@@ -38,7 +38,7 @@ enum ProxyManager {
         "169.254.0.0/16",
     ].joined(separator: " ")
 
-    nonisolated static func enable(proxy: ProxyConfig) async throws {
+    nonisolated static func enable(proxy: ProxyConfig, pacURL: String? = nil) async throws {
         // Strict input validation: proxy.host and proxy.port are interpolated
         // into a shell script executed as root. Without validation, a host like
         // `127.0.0.1; rm -rf ~` or `$(whoami)` would execute arbitrary commands
@@ -50,7 +50,8 @@ enum ProxyManager {
         // admin-password prompts on wake-from-sleep and network-interface
         // changes (NWPathMonitor fires on Wi-Fi/Ethernet/VPN transitions),
         // where the settings almost always already match.
-        if let current = await currentProxy(),
+        if pacURL == nil,
+           let current = await currentProxy(),
            current.host == proxy.host && current.port == proxy.port {
             return
         }
@@ -60,12 +61,24 @@ enum ProxyManager {
               networksetup -setsecurewebproxystate "$svc" on
         """ : ""
 
+        // Optional PAC apply baked into the SAME osascript invocation so
+        // enabling the proxy + setting the PAC URL costs ONE admin prompt
+        // instead of two. Pre-batching, every PAC-on enable cost two
+        // separate networksetup runs and the macOS auth cache wouldn't
+        // bridge between them on macOS 26 — users saw 2-3 password prompts
+        // per Enable click.
+        let pacBlock = pacURL.map { url in """
+              networksetup -setautoproxyurl "$svc" "\(url)"
+              networksetup -setautoproxystate "$svc" on
+        """ } ?? ""
+
         let shell = """
         networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
           networksetup -setwebproxy "$svc" \(proxy.host) \(proxy.port)
           networksetup -setwebproxystate "$svc" on
           networksetup -setproxybypassdomains "$svc" \(bypassDomains)
         \(httpsBlock)
+        \(pacBlock)
         done
         """
         try await runPrivileged(shell)
@@ -77,19 +90,37 @@ enum ProxyManager {
         try await verifyApplied(host: proxy.host, port: proxy.port)
     }
 
+    /// Disable web proxy AND clear PAC autoproxy URL in a single privileged
+    /// shell run, so a Disable click costs ONE admin prompt instead of two
+    /// (the PAC-clear path was a separate osascript invocation).
     nonisolated static func disable() async throws {
-        // Idempotent: if no HTTP proxy is currently active, nothing to turn off.
-        // Avoids a gratuitous admin prompt on quit when the user never enabled,
-        // or when disable was already called and the app is tearing down twice.
-        if await currentProxy() == nil { return }
+        // Probe both directions: if neither web proxy nor PAC is set,
+        // nothing to clear and we skip osascript entirely (no prompt).
+        let webOn = await currentProxy() != nil
+        let pacOn = await currentPACEnabled()
+        if !webOn && !pacOn { return }
 
         let shell = """
         networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
           networksetup -setwebproxystate "$svc" off
           networksetup -setsecurewebproxystate "$svc" off
+          networksetup -setautoproxystate "$svc" off
+          networksetup -setautoproxyurl "$svc" ""
         done
         """
         try await runPrivileged(shell)
+    }
+
+    /// True if SCDynamicStore reports an active autoproxy URL configuration.
+    /// Used by disable() to decide whether the batched osascript needs to
+    /// run at all.
+    private nonisolated static func currentPACEnabled() async -> Bool {
+        await Task.detached(priority: .utility) { () -> Bool in
+            guard let store = SCDynamicStoreCreate(nil, "Proxymate" as CFString, nil, nil),
+                  let proxies = SCDynamicStoreCopyProxies(store) as? [String: Any] else { return false }
+            let enabled = proxies[kSCPropNetProxiesProxyAutoConfigEnable as String] as? Int ?? 0
+            return enabled == 1
+        }.value
     }
 
     /// Reads current HTTP proxy state via SystemConfiguration (no shell, instant).

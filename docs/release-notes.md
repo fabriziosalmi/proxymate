@@ -1,5 +1,41 @@
 # Release notes
 
+## 0.9.51 — system proxy hijack fix + admin-prompt batching
+
+*Released 2026-04-14*
+
+Two issues fixed; both observable in tester sessions.
+
+### 1. NWPathMonitor / systemDidWake silently rewrote system proxy
+
+When the proxy was enabled and macOS reported a network path change (Wi-Fi reassociate, VPN up/down, sleep/wake, anything `NWPathMonitor` flags), the handler called `ProxyManager.enable(proxy: <user-selected upstream>)` instead of `ProxyManager.enable(proxy: <synthetic loopback proxy on the listener port>)`. With the default selection of `Local Squid` (host `127.0.0.1`, port `3128`), the system proxy got rewritten from `127.0.0.1:<listener>` back to `127.0.0.1:3128`. Browsers then bypassed Proxymate entirely and went straight to Squid; the Stats counters stayed at zero and the Logs tab never received an event.
+
+The original Enable wrote the right thing to scutil; a few hundred milliseconds later, the path-change handler overwrote it. The bug was entirely invisible in the app log — which only showed `Enabled — local 127.0.0.1:NNNNN → upstream Local Squid` — and required `scutil --proxy` to see.
+
+Fix: new `AppState.reapplySystemProxyIfNeeded()` reconstructs the synthetic config from `localPort` and calls `ProxyManager.enable` with that. Both `NWPathMonitor.pathUpdateHandler` and `systemDidWake` now route through this method instead of building a wrong-pointer `ProxyConfig` themselves.
+
+### 2. Enable / Disable cost multiple admin prompts
+
+Each `runAsRoot` call is its own `osascript` invocation; macOS 26's "with administrator privileges" cache doesn't bridge between distinct invocations. With PAC enabled, a single Enable click cost two prompts (`networksetup -setwebproxy`, then `networksetup -setautoproxyurl`), and a Disable cost two more. Path-monitor wake-ups added more.
+
+Fix: batched both networksetup transactions into a single shell that's run by one `osascript`. `ProxyManager.enable(proxy:pacURL:)` now accepts an optional PAC URL and writes both the web proxy and the autoproxy URL in the same loop. `ProxyManager.disable()` clears both states the same way; the separate `PACServer.clearSystemPAC` call in `AppState.disable` is gone.
+
+Net effect: Enable = 1 prompt regardless of PAC. Disable = 1 prompt regardless of PAC. Wake/path-change = 0 prompts (idempotent skip on the synthetic config still works).
+
+### Bonus: scripts/diagnose.sh
+
+A single-pass health snapshot script added in commit `68c2ce4` (just before this release). Eight sections — versions, process, listeners, system proxy, CA state, last 30 log lines, live forward test, settings sizes — for when something looks off and we need a fast triage. Tester sessions now begin with `./scripts/diagnose.sh` and skip three round-trips of "what does `scutil --proxy` show?".
+
+### Artifact
+
+```
+File:    Proxymate-0.9.51.dmg
+Size:    64 MB
+SHA-256: <filled in after notarize>
+Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
+Notary:  Accepted, stapled, spctl-verified
+```
+
 ## 0.9.50 — sidecar startup race fix
 
 *Released 2026-04-14*

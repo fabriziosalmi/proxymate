@@ -315,8 +315,18 @@ final class AppState: ObservableObject {
             name: "Proxymate (local)", host: "127.0.0.1",
             port: Int(port), applyToHTTPS: true
         )
+
+        // Start the PAC server BEFORE applying system proxy, so its URL is
+        // available to bake into the same osascript invocation that sets
+        // the web proxy. Single admin prompt instead of two.
+        var pacURL: String? = nil
+        if pacSettings.enabled {
+            startPACListenerOnly(proxyPort: port)
+            pacURL = "http://127.0.0.1:\(pacSettings.port)/proxy.pac"
+        }
+
         do {
-            try await ProxyManager.enable(proxy: synthetic)
+            try await ProxyManager.enable(proxy: synthetic, pacURL: pacURL)
         } catch {
             log(.error, "System proxy apply failed: \(error.localizedDescription)")
             localProxy.stop(); localPort = nil; return
@@ -326,11 +336,6 @@ final class AppState: ObservableObject {
         UserDefaults.standard.set(true, forKey: "proxymate.wasEnabled")
         stats.enabledSince = Date()
         log(.info, "Enabled — local 127.0.0.1:\(port) → upstream \(proxy.name) (\(proxy.host):\(proxy.port))")
-
-        // Start PAC server if enabled
-        if pacSettings.enabled {
-            startPAC(proxyPort: port)
-        }
 
         // Start SOCKS5 if enabled
         if socks5Settings.enabled {
@@ -375,6 +380,27 @@ final class AppState: ObservableObject {
                               blacklistSources: blacklistSources)
     }
 
+    /// Re-apply the system proxy to point at OUR loopback listener.
+    /// Called by NWPathMonitor and systemDidWake, where the previous
+    /// implementation accidentally passed the user-selected upstream
+    /// (e.g. "Local Squid" → 127.0.0.1:3128) directly to ProxyManager
+    /// instead of the synthetic loopback proxy on `localPort`. The bug
+    /// silently rewrote the system proxy back to the upstream a few
+    /// hundred ms after every Wi-Fi/path change, so Proxymate stopped
+    /// receiving traffic without any error in the logs.
+    /// No-op when the proxy isn't enabled or the listener has no port.
+    func reapplySystemProxyIfNeeded() async {
+        guard isEnabled, let port = localPort else { return }
+        let synthetic = ProxyConfig(
+            name: "Proxymate (local)", host: "127.0.0.1",
+            port: Int(port), applyToHTTPS: true
+        )
+        do { try await ProxyManager.enable(proxy: synthetic) }
+        catch {
+            log(.warn, "System-proxy reapply failed: \(error.localizedDescription)")
+        }
+    }
+
     func disable() async {
         isBusy = true
         defer { isBusy = false }
@@ -389,21 +415,10 @@ final class AppState: ObservableObject {
         // user-managed Squid was reused, stop() is a no-op on the foreign
         // process — SquidSidecar only kills processes it spawned.
         SquidSidecar.shared.stop()
-        if pacSettings.enabled {
-            Task { [weak self] in
-                do { try await PACServer.clearSystemPAC() }
-                catch {
-                    // Cleanup of `networksetup -setautoproxyurl ... off`
-                    // failed — surface the error rather than leaving the
-                    // PAC config stuck in the system. Without this log, a
-                    // user toggling PAC off could find scutil --proxy
-                    // still showing ProxyAutoConfigEnable=1 with no hint.
-                    await MainActor.run {
-                        self?.log(.warn, "PAC cleanup failed: \(error.localizedDescription)")
-                    }
-                }
-            }
-        }
+        // PAC system-state clearing is now batched into ProxyManager.disable
+        // above (one osascript covers web-proxy off + autoproxy off). The
+        // separate PACServer.clearSystemPAC call here used to fire a SECOND
+        // admin prompt on every Disable click.
         PoolRouter.shared.stop()
         blacklistTimer?.invalidate()
         blacklistTimer = nil
@@ -710,16 +725,27 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func startPAC(proxyPort: UInt16) {
-        // Collect direct domains from allowlist (domain entries only)
+    /// Start the PAC HTTP listener locally; do NOT touch system proxy.
+    /// Used from enable() when PAC is enabled, so the URL can be batched
+    /// into the same osascript invocation that sets the web proxy and we
+    /// only ask for one admin password total.
+    private func startPACListenerOnly(proxyPort: UInt16) {
         let directDomains = allowlist.filter(\.enabled).compactMap { entry -> String? in
             let p = entry.pattern
-            guard !p.contains("/") else { return nil } // skip CIDR
+            guard !p.contains("/") else { return nil }
             return p
         }
         let socks5Port = socks5Settings.enabled ? UInt16(socks5Settings.port) : 0
         PACServer.shared.start(settings: pacSettings, proxyPort: proxyPort,
                                 socks5Port: socks5Port, directDomains: directDomains)
+    }
+
+    /// Full PAC bring-up for the toggle path (PAC turned on/off independently
+    /// of the main enable). Starts the listener AND pushes the URL via its
+    /// own osascript — one admin prompt because there's no other privileged
+    /// op to batch with.
+    private func startPAC(proxyPort: UInt16) {
+        startPACListenerOnly(proxyPort: proxyPort)
         Task {
             do {
                 try await PACServer.applySystemPAC(port: pacSettings.port)

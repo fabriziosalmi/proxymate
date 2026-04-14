@@ -80,13 +80,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // #22 — Network interface changes: re-apply proxy on Wi-Fi/Ethernet/VPN switch
         let monitor = NWPathMonitor()
-        monitor.pathUpdateHandler = { [weak self] path in
+        monitor.pathUpdateHandler = { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
-                guard self.state.isEnabled else { return }
-                if let proxy = self.state.proxies.first(where: { $0.id == self.state.selectedProxyID }) {
-                    try? await ProxyManager.enable(proxy: proxy)
-                }
+                // CRITICAL: reapply the SYNTHETIC loopback proxy (= our
+                // listener), NOT the user-selected upstream. Previous
+                // version passed `proxy` (e.g. Local Squid 127.0.0.1:3128)
+                // here, which silently rewrote the system proxy back to
+                // the upstream and made every browser request bypass
+                // Proxymate entirely. See AppState.reapplySystemProxyIfNeeded.
+                await self.state.reapplySystemProxyIfNeeded()
             }
         }
         monitor.start(queue: DispatchQueue(label: "proxymate.pathmonitor", qos: .utility))
@@ -126,8 +129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         upstreamPort: UInt16(proxy.port)
                     )
                 }
-                // Re-apply proxy settings in case interface changed during sleep
-                try? await ProxyManager.enable(proxy: proxy)
+                // Re-apply system proxy → loopback listener, NOT the user
+                // upstream. (Same root cause as the NWPathMonitor handler
+                // above; both shared the bug that silently routed traffic
+                // around Proxymate after every wake.)
+                await state.reapplySystemProxyIfNeeded()
             }
         }
     }
