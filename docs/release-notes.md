@@ -29,7 +29,7 @@ Suite mode (`--suite`) runs across a canonical list of sites and supports baseli
 ```
 File:    Proxymate-0.9.56.dmg
 Size:    64 MB
-SHA-256: __SHA__
+SHA-256: 568cc6e76b54634bce2245bbd184005adba265095104511dcbb2da0a6e2051ae
 Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
 Notary:  Accepted, stapled, spctl-verified
 ```
