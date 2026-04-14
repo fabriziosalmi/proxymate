@@ -72,6 +72,8 @@ Three listeners inherited a `guard let l = try? NWListener(...) else { return }`
 
 ```
 File:    Proxymate-0.9.49.dmg
+Size:    64 MB
+SHA-256: e972121acbba37a2e5042ef2d2654d0ef81fbc8e7a9440ecb35b7b3fb4a9201f
 Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
 Notary:  Accepted, stapled, spctl-verified
 ```
