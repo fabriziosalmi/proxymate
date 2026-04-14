@@ -1690,7 +1690,6 @@ struct ThreatsSection: View {
 
 struct BlacklistsSection: View {
     @EnvironmentObject var state: AppState
-    @State private var isRefreshing = false
     @State private var showingAddCustom = false
 
     var body: some View {
@@ -1736,20 +1735,15 @@ struct BlacklistsSection: View {
                     .buttonStyle(.borderless)
                 Spacer()
                 Button {
-                    guard !isRefreshing else { return }
-                    isRefreshing = true
                     state.refreshAllBlacklists()
-                    Task {
-                        try? await Task.sleep(for: .seconds(2))
-                        isRefreshing = false
-                    }
                 } label: {
-                    if isRefreshing {
+                    if state.refreshingBlacklistsCount > 0 {
                         ProgressView().controlSize(.small)
                     } else {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
                 }
+                .disabled(state.refreshingBlacklistsCount > 0)
                 .buttonStyle(.borderless)
             }
             .padding(8)
@@ -2522,8 +2516,20 @@ struct PrivacyView: View {
                     } else {
                         Text("Generate a root CA to enable HTTPS body inspection. This allows WAF content rules and exfiltration scanning to work on encrypted traffic.")
                             .font(.caption2).foregroundStyle(.secondary)
-                        Button("Generate Root CA") { state.generateMITMCA() }
-                            .buttonStyle(.bordered).controlSize(.small)
+                        Button {
+                            state.generateMITMCA()
+                        } label: {
+                            if state.generatingMITMCA {
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Generating…")
+                                }
+                            } else {
+                                Text("Generate Root CA")
+                            }
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(state.generatingMITMCA)
                     }
                 }
 

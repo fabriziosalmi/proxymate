@@ -74,6 +74,16 @@ final class AppState: ObservableObject {
     @Published private(set) var statsTick: Int = 0
     private var statsTickTimer: Timer?
 
+    /// Number of blacklist refreshes currently in flight. The Blacklists
+    /// panel binds its Refresh-button spinner to `count > 0` so the
+    /// indicator reflects actual work rather than a hardcoded 2s sleep.
+    @Published private(set) var refreshingBlacklistsCount: Int = 0
+
+    /// True while the openssl-backed CA generation is running. The Privacy
+    /// tab disables and shows a spinner on the Generate button instead of
+    /// letting the user double-click during the ~3 s blocking call.
+    @Published private(set) var generatingMITMCA: Bool = false
+
     nonisolated struct Stats: Sendable {
         var requestsAllowed: Int = 0
         var requestsBlocked: Int = 0
@@ -554,13 +564,30 @@ final class AppState: ObservableObject {
     }
 
     func generateMITMCA() {
-        do {
-            _ = try TLSManager.shared.generateCA()
-            mitmSettings.caInstalled = true
-            save()
-            log(.info, "Root CA generated and stored in Keychain")
-        } catch {
-            log(.error, "CA generation failed: \(error.localizedDescription)")
+        // Run openssl on a detached Task so the MainActor isn't blocked for
+        // the ~3 s subprocess run. UI observes `generatingMITMCA` and shows
+        // a spinner instead of going unresponsive mid-click.
+        guard !generatingMITMCA else { return }
+        generatingMITMCA = true
+        Task { [weak self] in
+            do {
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try TLSManager.shared.generateCA()
+                }.value
+                await MainActor.run {
+                    guard let self else { return }
+                    self.mitmSettings.caInstalled = true
+                    self.save()
+                    self.log(.info, "Root CA generated and stored in Keychain")
+                    self.generatingMITMCA = false
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.log(.error, "CA generation failed: \(error.localizedDescription)")
+                    self.generatingMITMCA = false
+                }
+            }
         }
     }
 
@@ -901,9 +928,11 @@ final class AppState: ObservableObject {
     func refreshBlacklist(_ id: UUID) {
         guard let source = blacklistSources.first(where: { $0.id == id }) else { return }
         log(.info, "Refreshing \(source.name)...")
+        refreshingBlacklistsCount += 1
         BlacklistManager.shared.refresh(source: source) { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                defer { self.refreshingBlacklistsCount = max(0, self.refreshingBlacklistsCount - 1) }
                 switch result {
                 case .success(let count):
                     if let i = self.blacklistSources.firstIndex(where: { $0.id == id }) {
