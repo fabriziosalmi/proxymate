@@ -78,16 +78,43 @@ page.on('request', (req) => {
   try { hostsTouched.add(new URL(req.url()).host); } catch {}
 });
 
+// Hosts whose failure is expected and/or desirable when routed through
+// Proxymate — tracking beacons, telemetry pixels, analytics SDKs,
+// crash-reporting endpoints. The WAF / blacklist layer blocks many of
+// these on purpose. A failure on one of these hosts is not a real
+// browsing issue for a human user.
+const TRACKING_HOST_RE = new RegExp([
+  'tracking', 'telemetry', 'analytics', 'beacon', 'pixel', 'logging',
+  'ponf\\.', 'metrics\\.', 'stats\\.', 'collect\\.',
+  'doubleclick', 'google-analytics', 'googletagmanager', 'googleadservices',
+  'segment\\.io', 'mixpanel', 'amplitude', 'hotjar', 'fullstory',
+  'datadoghq', 'newrelic', 'sentry\\.io',
+].join('|'), 'i');
+
+function isTrackingHost(host) {
+  return TRACKING_HOST_RE.test(host);
+}
+
 page.on('requestfailed', (req) => {
   const errText = req.failure()?.errorText || 'unknown';
-  const benign = errText === 'net::ERR_ABORTED' &&
-    ['fetch', 'xhr'].includes(req.resourceType());
+  let host = '';
+  try { host = new URL(req.url()).host; } catch {}
+  const rt = req.resourceType();
+  // Benign patterns we don't count as user-visible failures:
+  //  - ERR_ABORTED on fetch/xhr: page cancelled its own prefetch
+  //  - tracking/telemetry hosts: expected to be blocked, irrelevant to UX
+  //  - beacon resource type: fire-and-forget, never user-visible
+  const benign =
+    (errText === 'net::ERR_ABORTED' && ['fetch', 'xhr', 'image'].includes(rt)) ||
+    isTrackingHost(host) ||
+    rt === 'beacon';
   failures.push({
     url: req.url(),
     method: req.method(),
-    resourceType: req.resourceType(),
+    resourceType: rt,
     failure: errText,
     benign,
+    category: benign ? (isTrackingHost(host) ? 'tracking' : 'aborted') : 'real',
   });
 });
 
@@ -108,9 +135,15 @@ page.on('response', async (resp) => {
   }
 });
 
+// 'load' fires when the main document and its direct subresources are
+// done; 'networkidle' never resolves on modern sites that keep tracking
+// or real-time connections alive (LinkedIn beacons, Twitch EventSource,
+// Gmail long-poll, etc.), producing spurious timeouts.
 let navError = null;
 try {
-  await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
+  await page.goto(targetUrl, { waitUntil: 'load', timeout: 30000 });
+  // Give late-binding JS a couple seconds to crash if it's going to.
+  await page.waitForTimeout(2000);
 } catch (e) {
   navError = String(e.message || e);
 }
@@ -124,6 +157,16 @@ const hostsFailed = new Set();
 for (const f of failures) {
   if (f.benign) continue;
   try { hostsFailed.add(new URL(f.url).host); } catch {}
+}
+
+// Soft timeout — if the nav timed out but the page got meaningful content
+// and no real failures surfaced, don't treat it as a failure. Sites with
+// long-lived tracking/EventSource connections (LinkedIn, Gmail, Twitch)
+// never reach networkidle by design.
+const navTimedOutSoftly = navError && /Timeout/i.test(navError) &&
+  hostsTouched.size >= 3 && hostsFailed.size === 0;
+if (navTimedOutSoftly) {
+  navError = `${navError.split('\n')[0]} — soft timeout (page loaded ${hostsTouched.size} hosts, no hard failures)`;
 }
 
 // -----------------------------------------------------------------------
@@ -274,4 +317,7 @@ if (navError) {
   console.log(`\nnav error: ${navError}`);
 }
 
-process.exit(signals.length || pageErrors.length || realFails ? 1 : 0);
+// Actionable failures only — tracking/aborted fetches don't count.
+// Soft nav timeout (page loaded, no hard failures) is not a FAIL.
+const hardNavError = navError && !navTimedOutSoftly;
+process.exit(signals.length || pageErrors.length || realFails || hardNavError ? 1 : 0);
