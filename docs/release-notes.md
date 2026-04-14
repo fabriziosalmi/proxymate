@@ -23,7 +23,7 @@ Reference: [mitmproxy #7191 — HTTP/2 fails, HTTP/1.1 works](https://github.com
 ```
 File:    Proxymate-0.9.55.dmg
 Size:    64 MB
-SHA-256: __SHA__
+SHA-256: 43e5404847cbbac8047f30b1d682907eee7aa3afc3f193f28870f313a0085bfc
 Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
 Notary:  Accepted, stapled, spctl-verified
 ```
