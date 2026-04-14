@@ -1,5 +1,35 @@
 # Release notes
 
+## 0.9.53 — window-title version label, streaming-CDN excludes, browser trust guide
+
+*Released 2026-04-13*
+
+Small-surface polish release on top of 0.9.52.
+
+### 1. Version visible in the main window header
+
+The header button now shows `Proxymate 0.9.53` inline — version read from `CFBundleShortVersionString` at startup, so what the window shows is always what's running. Makes tester bug reports self-identifying without needing to ask "which build are you on?".
+
+### 2. Streaming-media CDN defaults in the MITM exclude list
+
+Expanded `MITMSettings.excludeHosts` with the audio/video hosts that reliably cert-pin: Italian broadcasters (`*.rai.it`, `*.raiplay.it`, `*.raiplaysound.it`, `*.mediaset.it`, `*.la7.it`), YouTube/Vimeo/Twitch/Spotify media CDNs, Netflix, Disney+/Hulu, DAZN, Brightcove, plus the Akamai *media* subdomains (`*.akamaihd.net`, `*.akamaized.net`) — not the generic Akamai tenant pool. Generic multi-tenant edges (Cloudflare, CloudFront, plain `akamai.net`) stay in MITM because opting them out means opting out half the web.
+
+Fixes the RadioRai regression reported against 0.9.51 and the Mediaset / La7 segment-load failures that showed up in Logs as `pinning failure`.
+
+### 3. New docs page: `guide/mitm-browser-trust`
+
+Per-browser CA trust matrix (Safari auto, Chromium via system keychain, Firefox manual import) and a section explaining why HSTS and HSTS-preload do *not* block MITM when the CA is trusted — only certificate pinning does. The shortest possible answer to "I installed the CA, why does site X still fail?".
+
+### Artifact
+
+```
+File:    Proxymate-0.9.53.dmg
+Size:    64 MB
+SHA-256: __SHA__
+Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
+Notary:  Accepted, stapled, spctl-verified
+```
+
 ## 0.9.52 — proactive CA-encryption migration + sidecar timeout headroom + diagnose v3
 
 *Released 2026-04-14*

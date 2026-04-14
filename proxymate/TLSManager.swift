@@ -26,17 +26,41 @@ nonisolated struct MITMSettings: Codable, Hashable, Sendable {
     var enabled: Bool = false
     var interceptHosts: [String] = []
     var excludeHosts: [String] = [
+        // Apple ecosystem (heavy app-level pinning, MITM breaks Software Update,
+        // iCloud sync, Push, Maps, etc.)
         "*.apple.com", "*.icloud.com", "*.apple-cloudkit.com",
+        "*.mzstatic.com",
+        // Google services that pin
         "*.googleapis.com", "*.gstatic.com", "*.googleusercontent.com",
+        // Wildcard banking/finance
         "*.banking.*", "*.bank.*",
-        // Mozilla services
+        // Mozilla / Firefox sync
         "*.firefox.com", "*.mozilla.com", "*.mozilla.org",
-        // Cert-pinned apps
+        // Cert-pinned messaging apps
         "*.whatsapp.net", "*.whatsapp.com",
         "*.signal.org", "*.signal.com",
         "*.telegram.org",
-        // Analytics/CDN (cert-pinned, no value in intercepting)
+        // Analytics / observability that cert-pin
         "*.datadoghq.com",
+        // ── Streaming media CDNs (audio/video) ────────────────────────
+        // These are media-only hosts where MITM breaks HLS/DASH segments
+        // and player handshakes. NOT included on purpose: generic
+        // multi-tenant CDNs like *.cloudflare.com, *.cloudfront.net,
+        // *.akamai.net — those host millions of non-media sites where
+        // MITM works fine and is wanted.
+        "*.akamaihd.net", "*.akamaized.net",      // Akamai media-edge subdomains
+        "*.googlevideo.com", "*.ytimg.com",       // YouTube
+        "*.vimeocdn.com",                         // Vimeo
+        "*.ttvnw.net", "*.jtvnw.net", "*.live-video.net",  // Twitch
+        "*.scdn.co", "*.spotifycdn.com",          // Spotify (audio CDN)
+        "*.nflxvideo.net", "*.nflximg.net",       // Netflix
+        "*.disneystreaming.com", "*.bamgrid.com", // Disney+ / Hulu
+        "*.dazn.com", "*.dazn-pi.com",            // DAZN
+        "*.bcvp.it", "*.brightcove.com",          // Brightcove
+        // Italian broadcasters (state-pinned for legitimate reasons)
+        "*.rai.it", "*.raiplay.it", "*.raiplaysound.it",
+        "*.mediasetplay.mediaset.it", "*.mediaset.it",
+        "*.la7.it",
     ]
     // WebSocket hosts are auto-excluded at runtime when detected
     // (see MITMHandler.processRequest WebSocket upgrade detection)

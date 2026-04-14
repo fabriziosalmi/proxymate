@@ -45,6 +45,7 @@ export default defineConfig({
           items: [
             { text: 'Features overview', link: '/guide/features' },
             { text: 'Security model', link: '/guide/security' },
+            { text: 'MITM & browser trust', link: '/guide/mitm-browser-trust' },
             { text: 'FAQ', link: '/guide/faq' },
           ],
         },

@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://fabriziosalmi.github.io/proxymate/"><img src="https://img.shields.io/badge/docs-live-0A84FF.svg" alt="Documentation"></a>
-  <a href="https://github.com/fabriziosalmi/proxymate/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.52-blue.svg" alt="Latest release"></a>
+  <a href="https://github.com/fabriziosalmi/proxymate/releases/latest"><img src="https://img.shields.io/badge/release-v0.9.53-blue.svg" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/macOS-26%2B-black.svg" alt="macOS 26+">
   <img src="https://img.shields.io/badge/notarized-yes-success.svg" alt="Notarized">
   <img src="https://img.shields.io/badge/telemetry-zero-purple.svg" alt="Zero telemetry">
@@ -32,10 +32,10 @@ brew install --cask proxymate
 
 ### DMG
 
-Download `Proxymate-0.9.52.dmg` from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest), verify the hash, and drag the app into `/Applications`:
+Download `Proxymate-0.9.53.dmg` from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest), verify the hash, and drag the app into `/Applications`:
 
 ```bash
-shasum -a 256 ~/Downloads/Proxymate-0.9.52.dmg
+shasum -a 256 ~/Downloads/Proxymate-0.9.53.dmg
 # 6670f2d66ad5e50bb84d79c6a41a4bb03abcf6185613a21be0b845fbda81b8c8
 ```
 

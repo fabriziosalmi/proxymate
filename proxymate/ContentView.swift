@@ -62,6 +62,13 @@ struct ContentView: View {
     @State private var showAbout = false
     @State private var showQuitConfirm = false
 
+    /// "vX.Y.Z" pulled from the running bundle's Info.plist. Computed once
+    /// at first access; no IO during view body evaluation.
+    static let appVersionString: String = {
+        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        return "v\(v)"
+    }()
+
     enum Tab: String, CaseIterable, Identifiable {
         case proxies = "Proxies"
         case logs    = "Logs"
@@ -156,9 +163,16 @@ struct ContentView: View {
                 .foregroundStyle(state.isEnabled ? .green : .secondary)
 
             VStack(alignment: .leading, spacing: 2) {
-                Button("Proxymate") { showAbout = true }
-                    .font(.headline).buttonStyle(.plain)
-                    .accessibilityLabel("About Proxymate")
+                HStack(spacing: 6) {
+                    Button("Proxymate") { showAbout = true }
+                        .font(.headline).buttonStyle(.plain)
+                        .accessibilityLabel("About Proxymate")
+                    // Always-visible version label so testers (and us during
+                    // diagnosis) never have to guess which build is running.
+                    Text(Self.appVersionString)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
                 Text(state.isEnabled
                      ? "Active • \(state.selectedProxy?.name ?? "—")"
                      : "Disabled")
