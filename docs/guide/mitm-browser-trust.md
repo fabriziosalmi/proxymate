@@ -11,6 +11,21 @@ When MITM is enabled and you've installed Proxymate's root CA into the macOS sys
 | Firefox | No (independent root store) | Import the CA into Firefox preferences |
 | App-level pinned (Signal, WhatsApp, banking) | N/A — pinning bypasses CA trust entirely | Add to MITM exclude list (auto-detected after 3 failed handshakes) |
 
+## Why HTTP/3 (QUIC) is stripped, not supported
+
+macOS system proxies (`networksetup -setwebproxy` / `-setsecurewebproxy`) only proxy **TCP**. UDP — which is what HTTP/3 / QUIC rides on — has no system-level proxy hook. If the browser successfully opens a QUIC connection to an origin on UDP/443, it bypasses Proxymate entirely: no TLS interception, no WAF inspection, no logging.
+
+Browsers learn about HTTP/3 endpoints in two ways:
+
+1. **`Alt-Svc` response header** (`Alt-Svc: h3=":443"; ma=86400`) — the dominant signal.
+2. **DNS HTTPS records (RFC 9460)** — newer, less widespread, and both Chrome and Firefox fall back to HTTP/2 quickly when QUIC fails.
+
+When MITM is active, the mitm addon **strips `Alt-Svc` from every response** before handing it to the browser. The browser therefore never upgrades to HTTP/3 and every subsequent subresource fetch stays on HTTP/2 inside the proxied TCP connection — where MITM can see it.
+
+If you notice a site loading its main document but failing with `CORS request failed. Status code: (null)` on `<script type="module" crossorigin>` subresources from a sibling CDN host (the LinkedIn `static.licdn.com` case), that is the QUIC-bypass failure mode. Proxymate 0.9.53+ prevents it by default.
+
+This also means that when MITM is **off**, Proxymate does not proxy QUIC traffic at all — browsers talk HTTP/3 directly to origins, outside Proxymate's visibility. This is a macOS limitation, not a Proxymate choice.
+
 ## Why HSTS doesn't actually block MITM
 
 HSTS (HTTP Strict Transport Security) is often confused with cert pinning. They're different:

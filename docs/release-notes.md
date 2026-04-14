@@ -1,5 +1,33 @@
 # Release notes
 
+## 0.9.54 — strip Alt-Svc to keep browsers on HTTP/2 inside the MITM tunnel
+
+*Released 2026-04-14*
+
+Fixes a silent MITM-bypass path that broke LinkedIn and any site whose subresources advertise HTTP/3 endpoints.
+
+### The problem
+
+macOS system proxies (`networksetup -setwebproxy`, `-setsecurewebproxy`) only proxy **TCP**. UDP — which carries QUIC / HTTP/3 — has no system-level proxy hook. When a server responds with `Alt-Svc: h3=":443"`, browsers open a QUIC connection directly to the origin on UDP/443 and bypass Proxymate entirely. For an HTML document loaded via MITM, subsequent `<script type="module" crossorigin>` fetches to a sibling CDN (e.g. `static.licdn.com`) then upgrade to HTTP/3 on a path Proxymate cannot see — and if that path fails for any reason the browser surfaces `CORS request failed. Status code: (null)` rather than retrying on HTTP/2.
+
+This is invisible in the Proxymate Logs tab because the failing traffic never touches the proxy.
+
+### The fix
+
+`proxymate_addon.py` now strips `Alt-Svc` from every response when MITM is active. Browsers never learn that HTTP/3 is available, stay on the existing HTTP/2 connection through mitm, and everything keeps flowing through the tunnel.
+
+This does not break sites — HTTP/3 is an optimization, not a requirement. It does mean that **when MITM is on, Proxymate sees all traffic; when MITM is off, QUIC traffic bypasses Proxymate** (macOS limitation, documented in `guide/mitm-browser-trust`).
+
+### Artifact
+
+```
+File:    Proxymate-0.9.54.dmg
+Size:    64 MB
+SHA-256: __SHA__
+Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
+Notary:  Accepted, stapled, spctl-verified
+```
+
 ## 0.9.53 — window-title version label, streaming-CDN excludes, browser trust guide
 
 *Released 2026-04-13*

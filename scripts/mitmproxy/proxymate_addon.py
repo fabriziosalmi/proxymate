@@ -118,6 +118,15 @@ class ProxymateAddon:
             "body_size": len(resp.content) if resp.content else 0,
         }
 
+        # Strip Alt-Svc to prevent HTTP/3 upgrade. macOS network-setup
+        # proxies are TCP-only: if the browser upgrades to HTTP/3 (UDP/443)
+        # it bypasses mitm entirely and MITM inspection is silently
+        # defeated. Symptom: subresources on CDN hosts (e.g. static.licdn.com)
+        # fail with status=(null) while the main page loads fine. Removing
+        # the header keeps the browser on HTTP/2 inside the proxied tunnel.
+        resp.headers.pop("alt-svc", None)
+        resp.headers.pop("Alt-Svc", None)
+
         # Extract AI usage from response
         ai_provider = self._detect_ai(host, dict(req.headers))
         if ai_provider and resp.content and len(resp.content) < MAX_BODY_SIZE:
