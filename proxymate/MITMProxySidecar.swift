@@ -110,6 +110,18 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
                 throw SidecarError.launchFailed(error.localizedDescription)
             }
 
+            // Block until mitmdump has actually bound its listener. Without
+            // this wait, start() returned "success" while the process was
+            // still in its CPython import / TLS setup phase — the first
+            // CONNECT into the sidecar hit `Connection refused` and surfaced
+            // in Console.app as nw_socket_handle_socket_event SO_ERROR 61.
+            // 10 s cap is well beyond the observed cold-start (~1.5 s).
+            guard Self.waitForLocalPort(listenPort, timeout: 10) else {
+                p.terminate()
+                stopSocketListener()
+                throw SidecarError.launchFailed("mitmdump didn't accept connections on :\(listenPort) within 10 s")
+            }
+
             process = p
             _port = listenPort
             _isRunning = true
@@ -118,6 +130,35 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             onEvent?(.log(.info, "mitmproxy sidecar on port \(listenPort) (PID \(p.processIdentifier))"))
             return listenPort
         }
+    }
+
+    /// Poll 127.0.0.1:<port> with TCP connect() every 100 ms until either
+    /// the peer accepts (returns true) or `timeout` elapses (returns false).
+    /// Used to gate sidecar `start()` behind proof-of-readiness so callers
+    /// that immediately try to forward don't race the subprocess's own
+    /// bind() call. Reused from SquidSidecar to avoid duplicating the
+    /// Darwin-socket boilerplate; internal access so it stays out of the
+    /// public API but is visible across the module.
+    static func waitForLocalPort(_ port: UInt16, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let sock = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+            if sock >= 0 {
+                var addr = sockaddr_in()
+                addr.sin_family = sa_family_t(AF_INET)
+                addr.sin_port = in_port_t(port).bigEndian
+                addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+                let rc = withUnsafePointer(to: &addr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        Darwin.connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    }
+                }
+                Darwin.close(sock)
+                if rc == 0 { return true }
+            }
+            usleep(100_000)  // 100 ms
+        }
+        return false
     }
 
     func stop() {

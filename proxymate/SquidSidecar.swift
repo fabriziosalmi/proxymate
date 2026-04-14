@@ -88,6 +88,17 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
                 throw SquidError.launchFailed(error.localizedDescription)
             }
 
+            // Gate success on Squid actually accepting connections. Squid's
+            // cold start (config parse, cache_dir init, DNS warmup) takes
+            // longer than mitmdump's; the first CONNECT from LocalProxy
+            // otherwise fails with "Connection refused" and the user sees
+            // 502 on the first request. 15 s ceiling accommodates a cold
+            // disk_cache init on a slow filesystem.
+            guard MITMProxySidecar.waitForLocalPort(listenPort, timeout: 15) else {
+                p.terminate()
+                throw SquidError.launchFailed("squid didn't accept connections on :\(listenPort) within 15 s")
+            }
+
             process = p
             port = listenPort
             isRunning = true
