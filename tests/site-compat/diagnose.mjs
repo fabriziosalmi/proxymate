@@ -26,6 +26,7 @@ const opts = {};
 for (let i = 0; i < rawArgs.length; i++) {
   const a = rawArgs[i];
   if (a === '--no-proxy') opts.noProxy = true;
+  else if (a === '--headed') opts.headed = true;
   else if (a.startsWith('--')) { opts[a.slice(2)] = rawArgs[i + 1]; i++; }
   else positional.push(a);
 }
@@ -33,6 +34,7 @@ const targetUrl = positional[0];
 const browserKind = opts.browser || 'chromium';
 const labelArg = opts.label || null;
 const noProxy = !!opts.noProxy;
+const headed = !!opts.headed;
 const mitmArg = opts.mitm || null;
 
 if (!targetUrl) {
@@ -58,7 +60,7 @@ const runStartMs = Date.now();
 const launcher = browserKind === 'firefox' ? firefox : chromium;
 const browser = await launcher.launch({
   proxy: noProxy ? undefined : { server: `http://127.0.0.1:${proxyPort}` },
-  headless: true,
+  headless: !headed,
 });
 
 const context = await browser.newContext({

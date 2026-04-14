@@ -57,9 +57,10 @@ Single URL:
   $0 <url> [--browser chromium|firefox] [--label tag]
   $0 <url> --no-proxy                        # baseline without proxy
   $0 <url> --mitm on|off                     # tag run by MITM state
+  $0 <url> --headed                          # visible browser (anti-bot friendly)
 
 Suite (runs all of sites.json):
-  $0 --suite [--browser ...] [--no-proxy] [--mitm on|off]
+  $0 --suite [--browser ...] [--no-proxy] [--mitm on|off] [--headed]
 
 Compare latest runs across modes:
   $0 --compare <modeA> <modeB>

@@ -16,11 +16,13 @@ const opts = {};
 for (let i = 0; i < rawArgs.length; i++) {
   const a = rawArgs[i];
   if (a === '--no-proxy') opts.noProxy = true;
+  else if (a === '--headed') opts.headed = true;
   else if (a.startsWith('--')) { opts[a.slice(2)] = rawArgs[i + 1]; i++; }
 }
 
 const browserKind = opts.browser || 'chromium';
 const noProxy = !!opts.noProxy;
+const headed = !!opts.headed;
 const mitmArg = opts.mitm || null;
 const mode = noProxy ? 'direct' : `proxy-mitm-${mitmArg || 'unknown'}`;
 
@@ -35,6 +37,7 @@ function runOne(site) {
     const chunks = [];
     const childArgs = ['diagnose.mjs', site.url, '--browser', browserKind, '--label', site.label];
     if (noProxy) childArgs.push('--no-proxy');
+    if (headed) childArgs.push('--headed');
     if (mitmArg) childArgs.push('--mitm', mitmArg);
     const proc = spawn('node', childArgs, { env: process.env });
     proc.stdout.on('data', (d) => chunks.push(d));
