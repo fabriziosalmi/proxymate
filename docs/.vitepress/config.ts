@@ -37,6 +37,7 @@ export default defineConfig({
             { text: 'Introduction', link: '/guide/getting-started' },
             { text: 'Installation', link: '/guide/installation' },
             { text: 'First run', link: '/guide/first-run' },
+            { text: 'Walkthrough', link: '/guide/walkthrough' },
           ],
         },
         {
