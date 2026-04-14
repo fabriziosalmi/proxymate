@@ -80,6 +80,27 @@ tests/site-compat/reports/
 
 First `--suite` run installs Playwright + Chromium + Firefox into `node_modules/` (one-time, ~300 MB).
 
+## Calibration — read this before chasing a green suite
+
+The OK/FAIL badge is a **secondary** signal. The authoritative output is the per-host `hostClassification` and the top-level `signals[]` field in `report.json`. Don't optimize for 10/10 green — you will lose to the long tail of the real web.
+
+Sources of noise that will never fully go away:
+
+- **Anti-bot detection.** Apple iCloud, most banking portals, some airlines run Akamai Bot Manager / Arkose Labs / Cloudflare Challenge. They fingerprint Playwright-headless Chromium specifically and serve a 403 or an infinite challenge page. `--headed` mitigates some of them. Full bypass requires `playwright-extra` + `stealth` plugin — out of scope here.
+- **HTTPS-RR bypass on sub-resource CDNs.** Browsers discover HTTP/3 endpoints via DNS HTTPS records (RFC 9460). That lookup bypasses Proxymate entirely because the macOS system proxy is TCP-only. Sub-resource hosts that advertise HTTP/3 this way will show up as `BYPASS` in the report even when the main page loads fine — it's an OS-level limitation, not a Proxymate bug. See `docs/guide/mitm-browser-trust` for the full writeup.
+- **Consent/tracking SDK crashes.** When Proxymate's WAF blocks a tracker, the site's loader often receives a 403 HTML page instead of the expected JS bundle and throws (`SyntaxError: Unexpected token '<'`, `"No options detected"` from OneTrust, iubenda helpers). We mark these benign but they'll still show in `consoleErrors`.
+- **`networkidle` timeouts.** Modern sites keep long-lived analytics / realtime / WebSocket connections open by design. We use `load` + 2s settle instead, but some sites (RAI, Mediaset in certain load paths) still exceed 30s if the consent wall blocks their main bundle.
+
+Realistic passing rate on the bundled `sites.json` against Proxymate with MITM on: **6-8 out of 10**. The sites that fail in a given run will rotate depending on which tracker is currently down, which consent vendor deployed a breaking change this week, and which anti-bot vendor's cache has your IP flagged.
+
+**Use the suite as a classifier, not a pass/fail gate.** If a user reports site X broken, run it, read the `hostClassification` and `signals`, and you'll know in 30 seconds whether the issue is:
+
+- in Proxymate's proxy/MITM stack (`PROXY_ERROR`, `CA_NOT_TRUSTED`, `CONNECTION_RESET`)
+- outside Proxymate's reach (`BYPASS`, `MANY_CORS_MODULE_ERRORS`)
+- in the browser or on the site (`BROWSER`, real `pageErrors`)
+
+Act on the first category. Document the second. Ignore the third.
+
 ## Extending
 
 Add sites to `sites.json`:
