@@ -2045,7 +2045,8 @@ struct AIView: View {
             HStack {
                 Text("Daily limit").font(.caption)
                 Spacer()
-                TextField("0 = no limit", value: aiBinding(\.dailyBudgetUSD),
+                TextField("0 = no limit",
+                          value: aiBinding(\.dailyBudgetUSD, nonNegative: true),
                           format: .currency(code: "USD"))
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 100)
@@ -2054,7 +2055,8 @@ struct AIView: View {
             HStack {
                 Text("Monthly limit").font(.caption)
                 Spacer()
-                TextField("0 = no limit", value: aiBinding(\.monthlyBudgetUSD),
+                TextField("0 = no limit",
+                          value: aiBinding(\.monthlyBudgetUSD, nonNegative: true),
                           format: .currency(code: "USD"))
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 100)
@@ -2176,6 +2178,23 @@ struct AIView: View {
             set: { newVal in
                 var s = state.aiSettings
                 s[keyPath: keyPath] = newVal
+                state.updateAISettings(s)
+            }
+        )
+    }
+
+    /// Overload that clamps numeric budget values to non-negative. Without
+    /// this, a user pasting "-50" as a budget would persist a negative
+    /// number that the "> 0" gate in AITracker silently treats as "no
+    /// limit" — visually the field shows -$50, semantically the cap is
+    /// off. Clamping on write makes the two agree.
+    private func aiBinding(_ keyPath: WritableKeyPath<AISettings, Double>,
+                           nonNegative: Bool) -> Binding<Double> {
+        Binding(
+            get: { state.aiSettings[keyPath: keyPath] },
+            set: { newVal in
+                var s = state.aiSettings
+                s[keyPath: keyPath] = nonNegative ? max(0, newVal) : newVal
                 state.updateAISettings(s)
             }
         )

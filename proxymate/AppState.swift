@@ -377,7 +377,19 @@ final class AppState: ObservableObject {
         // process — SquidSidecar only kills processes it spawned.
         SquidSidecar.shared.stop()
         if pacSettings.enabled {
-            Task { try? await PACServer.clearSystemPAC() }
+            Task { [weak self] in
+                do { try await PACServer.clearSystemPAC() }
+                catch {
+                    // Cleanup of `networksetup -setautoproxyurl ... off`
+                    // failed — surface the error rather than leaving the
+                    // PAC config stuck in the system. Without this log, a
+                    // user toggling PAC off could find scutil --proxy
+                    // still showing ProxyAutoConfigEnable=1 with no hint.
+                    await MainActor.run {
+                        self?.log(.warn, "PAC cleanup failed: \(error.localizedDescription)")
+                    }
+                }
+            }
         }
         PoolRouter.shared.stop()
         blacklistTimer?.invalidate()
@@ -668,7 +680,19 @@ final class AppState: ObservableObject {
                 startPAC(proxyPort: port)
             } else {
                 PACServer.shared.stop()
-                Task { try? await PACServer.clearSystemPAC() }
+                Task { [weak self] in
+                do { try await PACServer.clearSystemPAC() }
+                catch {
+                    // Cleanup of `networksetup -setautoproxyurl ... off`
+                    // failed — surface the error rather than leaving the
+                    // PAC config stuck in the system. Without this log, a
+                    // user toggling PAC off could find scutil --proxy
+                    // still showing ProxyAutoConfigEnable=1 with no hint.
+                    await MainActor.run {
+                        self?.log(.warn, "PAC cleanup failed: \(error.localizedDescription)")
+                    }
+                }
+            }
             }
         }
     }

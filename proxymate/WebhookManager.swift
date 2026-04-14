@@ -95,7 +95,20 @@ nonisolated final class WebhookManager: @unchecked Sendable {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue("Proxymate/1.0", forHTTPHeaderField: "User-Agent")
                 request.httpBody = body
-                self.directSession.dataTask(with: request).resume()
+                // Before: .dataTask(with: request).resume() with no
+                // completion handler — every delivery failure (network
+                // down, DNS fail, endpoint 500) was silently eaten.
+                // Operators could configure a webhook and never learn it
+                // wasn't arriving. Now we log delivery outcome so failures
+                // surface in Console.app (same NSLog channel as other
+                // singletons without an event bus).
+                self.directSession.dataTask(with: request) { _, response, error in
+                    if let error {
+                        NSLog("[Webhook] POST \(urlString) failed: \(error.localizedDescription)")
+                    } else if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                        NSLog("[Webhook] POST \(urlString) → HTTP \(http.statusCode)")
+                    }
+                }.resume()
             }
         }
     }
