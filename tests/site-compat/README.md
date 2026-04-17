@@ -101,12 +101,48 @@ Realistic passing rate on the bundled `sites.json` against Proxymate with MITM o
 
 Act on the first category. Document the second. Ignore the third.
 
-## Extending
+## Three tiers, three purposes
 
-Add sites to `sites.json`:
+| File | Purpose | Gate-able? |
+| --- | --- | --- |
+| `sites-core.json` | 5 rock-solid sites (Cloudflare, Microsoft, Google, Wikipedia, httpbingo) used for the pre-push integrity gate. If any of these shows `CA_NOT_TRUSTED` or `PROXY_UPSTREAM_ERROR`, the proxy is broken. | Yes |
+| `sites.json` | Broader diagnostic set — includes anti-bot-fronted sites (iCloud, LinkedIn, intesa), state-pinned streaming platforms (RAI, Mediaset, Twitch). Run manually as a classifier. | No |
+| `sites-streaming.json` | Direct media URLs (Apple HLS bipbop, Mux HLS test, Radio Paradise MP3/AAC) exercised by `stream-probe.mjs`. Validates the signal-based streaming auto-exclude shipped in 0.9.57. | Yes |
+
+Add sites to whichever tier fits the job:
 
 ```json
 { "url": "https://example.com", "label": "example" }
 ```
 
 Labels become directory names — keep them short and filesystem-safe. Default timeout is 30 s per site.
+
+## Stream probe
+
+`node stream-probe.mjs` doesn't launch a browser — it curls each stream URL through Proxymate, caps at 4 s, and asserts:
+
+1. HTTP status is `200` or `206`
+2. Response `Content-Type` matches the per-stream `expectedContentTypeRe`
+3. ≥ 8 KB of body bytes arrived within the window (the player would see audio flowing)
+4. `proxymate.log` contains `MITM: streaming media (…) from <host>, auto-excluding` within the probe window
+
+A failure on (3) with a streaming Content-Type on (2) means the 0.9.57 patch regressed — the response is being buffered instead of streamed. Missing (4) when (3) passes is informational only: the host may already have been auto-excluded in a prior run (present in `ignore_hosts` → the log line fires only once per host per Proxymate process).
+
+```
+node stream-probe.mjs                  # all streams
+node stream-probe.mjs --label mux-hls-test   # just one
+```
+
+Requires `PROXYMATE_PORT`.
+
+## Pre-push gate
+
+`scripts/pre-push-hook.sh --install` wires a git pre-push hook that runs three gates:
+
+1. **Swift unit tests** — `HTTPParserTests` only (fast, covers the parsing layer the streaming patch touches)
+2. **Core site integrity** — `suite.mjs --sites sites-core.json --mitm on`, blocks on unequivocal signals
+3. **Streaming probe** — `stream-probe.mjs`, blocks on 0 bytes / wrong Content-Type
+
+Gates 2 and 3 are **skipped with a clear message** when `PROXYMATE_PORT` is unset or no listener is bound on it — the hook must not block pushes from machines where the app isn't currently running. Bypass once with `git push --no-verify`.
+
+The hook intentionally does not run the broader `sites.json` suite. That list is 6-8/10 green on a good day (anti-bot detection, consent-wall SDKs, HTTPS-RR bypass), and gating on it would train the reflex to `--no-verify` after a few pushes. Use it as a classifier, not a gate.

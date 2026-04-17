@@ -1,0 +1,33 @@
+{
+  "_comment": "Public streaming endpoints used by stream-probe.mjs. Each entry is a direct media URL (not a page) so we can curl-through-proxy and assert on the response headers + first bytes — the browser path doesn't help here because Playwright headless doesn't click Play. Picked for longevity: Apple's bipbop HLS has been live for over a decade; Radio Paradise is one of the oldest public webradio streams; Mux maintains its test streams for library developers. Expected Content-Type values are listed so the probe can validate the classifier matches reality. minBytes is per-stream because HLS master manifests are tiny text files (a few hundred bytes) while audio/video streams flow tens of KB per second.",
+  "streams": [
+    {
+      "label": "apple-hls-bipbop",
+      "url": "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8",
+      "kind": "hls-manifest",
+      "expectedContentTypeRe": "^(application/(vnd\\.apple\\.mpegurl|x-mpegurl)|audio/mpegurl)",
+      "minBytes": 300
+    },
+    {
+      "label": "mux-hls-test",
+      "url": "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+      "kind": "hls-manifest",
+      "expectedContentTypeRe": "^(application/(vnd\\.apple\\.mpegurl|x-mpegurl)|audio/mpegurl)",
+      "minBytes": 200
+    },
+    {
+      "label": "radio-paradise-aac",
+      "url": "https://stream.radioparadise.com/aac-320",
+      "kind": "webradio-aac",
+      "expectedContentTypeRe": "^audio/(aac|aacp|mpeg|x-aac)",
+      "minBytes": 32768
+    },
+    {
+      "label": "radio-paradise-mp3",
+      "url": "https://stream.radioparadise.com/mp3-128",
+      "kind": "webradio-mp3",
+      "expectedContentTypeRe": "^audio/(mpeg|mp3)",
+      "minBytes": 16384
+    }
+  ]
+}

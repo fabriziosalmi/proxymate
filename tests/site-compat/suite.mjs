@@ -1,7 +1,8 @@
-// Runs diagnose.mjs across sites.json. Forwards flags to each child.
+// Runs diagnose.mjs across a site list. Forwards flags to each child.
 //
 // Usage:
-//   node suite.mjs                                  # chromium, via proxy, mitm=unknown
+//   node suite.mjs                                  # chromium, via proxy, mitm=unknown, sites.json
+//   node suite.mjs --sites sites-core.json          # pre-push integrity gate
 //   node suite.mjs --browser firefox
 //   node suite.mjs --no-proxy                       # baseline without Proxymate
 //   node suite.mjs --mitm on|off                    # tag runs with MITM state
@@ -26,7 +27,8 @@ const headed = !!opts.headed;
 const mitmArg = opts.mitm || null;
 const mode = noProxy ? 'direct' : `proxy-mitm-${mitmArg || 'unknown'}`;
 
-const { sites } = JSON.parse(await readFile(resolve('./sites.json'), 'utf8'));
+const sitesFile = opts.sites || 'sites.json';
+const { sites } = JSON.parse(await readFile(resolve('./', sitesFile), 'utf8'));
 
 const ts = new Date().toISOString().replace(/[:.]/g, '-');
 const suiteDir = resolve('./reports/_suite', mode, ts);

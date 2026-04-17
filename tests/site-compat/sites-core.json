@@ -1,0 +1,10 @@
+{
+  "_comment": "Rock-solid integrity targets for the pre-push gate. Picked for stability over the long haul: no aggressive anti-bot, no fragile consent walls, no experimental TLS stacks. If one of these breaks through Proxymate with MITM on, the proxy is almost certainly broken — not the site, not the network. Keep this list short.",
+  "sites": [
+    { "url": "https://httpbingo.org/get", "label": "httpbingo" },
+    { "url": "https://www.cloudflare.com", "label": "cloudflare" },
+    { "url": "https://www.microsoft.com", "label": "microsoft" },
+    { "url": "https://www.google.com", "label": "google" },
+    { "url": "https://en.wikipedia.org/wiki/HTTPS", "label": "wikipedia" }
+  ]
+}
