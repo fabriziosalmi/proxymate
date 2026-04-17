@@ -26,7 +26,7 @@ Verify the SHA-256 before mounting, especially if you downloaded from a mirror:
 
 ```bash
 shasum -a 256 ~/Downloads/Proxymate-0.9.58.dmg
-# expected: <filled after build — see docs/release-notes.md>
+# expected: 590e8ff98463ef9ada52e41bf8483dfb81e8900aaf8a2c5608a2a5c0701160e5
 ```
 
 The DMG is notarized and the ticket is stapled — `spctl` will accept it offline.

@@ -69,8 +69,8 @@ Phase-1 mitigations live in both the Swift-native `MITMHandler` / `TLSManager` a
 
 ```
 File:    Proxymate-0.9.58.dmg
-Size:    TBD
-SHA-256: TBD
+Size:    64 MB
+SHA-256: 590e8ff98463ef9ada52e41bf8483dfb81e8900aaf8a2c5608a2a5c0701160e5
 Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
 Notary:  Accepted, stapled, spctl-verified
 ```
