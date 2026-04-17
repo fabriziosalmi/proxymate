@@ -539,7 +539,40 @@ nonisolated final class TLSManager: @unchecked Sendable {
             runtimeExcludes.insert(lower)
         }
     }
-    
+
+    /// Add host to runtime excludes in response to a streaming-media
+    /// Content-Type. Returns true on the first call for a given host so
+    /// the caller can log once; subsequent calls return false.
+    func recordStreamingMediaDetected(host: String) -> Bool {
+        queue.sync {
+            let lower = host.lowercased()
+            if runtimeExcludes.contains(lower) { return false }
+            runtimeExcludes.insert(lower)
+            return true
+        }
+    }
+
+    /// Classify a Content-Type header value as a streaming-media type
+    /// that Proxymate should not intercept at the body level. Matches the
+    /// actual streams (audio/*, video/*) and the manifest formats that
+    /// players fetch from the same host before pulling segments.
+    static func isStreamingMediaContentType(_ value: String) -> Bool {
+        // Value may be "audio/mpeg; charset=..." — compare only the type.
+        let t = value.split(separator: ";", maxSplits: 1).first
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            ?? value.lowercased()
+        if t.hasPrefix("audio/") || t.hasPrefix("video/") { return true }
+        switch t {
+        case "application/vnd.apple.mpegurl",    // HLS manifest (m3u8)
+             "application/x-mpegurl",            // HLS manifest (legacy)
+             "application/dash+xml",             // MPEG-DASH manifest
+             "application/vnd.ms-sstr+xml":      // Smooth Streaming manifest
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Get current runtime excludes (for UI display)
     func getRuntimeExcludes() -> [String] {
         queue.sync { Array(runtimeExcludes).sorted() }

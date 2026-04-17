@@ -433,6 +433,7 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                     }
 
                     // Parse headers to determine content length
+                    var streamingMediaContentType: String?
                     if !headersComplete, let headerEnd = responseBuffer.range(of: Data("\r\n\r\n".utf8)) {
                         headersComplete = true
                         let headerData = responseBuffer[..<headerEnd.upperBound]
@@ -444,9 +445,36 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                                     contentLength = Int(line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces))
                                 } else if lower.hasPrefix("transfer-encoding:") && lower.contains("chunked") {
                                     isChunked = true
+                                } else if lower.hasPrefix("content-type:") {
+                                    let value = String(line.dropFirst("content-type:".count))
+                                    if TLSManager.isStreamingMediaContentType(value) {
+                                        streamingMediaContentType = value.split(separator: ";", maxSplits: 1).first
+                                            .map { $0.trimmingCharacters(in: .whitespaces) } ?? value
+                                    }
                                 }
                             }
                         }
+                    }
+
+                    // Streaming-media response: bypass this host for future connections,
+                    // AND immediately flush the in-flight buffer into streaming mode so
+                    // long-running audio/video streams don't stall waiting for the 10 MB
+                    // buffer cap to trip. The player sees bytes flow in real time.
+                    if let ct = streamingMediaContentType {
+                        let added = TLSManager.shared.recordStreamingMediaDetected(host: self.hostname)
+                        if added {
+                            self.onEvent?(.log(.info, "MITM: streaming media (\(ct)) from \(self.hostname), auto-excluding"))
+                        }
+                        self.sendEncrypted(ssl: ssl, data: responseBuffer)
+                        responseBuffer = Data()
+                        streamingMode = true
+                        if isComplete || error != nil {
+                            server.cancel()
+                            self.done(ssl: ssl)
+                        } else {
+                            receiveChunk()
+                        }
+                        return
                     }
 
                     // Check if response is complete

@@ -1,5 +1,56 @@
 # Release notes
 
+## 0.9.57 — signal-based MITM bypass for streaming media (audio, video, HLS, DASH)
+
+*Released 2026-04-17*
+
+Extends the existing cert-pinning auto-exclude logic with a second observable signal: **response `Content-Type`**. When a host responds with `audio/*`, `video/*`, `application/vnd.apple.mpegurl` (HLS m3u8), `application/x-mpegurl`, `application/dash+xml`, or `application/vnd.ms-sstr+xml` (Smooth Streaming), Proxymate adds that host to the runtime exclude list on the fly. Subsequent connections skip MITM cleanly — no body buffering, no player handshake interference, no manual allowlisting.
+
+### Why this matters
+
+Media-only hosts were previously handled by a hand-curated list in `MITMSettings.excludeHosts` (RAI, Mediaset, La7, YouTube media CDN, Netflix, Spotify, Twitch, Disney+, DAZN, Brightcove, Akamai media edges — see 0.9.53 notes). That list was maintenance overhead and didn't cover the long tail:
+
+- **Webradio** — thousands of Icecast / Shoutcast stations on bespoke hosts, most never on any curated list.
+- **Local / independent broadcasters** — regional TV, podcast hosts, community streams.
+- **Self-hosted media** — `video/*` from a customer's own CDN.
+
+Hostname-based rules can't scale to that. Content-Type is authoritative: if a server is sending HLS manifests or `audio/mpeg` bytes, it's a media stream, period — regardless of what the hostname is.
+
+### Implementation
+
+Two small changes, both in existing code paths:
+
+1. `TLSManager` gets `isStreamingMediaContentType(_:)` (pure classifier) and `recordStreamingMediaDetected(host:)` (one-shot runtime-exclude, idempotent).
+2. `MITMHandler.bufferServerResponse` already parses response headers to extract `Content-Length` and `Transfer-Encoding`. It now also reads `Content-Type`; on a streaming match it (a) flushes the buffered headers to the client and flips the connection into pass-through `streamingMode` immediately, and (b) marks the host excluded for future connections via the new TLSManager hook.
+
+The in-flight flush is the part that matters for webradio. Without it, `bufferServerResponse` would accumulate bytes until it hit the 10 MB inspection cap — roughly 14 minutes of silence at 96 kbps before the player gets any audio. With it, the player sees bytes within milliseconds of the headers. The runtime exclude then prevents subsequent reconnects from re-entering MITM at all.
+
+Log line when a host is newly bypassed:
+
+```
+MITM: streaming media (audio/mpeg) from radio.rai.it, auto-excluding
+```
+
+### Compatibility with existing excludes
+
+The hardcoded streaming-CDN seed list stays in place this release as a safety net — it gets the first request right for the most common platforms without waiting for a response to classify. Planned for removal in 0.9.58 after field validation of the signal-based path.
+
+The pinning-failure auto-exclude (handshake error ≥ 3 times → bypass) continues to catch players that cert-pin on the TLS leg before any HTTP is exchanged.
+
+### Principle
+
+Compat fixes in Proxymate key off **observable signals** — handshake failure, response Content-Type, HTTP status — never hostname match. Hardcoded lists are only acceptable as transient seed data that the signal-based layer eventually subsumes.
+
+### Artifact
+
+```
+File:    Proxymate-0.9.57.dmg
+Size:    TBD
+SHA-256: TBD
+Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
+Notary:  Accepted, stapled, spctl-verified
+```
+
 ## 0.9.56 — fix Root CA generation on macOS, add Export CA button, site-compat harness
 
 *Released 2026-04-14*

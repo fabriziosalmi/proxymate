@@ -93,7 +93,7 @@ The site is using application-level certificate pinning. Examples:
 - **Signal, WhatsApp, Telegram desktop apps** — pin specific certificates; nothing you do at the OS level changes their behavior.
 - **Banking and finance apps** (most of them) — pin against their issuer's intermediate.
 - **Apple's own services** (iCloud sync, push, software update) — pin against Apple's internal CA. Already in Proxymate's default exclude list.
-- **Streaming media players** — HLS/DASH segment fetches over Akamai/Brightcove often pin to defeat reverse-engineering. Default excludes cover the common ones (RAI, Mediaset, Netflix, Disney+, Twitch, Spotify, YouTube media CDN).
+- **Streaming media players** — HLS/DASH segment fetches over Akamai/Brightcove often pin to defeat reverse-engineering. Default excludes cover the common platforms (RAI, Mediaset, Netflix, Disney+, Twitch, Spotify, YouTube media CDN), and Proxymate 0.9.57+ auto-excludes any host that returns a streaming `Content-Type` (`audio/*`, `video/*`, HLS `m3u8`, DASH `mpd`) — so webradio, podcasts, and independent broadcasters bypass MITM without needing to be on a curated list.
 
 Proxymate auto-detects pinning via consecutive handshake failures. After 3 strikes against the same host, it adds the host to a runtime exclude list and stops attempting MITM there. You can also add hosts manually via **Preferences → MITM → Excludes**.
 
