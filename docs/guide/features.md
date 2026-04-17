@@ -54,8 +54,8 @@ Per-host policy. Every option is a checkbox.
 - Auto-exclude for pinned apps, `*.apple.com`, banking, `*.signal.org`, etc.
 - Curated streaming-media exclude list (RAI, Mediaset, La7, Netflix, Spotify, Twitch, YouTube media CDN, Disney+, DAZN, Brightcove, Akamai media subdomains)
 - Runtime auto-exclude after 3 consecutive pinning failures per host
-- Runtime auto-exclude on streaming-media `Content-Type` (`audio/*`, `video/*`, HLS `m3u8`, DASH `mpd`) — catches webradio, podcasts, independent broadcasters, any stream the hand-curated list misses
-- **Browser compatibility hardening** (0.9.54 – 0.9.57): `Alt-Svc` stripped to keep browsers on HTTP/2 inside the tunnel, HTTP/2 disabled on the downstream leg to prevent connection coalescing across hosts, one-click **Export Root CA** for Firefox import
+- Runtime auto-exclude on streaming-media `Content-Type` (`audio/*`, `video/*`, HLS `m3u8`, DASH `mpd`) — catches webradio, podcasts, independent broadcasters, any stream the hand-curated list misses. 0.9.58 hardens the signal with magic-byte corroboration (HTML/JSON tagged as audio is refused) and a 2-response / 60 s threshold so a one-off notification MP3 doesn't disable MITM for the whole host
+- **Browser compatibility hardening** (0.9.54 – 0.9.58): `Alt-Svc` stripped to keep browsers on HTTP/2 inside the tunnel, HTTP/2 disabled on the downstream leg to prevent connection coalescing across hosts, one-click **Export Root CA** for Firefox import
 - **Export** button in Preferences → TLS Interception writes `~/Downloads/proxymate-ca.pem` and reveals it in Finder — ready to drag-drop into Firefox's Certificate Authorities
 
 See [security model](/guide/security.md) for the full CA lifecycle and [MITM & browser trust](/guide/mitm-browser-trust.md) for the Firefox / HSTS / HTTP/3 / coalescing writeup.
