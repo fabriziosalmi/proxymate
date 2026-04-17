@@ -36,7 +36,7 @@ The tap lives at [github.com/fabriziosalmi/homebrew-proxymate](https://github.co
 ```bash
 curl -LO https://github.com/fabriziosalmi/proxymate/releases/latest/download/Proxymate-0.9.57.dmg
 shasum -a 256 Proxymate-0.9.57.dmg
-# expected: <filled after build — see docs/release-notes.md>
+# expected: 1eea131ba18feb78f2ea8c2c8d61bce38aed44eab1a0d631b4eff5b5732a4377
 ```
 
 Verify the SHA before mounting. The release page publishes the same hash in `Proxymate-0.9.57.dmg.sha256`. Because the DMG is notarized and stapled, `spctl` accepts it without a network round-trip:

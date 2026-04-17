@@ -46,8 +46,8 @@ Compat fixes in Proxymate key off **observable signals** — handshake failure, 
 
 ```
 File:    Proxymate-0.9.57.dmg
-Size:    TBD
-SHA-256: TBD
+Size:    63 MB
+SHA-256: 1eea131ba18feb78f2ea8c2c8d61bce38aed44eab1a0d631b4eff5b5732a4377
 Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
 Notary:  Accepted, stapled, spctl-verified
 ```
