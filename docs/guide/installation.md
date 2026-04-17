@@ -25,8 +25,8 @@ If you prefer to install manually, grab the signed, notarized DMG from the [late
 Verify the SHA-256 before mounting, especially if you downloaded from a mirror:
 
 ```bash
-shasum -a 256 ~/Downloads/Proxymate-0.9.57.dmg
-# expected: 1eea131ba18feb78f2ea8c2c8d61bce38aed44eab1a0d631b4eff5b5732a4377
+shasum -a 256 ~/Downloads/Proxymate-0.9.58.dmg
+# expected: <filled after build — see docs/release-notes.md>
 ```
 
 The DMG is notarized and the ticket is stapled — `spctl` will accept it offline.

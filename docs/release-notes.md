@@ -1,5 +1,80 @@
 # Release notes
 
+## 0.9.58 — hardening the streaming bypass (magic-byte corroboration + threshold gate + LRU)
+
+*Released 2026-04-17*
+
+The 0.9.57 streaming-media bypass used `Content-Type` alone to decide whether to pass a response through TLS-unaltered and whether to add the host to the runtime exclude list. That shipped with three known weaknesses a motivated reviewer could exploit or reasonably object to:
+
+1. An attacker-controlled server could label arbitrary HTML / JSON / gzipped payload as `audio/mpeg` and ride through the MITM WAF body-inspection layer untouched.
+2. A single `audio/*` or `video/*` response — a notification ding, a podcast embed, a video thumbnail — would permanently exclude the host from MITM for the rest of the process lifetime, even if nothing else about the site was actually a streaming service.
+3. The excluded-host set grew unbounded across long sessions.
+
+0.9.58 closes all three without changing the signal-based principle or the observable behavior on real streams (webradio, HLS, DASH).
+
+### M1 — magic-byte corroboration
+
+Before trusting a `Content-Type: audio/*` (or video/HLS/DASH) response, Proxymate now peeks the first ≤16 body bytes and compares against a per-format prefix table:
+
+| Content-Type | Expected prefix |
+| --- | --- |
+| `audio/mpeg`, `audio/mp3` | `ID3` or raw MPEG sync (`\xFF\xFB` / `\xFF\xF3` / `\xFF\xF2` / `\xFF\xFA`) |
+| `audio/aac`, `audio/aacp` | ADTS sync (`\xFF\xF[01]` / `\xFF\xF[89]`) or `ADIF` |
+| `audio/ogg`, `audio/opus`, `audio/vorbis` | `OggS` |
+| `audio/flac` | `fLaC` or `OggS` |
+| `audio/wav` | `RIFF` |
+| `audio/mp4`, `video/mp4`, `audio/m4a` | `ftyp` at offset 4 |
+| `video/webm`, `video/x-matroska` | EBML header `\x1A\x45\xDF\xA3` |
+| `video/mp2t` | MPEG-TS sync byte `\x47` |
+| HLS manifests | `#EXTM3U` |
+| DASH manifests | `<?xml` or `<MPD` |
+
+A response that claims `audio/mpeg` but starts with `<!DOCTYPE html>`, `{"...`, `\x1f\x8b` (gzip — legit streams are never gzipped), or any other unrelated bytes is **refused** the streaming flag and takes the normal WAF inspection path. The attack "tag HTML as audio/mpeg to bypass body inspection" no longer works. Unit tests cover 15+ positive formats and 8 attack patterns.
+
+Structural rejection alone (HTML/JSON/gzip bytes regardless of Content-Type) also blocks rare audio/* formats we don't have in the magic table — those admit any non-HTML/JSON/gzip bytes, which is weaker but still closes the most obvious vector.
+
+### M2 + M3 — threshold-gated host exclusion
+
+Host exclusion is now **two-step**:
+
+1. First magic-validated streaming response from a host → the response itself streams pass-through (player sees bytes immediately), but the host is only registered as a **candidate** in a sliding 60-second window.
+2. Second magic-validated streaming response within the window → the host **graduates** to the runtime exclude list + `ignore_hosts`, and all future TCP connections to that host skip MITM entirely.
+
+Result: a one-off notification MP3, a short video thumbnail, an embedded podcast episode — each streams correctly on first fetch, but does **not** disable MITM for the rest of the domain. Only genuinely streaming sites (manifest + segments, or multiple reconnects) trip the graduation.
+
+### M4 — bounded state
+
+- `runtimeExcludes` gains a parallel FIFO order list capped at 5 000 entries. Oldest entry is evicted when the cap is reached.
+- The mitmproxy addon's `_streaming_hosts` is now an `OrderedDict` capped at 256 with LRU eviction.
+
+Under normal workloads neither cap is likely to be hit. They exist so a 24-hour session on 10 000 streaming hosts can't OOM the process.
+
+### Identical logic across both paths
+
+Phase-1 mitigations live in both the Swift-native `MITMHandler` / `TLSManager` and the mitmproxy sidecar addon (`proxymate_addon.py`). They share the same magic-byte table, the same threshold constants, and emit the same log format (`MITM: streaming media (audio/mpeg) from radio.example.com, auto-excluding`).
+
+### Tests
+
+- Python unit tests: 30 cases (classifier + magic + threshold + LRU).
+- Swift XCTest: 29 cases covering the same surface via `TLSManager`. See `proxymateTests/StreamingMagicTests.swift`.
+- Stream probe (`tests/site-compat/stream-probe.mjs`) unchanged — still validates end-to-end that Apple HLS bipbop, Mux HLS test, and Radio Paradise AAC/MP3 flow correctly. With the new threshold, the `auto-excluding` log appears on the 2nd probe of a given host rather than the 1st; the probe treats a missing log line as informational (not a failure) so it stays green either way.
+
+### What is still out of scope
+
+- **Persistence across restarts**: `_streaming_hosts` is still in-process only. Cold starts of Proxymate re-trigger the learn-on-first-response cycle. Deferred to a later release — the cost of a restart is ≤ 60 s of buffered streams, not a correctness issue.
+- **Manifest pre-parsing**: for HLS/DASH, we still learn segment-CDN hosts one response at a time rather than parsing the manifest to extract them up-front. On first-time playback the initial 1–2 segments may go through MITM before their host graduates. Deferred.
+- **Shoutcast ICY status line**: the `ICY 200 OK` pseudo-HTTP response line is still not parsed by our Swift HTTP layer. Real-world Icecast (Radio Paradise, most modern stations) uses HTTP/1.1, so this is a corner case. Deferred.
+
+### Artifact
+
+```
+File:    Proxymate-0.9.58.dmg
+Size:    TBD
+SHA-256: TBD
+Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
+Notary:  Accepted, stapled, spctl-verified
+```
+
 ## 0.9.57 — signal-based MITM bypass for streaming media (audio, video, HLS, DASH)
 
 *Released 2026-04-17*

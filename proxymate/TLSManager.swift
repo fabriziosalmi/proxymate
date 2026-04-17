@@ -96,8 +96,22 @@ nonisolated final class TLSManager: @unchecked Sendable {
     // Pinning detection (capped to prevent unbounded growth over long sessions)
     private var pinningFailures: [String: Int] = [:]
     private var runtimeExcludes: Set<String> = []
+    // FIFO order for LRU eviction of runtimeExcludes when the cap is reached.
+    // Parallel to the Set — constant-time contains() via the Set, bounded-time
+    // evict via the Array. Insertion appends; eviction pops from front.
+    private var runtimeExcludeOrder: [String] = []
     private let pinningMaxEntries = 5_000
     private let pinningAutoExcludeThreshold = 3
+    private let runtimeExcludesCap = 5_000
+
+    // Streaming-media auto-exclude state machine. Separate from pinning because
+    // its semantics are: "host has served >=2 magic-validated streaming bytes
+    // within 60 s → trust it's genuine media, bypass MITM for future conns."
+    // Single-response hits (notification sound, one-shot podcast) stream
+    // pass-through but do NOT permanently exclude the host.
+    private var streamingCandidates: [String: [Date]] = [:]
+    private let streamingThreshold = 2
+    private let streamingWindowSec: TimeInterval = 60
 
     // MARK: - CA Lifecycle
 
@@ -532,22 +546,56 @@ nonisolated final class TLSManager: @unchecked Sendable {
         }
     }
     
-    /// Add host to runtime excludes (triggered by cert pinning detection)
+    /// Add host to runtime excludes (triggered by cert pinning detection).
+    /// Maintains FIFO order and evicts the oldest entry once the cap is hit.
     func addRuntimeExclude(host: String) {
         let lower = host.lowercased()
         queue.async { [self] in
-            runtimeExcludes.insert(lower)
+            insertRuntimeExcludeLocked(lower)
         }
     }
 
-    /// Add host to runtime excludes in response to a streaming-media
-    /// Content-Type. Returns true on the first call for a given host so
-    /// the caller can log once; subsequent calls return false.
-    func recordStreamingMediaDetected(host: String) -> Bool {
+    /// Must be called with `queue` held (sync or async). Single source of
+    /// truth for bounded insertion into runtimeExcludes.
+    private func insertRuntimeExcludeLocked(_ host: String) {
+        if runtimeExcludes.contains(host) { return }
+        runtimeExcludes.insert(host)
+        runtimeExcludeOrder.append(host)
+        while runtimeExcludeOrder.count > runtimeExcludesCap {
+            let evicted = runtimeExcludeOrder.removeFirst()
+            runtimeExcludes.remove(evicted)
+        }
+    }
+
+    /// Record a magic-validated streaming-media response for `host`. Returns
+    /// true only when the host has crossed the threshold and was added to
+    /// runtimeExcludes on this call — the caller uses this to log once.
+    /// Returns false when the call just registered the host as a candidate,
+    /// or when the host was already excluded.
+    ///
+    /// Threshold semantics: STREAMING_THRESHOLD magic-validated responses
+    /// within a sliding STREAMING_WINDOW_SEC window graduate the host to
+    /// runtimeExcludes. This defends against the "single notification sound
+    /// bypasses MITM for the whole domain forever" false-positive.
+    func recordStreamingMediaResponse(host: String) -> Bool {
         queue.sync {
             let lower = host.lowercased()
             if runtimeExcludes.contains(lower) { return false }
-            runtimeExcludes.insert(lower)
+
+            let now = Date()
+            var window = streamingCandidates[lower] ?? []
+            window.append(now)
+            // Prune entries outside the sliding window.
+            let cutoff = now.addingTimeInterval(-streamingWindowSec)
+            window.removeAll(where: { $0 < cutoff })
+
+            if window.count < streamingThreshold {
+                streamingCandidates[lower] = window
+                return false
+            }
+            // Threshold crossed — graduate.
+            streamingCandidates.removeValue(forKey: lower)
+            insertRuntimeExcludeLocked(lower)
             return true
         }
     }
@@ -573,15 +621,118 @@ nonisolated final class TLSManager: @unchecked Sendable {
         }
     }
 
+    /// Magic-byte corroboration: check whether the first body bytes are
+    /// consistent with the declared streaming Content-Type. Defeats the
+    /// trivial "attacker labels HTML/JSON as audio/mpeg to bypass WAF"
+    /// vector. Returns false on empty data, structural mismatches
+    /// (HTML/JSON/gzip in an audio/video response), or known-format
+    /// CT with wrong container header.
+    ///
+    /// A response that passes this is not guaranteed legitimate — but it
+    /// has gone through the trouble of producing a real media header,
+    /// which is a real barrier for the casual WAF-bypass attempt.
+    static func matchesStreamingMagic(_ data: Data, contentType: String) -> Bool {
+        guard !data.isEmpty else { return false }
+        let ct = contentType.split(separator: ";", maxSplits: 1).first
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            ?? contentType.lowercased()
+
+        // Structural reject. Tolerate leading whitespace for text manifests.
+        let bytes = Array(data.prefix(16))
+        var head = bytes[...]
+        while let first = head.first, (first == 0x20 || first == 0x09 || first == 0x0A || first == 0x0D) {
+            head = head.dropFirst()
+        }
+        let manifestTypes: Set<String> = [
+            "application/dash+xml", "application/vnd.ms-sstr+xml"
+        ]
+        if let firstByte = head.first,
+           (firstByte == 0x3C /* < */ || firstByte == 0x7B /* { */ || firstByte == 0x5B /* [ */),
+           !manifestTypes.contains(ct) {
+            return false
+        }
+        if bytes.count >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B {
+            // gzip — streams are never gzipped. Evasion signal.
+            return false
+        }
+
+        if let patterns = magicPatterns(for: ct) {
+            return patterns.contains { (offset, expected) in
+                let end = offset + expected.count
+                guard data.count >= end else { return false }
+                return Array(data[offset..<end]) == expected
+            }
+        }
+
+        // No specific entry. audio/* and video/* with the structural reject
+        // already cleared pass through — admits rare containers without
+        // giving up on the bypass defense.
+        if ct.hasPrefix("audio/") || ct.hasPrefix("video/") { return true }
+        return false
+    }
+
+    /// Per-Content-Type list of (offset, expected prefix) tuples. First
+    /// match wins. Ordered by frequency for fast-path speed on common
+    /// formats.
+    private static func magicPatterns(for ct: String) -> [(Int, [UInt8])]? {
+        switch ct {
+        case "audio/mpeg", "audio/mp3":
+            // MP3 with ID3v2 tag OR raw MPEG-1/2 Layer 3 sync word.
+            return [
+                (0, [0x49, 0x44, 0x33]),            // "ID3"
+                (0, [0xFF, 0xFB]), (0, [0xFF, 0xF3]),
+                (0, [0xFF, 0xF2]), (0, [0xFF, 0xFA]),
+            ]
+        case "audio/aac", "audio/aacp", "audio/x-aac":
+            return [
+                (0, [0xFF, 0xF0]), (0, [0xFF, 0xF1]),
+                (0, [0xFF, 0xF8]), (0, [0xFF, 0xF9]),
+                (0, [0x41, 0x44, 0x49, 0x46]),      // "ADIF"
+            ]
+        case "audio/ogg", "audio/opus", "audio/vorbis":
+            return [(0, [0x4F, 0x67, 0x67, 0x53])]  // "OggS"
+        case "audio/flac":
+            return [(0, [0x66, 0x4C, 0x61, 0x43]),  // "fLaC"
+                    (0, [0x4F, 0x67, 0x67, 0x53])]
+        case "audio/wav", "audio/x-wav", "audio/wave":
+            return [(0, [0x52, 0x49, 0x46, 0x46])]  // "RIFF"
+        case "audio/mp4", "audio/m4a", "audio/x-m4a", "video/mp4":
+            return [(4, [0x66, 0x74, 0x79, 0x70])]  // "ftyp"
+        case "video/quicktime":
+            return [(4, [0x66, 0x74, 0x79, 0x70]),
+                    (4, [0x6D, 0x6F, 0x6F, 0x76]),
+                    (4, [0x77, 0x69, 0x64, 0x65]),
+                    (4, [0x6D, 0x64, 0x61, 0x74])]
+        case "video/webm", "video/x-matroska":
+            return [(0, [0x1A, 0x45, 0xDF, 0xA3])]  // EBML
+        case "video/mp2t":
+            return [(0, [0x47])]                     // MPEG-TS sync
+        case "application/vnd.apple.mpegurl",
+             "application/x-mpegurl",
+             "audio/mpegurl":
+            return [(0, Array("#EXTM3U".utf8))]
+        case "application/dash+xml":
+            return [(0, Array("<?xml".utf8)),
+                    (0, Array("<MPD".utf8))]
+        case "application/vnd.ms-sstr+xml":
+            return [(0, Array("<?xml".utf8)),
+                    (0, Array("<SmoothStreamingMedia".utf8))]
+        default:
+            return nil
+        }
+    }
+
     /// Get current runtime excludes (for UI display)
     func getRuntimeExcludes() -> [String] {
         queue.sync { Array(runtimeExcludes).sorted() }
     }
 
     func resetPinningHistory() {
-        queue.sync { 
+        queue.sync {
             pinningFailures.removeAll()
             runtimeExcludes.removeAll()
+            runtimeExcludeOrder.removeAll()
+            streamingCandidates.removeAll()
         }
     }
 

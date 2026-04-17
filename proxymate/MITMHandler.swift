@@ -389,6 +389,11 @@ nonisolated final class MITMHandler: @unchecked Sendable {
     /// are streamed directly to client without body inspection (prevents OOM).
     private static let maxResponseBuffer = 10 * 1024 * 1024 // 10 MB
 
+    /// Minimum body bytes needed to run the magic-byte corroboration.
+    /// Largest offset+length in the pattern table is MP4 ftyp (4+4=8 bytes).
+    /// 16 gives slack without materially delaying the streaming decision.
+    private static let magicMinBytes = 16
+
     /// Buffer complete server response, apply WAF on body, then send encrypted to client
     private func bufferServerResponse(server: NWConnection, ssl: SSLBox) {
         var responseBuffer = Data()
@@ -396,6 +401,13 @@ nonisolated final class MITMHandler: @unchecked Sendable {
         var contentLength: Int?
         var isChunked = false
         var streamingMode = false // true = too large for inspection, stream directly
+
+        // Streaming-media detection carries across chunks: we learn the
+        // Content-Type on the header-complete chunk but may not yet have
+        // enough body bytes to magic-check. These flags persist the
+        // decision state so we don't re-evaluate on every chunk.
+        var streamingContentType: String?      // set on header parse, cleared once decided
+        var streamingMagicPending = false      // true = CT detected, waiting for body bytes
 
         func receiveChunk() {
             server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
@@ -432,12 +444,12 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                         return
                     }
 
-                    // Parse headers to determine content length
-                    var streamingMediaContentType: String?
+                    // Parse headers to determine content length and streaming Content-Type
                     if !headersComplete, let headerEnd = responseBuffer.range(of: Data("\r\n\r\n".utf8)) {
                         headersComplete = true
                         let headerData = responseBuffer[..<headerEnd.upperBound]
                         if let headerString = String(data: headerData, encoding: .utf8) {
+                            var hasContentEncoding = false
                             let lines = headerString.split(separator: "\r\n")
                             for line in lines.dropFirst() {
                                 let lower = line.lowercased()
@@ -445,36 +457,89 @@ nonisolated final class MITMHandler: @unchecked Sendable {
                                     contentLength = Int(line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces))
                                 } else if lower.hasPrefix("transfer-encoding:") && lower.contains("chunked") {
                                     isChunked = true
+                                } else if lower.hasPrefix("content-encoding:") {
+                                    hasContentEncoding = true
                                 } else if lower.hasPrefix("content-type:") {
                                     let value = String(line.dropFirst("content-type:".count))
                                     if TLSManager.isStreamingMediaContentType(value) {
-                                        streamingMediaContentType = value.split(separator: ";", maxSplits: 1).first
+                                        streamingContentType = value.split(separator: ";", maxSplits: 1).first
                                             .map { $0.trimmingCharacters(in: .whitespaces) } ?? value
                                     }
                                 }
                             }
+                            // Content-Encoding on a streaming Content-Type is an
+                            // evasion signal (real media is never gzipped). Refuse
+                            // the pass-through — WAF inspects normally.
+                            if streamingContentType != nil && hasContentEncoding {
+                                self.onEvent?(.log(.warn,
+                                    "MITM: streaming Content-Type from \(self.hostname) with Content-Encoding — refusing pass-through"))
+                                streamingContentType = nil
+                            }
+                            if streamingContentType != nil {
+                                streamingMagicPending = true
+                            }
                         }
                     }
 
-                    // Streaming-media response: bypass this host for future connections,
-                    // AND immediately flush the in-flight buffer into streaming mode so
-                    // long-running audio/video streams don't stall waiting for the 10 MB
-                    // buffer cap to trip. The player sees bytes flow in real time.
-                    if let ct = streamingMediaContentType {
-                        let added = TLSManager.shared.recordStreamingMediaDetected(host: self.hostname)
-                        if added {
-                            self.onEvent?(.log(.info, "MITM: streaming media (\(ct)) from \(self.hostname), auto-excluding"))
-                        }
-                        self.sendEncrypted(ssl: ssl, data: responseBuffer)
-                        responseBuffer = Data()
-                        streamingMode = true
-                        if isComplete || error != nil {
-                            server.cancel()
-                            self.done(ssl: ssl)
+                    // Streaming-media decision. Requires headers parsed AND
+                    // enough body bytes to run the magic check.
+                    if streamingMagicPending,
+                       let headerEnd = responseBuffer.range(of: Data("\r\n\r\n".utf8)) {
+                        let bodySoFar = responseBuffer.suffix(from: headerEnd.upperBound)
+                        if bodySoFar.count >= Self.magicMinBytes || isComplete {
+                            let bodyData = Data(bodySoFar)
+                            let ct = streamingContentType ?? ""
+                            if TLSManager.matchesStreamingMagic(bodyData, contentType: ct) {
+                                // Genuine media. Record toward threshold and, if
+                                // the response is unbounded, flip to pass-through.
+                                let graduated = TLSManager.shared.recordStreamingMediaResponse(host: self.hostname)
+                                if graduated {
+                                    self.onEvent?(.log(.info,
+                                        "MITM: streaming media (\(ct)) from \(self.hostname), auto-excluding"))
+                                }
+                                streamingMagicPending = false
+                                streamingContentType = nil
+
+                                // For unbounded streams (no Content-Length, chunked
+                                // or close-delimited), flush and pass through. Small
+                                // bounded responses (e.g. HLS manifests) fall through
+                                // to the normal completion path below — they fit in
+                                // the buffer and WAF on manifest text is cheap.
+                                let unbounded = (contentLength == nil) || (contentLength ?? 0) > Self.maxResponseBuffer
+                                if unbounded {
+                                    self.sendEncrypted(ssl: ssl, data: responseBuffer)
+                                    responseBuffer = Data()
+                                    streamingMode = true
+                                    if isComplete || error != nil {
+                                        server.cancel()
+                                        self.done(ssl: ssl)
+                                    } else {
+                                        receiveChunk()
+                                    }
+                                    return
+                                }
+                            } else {
+                                // Magic mismatch on a streaming Content-Type is an
+                                // attempted WAF bypass. Log, mark rejected, let
+                                // the normal buffer/WAF path handle the response.
+                                let head = bodyData.prefix(32).map { String(format: "%02x", $0) }.joined()
+                                self.onEvent?(.log(.warn,
+                                    "MITM: magic mismatch for \(ct) from \(self.hostname) (body starts \(head)) — refusing pass-through"))
+                                streamingMagicPending = false
+                                streamingContentType = nil
+                            }
                         } else {
-                            receiveChunk()
+                            // Not enough bytes yet to magic-check. Wait for next chunk.
+                            if isComplete || error != nil {
+                                server.cancel()
+                                let finalResponse = self.inspectResponse(responseBuffer)
+                                self.sendEncrypted(ssl: ssl, data: finalResponse)
+                                self.done(ssl: ssl)
+                            } else {
+                                receiveChunk()
+                            }
+                            return
                         }
-                        return
                     }
 
                     // Check if response is complete
