@@ -24,12 +24,36 @@ MAX_BODY_SIZE = 2 * 1024 * 1024  # 2 MB max for body inspection
 FULL_CAPTURE = os.environ.get("PROXYMATE_FULL_CAPTURE", "0") == "1"
 BODY_PREVIEW_SIZE = MAX_BODY_SIZE if FULL_CAPTURE else 4096
 
+# Streaming-media Content-Types that must bypass body buffering. The in-flight
+# response is streamed chunk-by-chunk (no 2 MB buffer wait — critical for
+# webradio, which sends audio bytes continuously and the player expects them
+# in real time). The host is also added to ignore_hosts so subsequent TCP
+# connections skip MITM entirely, matching the Swift-native path.
+_STREAMING_MEDIA_PREFIXES = ("audio/", "video/")
+_STREAMING_MEDIA_EXACT = {
+    "application/vnd.apple.mpegurl",   # HLS manifest (m3u8)
+    "application/x-mpegurl",           # HLS manifest (legacy)
+    "application/dash+xml",            # MPEG-DASH manifest
+    "application/vnd.ms-sstr+xml",     # Smooth Streaming manifest
+}
+
+
+def _is_streaming_media_content_type(value: str) -> bool:
+    # "audio/mpeg; charset=..." -> compare only the type token.
+    t = value.split(";", 1)[0].strip().lower()
+    if t.startswith(_STREAMING_MEDIA_PREFIXES):
+        return True
+    return t in _STREAMING_MEDIA_EXACT
+
 
 class ProxymateAddon:
     def __init__(self):
         self.sock = None
         self.lock = threading.Lock()
         self._parent_pid = os.getppid()
+        # Hosts already auto-excluded by streaming-media detection. Kept in-process
+        # so we log the decision once per host instead of on every response.
+        self._streaming_hosts: set[str] = set()
         self._connect()
         self._start_orphan_watchdog()
 
@@ -101,6 +125,53 @@ class ProxymateAddon:
                     pass
 
         self._send(event)
+
+    def responseheaders(self, flow: http.HTTPFlow):
+        """Fires after response headers are received but BEFORE the body.
+
+        Two jobs:
+          1. If Content-Type says this is streaming media (audio/video/HLS/DASH),
+             flip the response to pass-through mode so bytes flow to the client
+             in real time instead of being buffered. Without this, webradio
+             streams stall waiting for the 2 MB body-size cap.
+          2. Add the host to ignore_hosts so future TCP connections to the
+             same host skip MITM entirely (no cert forging, no handshake).
+        """
+        resp = flow.response
+        if resp is None:
+            return
+        ct = resp.headers.get("content-type") or resp.headers.get("Content-Type")
+        if not ct or not _is_streaming_media_content_type(ct):
+            return
+
+        # In-flight pass-through. mitmproxy streams the body chunk-by-chunk
+        # to the client without buffering; the addon will still see the
+        # response object but content will be empty (which is fine — we
+        # don't want to inspect media bytes).
+        resp.stream = True
+
+        host = flow.request.pretty_host
+        if host in self._streaming_hosts:
+            return
+        self._streaming_hosts.add(host)
+
+        # Dynamically bypass this host on future connections via mitmproxy's
+        # ignore_hosts option. Pattern is anchored to avoid partial matches.
+        try:
+            current = list(ctx.options.ignore_hosts or [])
+            pattern = f"^{host.replace('.', r'\.')}$"
+            if pattern not in current:
+                ctx.options.update(ignore_hosts=current + [pattern])
+        except Exception as e:
+            ctx.log.warn(f"[proxymate] ignore_hosts update failed for {host}: {e}")
+
+        short_ct = ct.split(";", 1)[0].strip()
+        ctx.log.info(f"[proxymate] streaming media ({short_ct}) from {host}, auto-excluding")
+        self._send({
+            "type": "log",
+            "level": "info",
+            "message": f"MITM: streaming media ({short_ct}) from {host}, auto-excluding",
+        })
 
     def response(self, flow: http.HTTPFlow):
         """Called for every response (already decrypted by mitmproxy)."""

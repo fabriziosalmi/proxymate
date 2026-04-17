@@ -18,14 +18,15 @@ Hostname-based rules can't scale to that. Content-Type is authoritative: if a se
 
 ### Implementation
 
-Two small changes, both in existing code paths:
+Proxymate has two MITM paths — the Swift-native `MITMHandler` for direct TLS interception and the bundled `mitmproxy` sidecar that handles the Squid-routed traffic. Both are patched so the fix holds regardless of the user's active configuration.
 
-1. `TLSManager` gets `isStreamingMediaContentType(_:)` (pure classifier) and `recordStreamingMediaDetected(host:)` (one-shot runtime-exclude, idempotent).
-2. `MITMHandler.bufferServerResponse` already parses response headers to extract `Content-Length` and `Transfer-Encoding`. It now also reads `Content-Type`; on a streaming match it (a) flushes the buffered headers to the client and flips the connection into pass-through `streamingMode` immediately, and (b) marks the host excluded for future connections via the new TLSManager hook.
+**Swift path** — `TLSManager` gets `isStreamingMediaContentType(_:)` (pure classifier) and `recordStreamingMediaDetected(host:)` (idempotent runtime-exclude). `MITMHandler.bufferServerResponse` already parsed response headers for `Content-Length` / `Transfer-Encoding`; it now also reads `Content-Type`, and on a streaming match it flushes the buffered headers to the client, flips the connection into pass-through `streamingMode` immediately, and records the host exclusion.
 
-The in-flight flush is the part that matters for webradio. Without it, `bufferServerResponse` would accumulate bytes until it hit the 10 MB inspection cap — roughly 14 minutes of silence at 96 kbps before the player gets any audio. With it, the player sees bytes within milliseconds of the headers. The runtime exclude then prevents subsequent reconnects from re-entering MITM at all.
+**mitmproxy path** — `proxymate_addon.py` gains a `responseheaders` hook (fires after headers, before body). On a streaming Content-Type match it sets `flow.response.stream = True` (mitmproxy's native chunk-by-chunk pass-through) and dynamically appends an anchored regex for the host to `ctx.options.ignore_hosts`, so subsequent TCP connections skip MITM at the TLS level.
 
-Log line when a host is newly bypassed:
+The in-flight flush (Swift) and stream flag (mitmproxy) are what matter for webradio. Without them, the response path would accumulate bytes until it hit a 10 MB (Swift) or 2 MB (mitmproxy) buffer cap — roughly 14 / 3 minutes of silence at 96 kbps before the player got any audio. With them, bytes flow to the player within milliseconds of the headers, and reconnects bypass MITM entirely.
+
+Log line when a host is newly bypassed (identical across both paths):
 
 ```
 MITM: streaming media (audio/mpeg) from radio.rai.it, auto-excluding
