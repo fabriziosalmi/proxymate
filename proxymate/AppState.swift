@@ -271,7 +271,13 @@ final class AppState: ObservableObject {
             // user switching from an external proxy to "Local Squid" while
             // enabled would see every request 502 until they toggled off
             // and back on.
-            ensureLocalSidecarForUpstream(host: p.host, port: port)
+            // Detach so the upstream switch doesn't freeze the popover
+            // while Squid cold-starts. Local proxy update + log happen
+            // immediately; sidecar boots in the background and the next
+            // CONNECT will succeed once it's up.
+            Task { [weak self] in
+                await self?.ensureLocalSidecarForUpstream(host: p.host, port: port)
+            }
             localProxy.updateUpstream(.init(host: p.host, port: port))
             log(.info, "Switched upstream to \(p.name)")
         }
@@ -299,7 +305,7 @@ final class AppState: ObservableObject {
         // before we forward to it. Otherwise a fresh install with the default
         // "Local Squid" selection would answer every request with 502
         // because nothing is listening on 3128.
-        ensureLocalSidecarForUpstream(host: proxy.host, port: upstreamPort)
+        await ensureLocalSidecarForUpstream(host: proxy.host, port: upstreamPort)
 
         let port: UInt16
         do {
@@ -359,11 +365,21 @@ final class AppState: ObservableObject {
     /// fatal: the enable continues and the user gets 502 responses if the
     /// upstream is truly unreachable — which is still better than a silent
     /// failure with no diagnostics.
-    private func ensureLocalSidecarForUpstream(host: String, port: UInt16) {
+    /// Boot the bundled Squid sidecar for the selected upstream when
+    /// needed. Runs on a detached Task because `SquidSidecar.start()`
+    /// blocks the calling thread for up to ~16 s (its `queue.sync` runs
+    /// `squid -z` cache init + a 15 s `waitForLocalPort` poll). Without
+    /// the detach, calling `enable()` froze the popover for the whole
+    /// duration and — worse — blocked the main thread before
+    /// `ProxyManager.enable` ever got to surface the admin-password
+    /// prompt, so users saw "no prompt + frozen UI" on every toggle.
+    private func ensureLocalSidecarForUpstream(host: String, port: UInt16) async {
         guard host == "127.0.0.1" || host == "::1" || host == "localhost" else { return }
         if port == 3128 {
             do {
-                _ = try SquidSidecar.shared.start(listenPort: port)
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try SquidSidecar.shared.start(listenPort: port)
+                }.value
             } catch {
                 log(.warn, "Local Squid sidecar not started: \(error.localizedDescription) — upstream must be reachable by other means")
             }
