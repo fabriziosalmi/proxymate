@@ -15,6 +15,7 @@ enum ProxyManagerError: LocalizedError {
     case verificationFailed(expected: String, actual: String)
     case invalidHost(String)
     case invalidPort(Int)
+    case invalidPACURL(String)
     var errorDescription: String? {
         switch self {
         case .scriptFailed(let m): return m
@@ -24,6 +25,8 @@ enum ProxyManagerError: LocalizedError {
             return "Invalid proxy host: \(h)"
         case .invalidPort(let p):
             return "Invalid proxy port: \(p)"
+        case .invalidPACURL(let u):
+            return "Invalid PAC URL: \(u)"
         }
     }
 }
@@ -44,6 +47,7 @@ enum ProxyManager {
         // `127.0.0.1; rm -rf ~` or `$(whoami)` would execute arbitrary commands
         // with admin privileges.
         try validate(host: proxy.host, port: proxy.port)
+        if let pacURL { try validate(pacURL: pacURL) }
 
         // Idempotent fast-path: if the system already routes to this host/port,
         // there's nothing to apply. Skipping osascript here avoids spurious
@@ -160,6 +164,46 @@ enum ProxyManager {
         guard !host.isEmpty, host.count <= 253,
               host.unicodeScalars.allSatisfy({ charset.contains($0) }) else {
             throw ProxyManagerError.invalidHost(host)
+        }
+    }
+
+    /// Strict allowlist for PAC URLs that get interpolated into a
+    /// double-quoted shell argument running as root. Rejecting anything
+    /// outside this set defeats command injection — without this, a URL
+    /// like `http://x.test/p"; rm -rf /; echo "` would break out of the
+    /// quotes and execute arbitrary commands with admin privileges.
+    /// Only http/https + RFC1123 host + port + restricted path/query.
+    /// Internal (not private) so unit tests can lock in the parser.
+    nonisolated static func validate(pacURL: String) throws {
+        guard !pacURL.isEmpty, pacURL.count <= 1024,
+              let comps = URLComponents(string: pacURL),
+              let scheme = comps.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = comps.host, !host.isEmpty,
+              comps.user == nil, comps.password == nil, comps.fragment == nil
+        else {
+            throw ProxyManagerError.invalidPACURL(pacURL)
+        }
+        let port = comps.port ?? (scheme == "https" ? 443 : 80)
+        try validate(host: host, port: port)
+
+        // Path: ASCII alphanumerics, slash, dot, hyphen, underscore. No
+        // spaces, no quotes, no $, `, \, ;, |, &, %, or newlines.
+        let pathChars = CharacterSet(charactersIn:
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./-_")
+        guard comps.path.unicodeScalars.allSatisfy({ pathChars.contains($0) }) else {
+            throw ProxyManagerError.invalidPACURL(pacURL)
+        }
+        if let q = comps.query {
+            // Queries are allowed but stay in the same restricted alphabet
+            // plus `=` and `&`. Percent-encoding is rejected on purpose —
+            // PAC servers under our control don't need it, and allowing %
+            // hands the attacker a way to smuggle quote/backslash bytes.
+            let queryChars = CharacterSet(charactersIn:
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./-_=&")
+            guard q.unicodeScalars.allSatisfy({ queryChars.contains($0) }) else {
+                throw ProxyManagerError.invalidPACURL(pacURL)
+            }
         }
     }
 

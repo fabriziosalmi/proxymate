@@ -284,121 +284,123 @@ nonisolated final class TLSManager: @unchecked Sendable {
     }
 
     /// Returns a SecIdentity for the given hostname. Uses disk-cached P12 if available.
+    ///
+    /// The shared `queue` is held only for cache lookups and a brief secret
+    /// fetch — the openssl shell pipeline runs without any lock so unrelated
+    /// TLSManager calls (`shouldIntercept`, `recordHandshakeFailure`,
+    /// `addRuntimeExclude`, …) don't queue behind 200–500 ms of cert
+    /// forging. Concurrent calls for the same first-seen host may produce
+    /// equivalent certs once; the disk write is atomic so the last one wins.
     func identityForHost(_ hostname: String) throws -> SecIdentity {
-        try queue.sync {
-            // 1. Memory cache
-            if let cached = leafCache[hostname] { return cached }
+        let host = try Self.validateHostname(hostname)
 
-            // 2. Disk cache — check for existing P12
-            let safeHostname = hostname.replacingOccurrences(of: "*", with: "_")
-                .replacingOccurrences(of: "/", with: "_")
-            let diskP12 = leafCacheDir.appendingPathComponent("\(safeHostname).p12")
-            if let p12Data = try? Data(contentsOf: diskP12),
-               let identity = importP12(p12Data) {
-                leafCache[hostname] = identity
-                return identity
-            }
+        // 1. Memory cache — fast path under lock
+        if let cached = queue.sync(execute: { leafCache[host] }) { return cached }
 
-            // 3. Generate new leaf cert
-            guard isCAInstalled else { throw TLSError.noCA }
-
-            try? FileManager.default.createDirectory(at: leafCacheDir, withIntermediateDirectories: true)
-
-            let leafDir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("proxymate-leaf-\(hostname.hashValue)", isDirectory: true)
-            try? FileManager.default.createDirectory(at: leafDir, withIntermediateDirectories: true)
-
-            let leafKeyPath = leafDir.appendingPathComponent("leaf.key").path
-            let leafCSRPath = leafDir.appendingPathComponent("leaf.csr").path
-            let leafCertPath = leafDir.appendingPathComponent("leaf.pem").path
-            let leafP12Path = leafDir.appendingPathComponent("leaf.p12").path
-            let extPath = leafDir.appendingPathComponent("ext.cnf").path
-
-            // SAN extension
-            let extCnf = """
-            [v3_leaf]
-            subjectAltName = DNS:\(hostname)
-            basicConstraints = CA:FALSE
-            keyUsage = digitalSignature, keyEncipherment
-            extendedKeyUsage = serverAuth
-            """
-            try extCnf.write(toFile: extPath, atomically: true, encoding: .utf8)
-
-            // Generate leaf key
-            guard shell("/usr/bin/openssl", args: [
-                "genrsa", "-out", leafKeyPath, "2048"
-            ]) == 0 else {
-                try? FileManager.default.removeItem(at: leafDir)
-                throw TLSError.keyGenFailed("Leaf key generation failed")
-            }
-
-            // Generate CSR
-            guard shell("/usr/bin/openssl", args: [
-                "req", "-new", "-key", leafKeyPath, "-out", leafCSRPath,
-                "-subj", "/CN=\(hostname)/O=Proxymate MITM"
-            ]) == 0 else {
-                try? FileManager.default.removeItem(at: leafDir)
-                throw TLSError.certCreationFailed
-            }
-
-            // Ensure the CA key is encrypted at rest (transparent migration
-            // from plaintext keys produced by older builds) and fetch the
-            // passphrase from Keychain.
-            try ensureCAKeyEncrypted()
-            let caPass = try getOrCreatePassphrase(account: caPassphraseAccount)
-            let leafPass = try getOrCreatePassphrase(account: leafPassphraseAccount)
-
-            // Sign with the encrypted CA key via -passin env:VAR (passphrase
-            // never appears on argv or any temp file).
-            guard shellWithEnv("/usr/bin/openssl", args: [
-                "x509", "-req", "-in", leafCSRPath,
-                "-CA", caCertPath, "-CAkey", caKeyPath,
-                "-passin", "env:PROXYMATE_CA_PASS",
-                "-CAcreateserial", "-out", leafCertPath, "-days", "365",
-                "-extensions", "v3_leaf", "-extfile", extPath
-            ], env: ["PROXYMATE_CA_PASS": caPass]) == 0 else {
-                try? FileManager.default.removeItem(at: leafDir)
-                throw TLSError.certCreationFailed
-            }
-
-            // Create PKCS12 bundle with a random, per-installation passphrase
-            // stored in Keychain. Identical for all leaves (acceptable — leaves
-            // are ephemeral and re-forgeable — and avoids per-file key
-            // management complexity).
-            guard shellWithEnv("/usr/bin/openssl", args: [
-                "pkcs12", "-export", "-des3",
-                "-inkey", leafKeyPath, "-in", leafCertPath,
-                "-certfile", caCertPath, "-out", leafP12Path,
-                "-passout", "env:PROXYMATE_LEAF_PASS"
-            ], env: ["PROXYMATE_LEAF_PASS": leafPass]) == 0 else {
-                try? FileManager.default.removeItem(at: leafDir)
-                throw TLSError.certCreationFailed
-            }
-
-            // Import PKCS12 → SecIdentity
-            guard let p12Data = try? Data(contentsOf: URL(fileURLWithPath: leafP12Path)) else {
-                try? FileManager.default.removeItem(at: leafDir)
-                throw TLSError.certCreationFailed
-            }
-
-            // Save P12 to disk cache for next time (0o600 perms so other
-            // local users can't read the leaf key).
-            try? p12Data.write(to: diskP12, options: .atomic)
-            try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o600], ofItemAtPath: diskP12.path)
-
-            guard let identity = importP12(p12Data) else {
-                try? FileManager.default.removeItem(at: leafDir)
-                throw TLSError.identityNotFound
-            }
-            if leafCache.count >= leafCacheMaxSize { leafCache.removeAll() }
-            leafCache[hostname] = identity
-
-            // Cleanup temp files
-            try? FileManager.default.removeItem(at: leafDir)
-
+        // 2. Disk cache — file ops, no lock needed
+        let diskP12 = leafCacheDir.appendingPathComponent("\(host).p12")
+        if let p12Data = try? Data(contentsOf: diskP12),
+           let identity = importP12(p12Data) {
+            cacheLeaf(identity, for: host)
             return identity
         }
+
+        // 3. Generate new leaf cert (slow path, no lock held during openssl)
+        guard isCAInstalled else { throw TLSError.noCA }
+
+        let (caPass, leafPass) = try queue.sync { () -> (String, String) in
+            try ensureCAKeyEncrypted()
+            let cp = try getOrCreatePassphrase(account: caPassphraseAccount)
+            let lp = try getOrCreatePassphrase(account: leafPassphraseAccount)
+            return (cp, lp)
+        }
+
+        let identity = try forgeLeafIdentity(host: host, diskP12: diskP12,
+                                             caPass: caPass, leafPass: leafPass)
+        cacheLeaf(identity, for: host)
+        return identity
+    }
+
+    private func cacheLeaf(_ identity: SecIdentity, for host: String) {
+        queue.sync {
+            if leafCache.count >= leafCacheMaxSize { leafCache.removeAll() }
+            leafCache[host] = identity
+        }
+    }
+
+    /// Forge a leaf cert for `host`, sign it with the CA, package as P12,
+    /// import to SecIdentity. Runs the openssl pipeline WITHOUT holding
+    /// `queue` — pre-fetched passphrases are passed in by the caller.
+    /// `host` MUST already be validated by `validateHostname`.
+    private func forgeLeafIdentity(host: String, diskP12: URL,
+                                   caPass: String, leafPass: String) throws -> SecIdentity {
+        try? FileManager.default.createDirectory(at: leafCacheDir, withIntermediateDirectories: true)
+
+        let leafDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("proxymate-leaf-\(host.hashValue)-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try? FileManager.default.createDirectory(at: leafDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: leafDir) }
+
+        let leafKeyPath = leafDir.appendingPathComponent("leaf.key").path
+        let leafCSRPath = leafDir.appendingPathComponent("leaf.csr").path
+        let leafCertPath = leafDir.appendingPathComponent("leaf.pem").path
+        let leafP12Path = leafDir.appendingPathComponent("leaf.p12").path
+        let extPath = leafDir.appendingPathComponent("ext.cnf").path
+
+        let extCnf = """
+        [v3_leaf]
+        subjectAltName = DNS:\(host)
+        basicConstraints = CA:FALSE
+        keyUsage = digitalSignature, keyEncipherment
+        extendedKeyUsage = serverAuth
+        """
+        try extCnf.write(toFile: extPath, atomically: true, encoding: .utf8)
+
+        guard shell("/usr/bin/openssl", args: [
+            "genrsa", "-out", leafKeyPath, "2048"
+        ]) == 0 else {
+            throw TLSError.keyGenFailed("Leaf key generation failed")
+        }
+
+        guard shell("/usr/bin/openssl", args: [
+            "req", "-new", "-key", leafKeyPath, "-out", leafCSRPath,
+            "-subj", "/CN=\(host)/O=Proxymate MITM"
+        ]) == 0 else {
+            throw TLSError.certCreationFailed
+        }
+
+        guard shellWithEnv("/usr/bin/openssl", args: [
+            "x509", "-req", "-in", leafCSRPath,
+            "-CA", caCertPath, "-CAkey", caKeyPath,
+            "-passin", "env:PROXYMATE_CA_PASS",
+            "-CAcreateserial", "-out", leafCertPath, "-days", "365",
+            "-extensions", "v3_leaf", "-extfile", extPath
+        ], env: ["PROXYMATE_CA_PASS": caPass]) == 0 else {
+            throw TLSError.certCreationFailed
+        }
+
+        guard shellWithEnv("/usr/bin/openssl", args: [
+            "pkcs12", "-export", "-des3",
+            "-inkey", leafKeyPath, "-in", leafCertPath,
+            "-certfile", caCertPath, "-out", leafP12Path,
+            "-passout", "env:PROXYMATE_LEAF_PASS"
+        ], env: ["PROXYMATE_LEAF_PASS": leafPass]) == 0 else {
+            throw TLSError.certCreationFailed
+        }
+
+        guard let p12Data = try? Data(contentsOf: URL(fileURLWithPath: leafP12Path)) else {
+            throw TLSError.certCreationFailed
+        }
+
+        try? p12Data.write(to: diskP12, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: diskP12.path)
+
+        guard let identity = importP12(p12Data, passphrase: leafPass) else {
+            throw TLSError.identityNotFound
+        }
+        return identity
     }
 
     // MARK: - PEM for NIO-SSL
@@ -409,92 +411,115 @@ nonisolated final class TLSManager: @unchecked Sendable {
         let caCert: String // CA cert PEM
     }
 
-    /// Returns PEM strings for a hostname (cert + key + CA).
-    /// Uses disk-cached PEM files if available, generates on miss.
+    /// Returns PEM strings for a hostname (cert + key + CA). Disk-cached
+    /// PEMs are returned when present; otherwise the leaf is forged.
+    ///
+    /// Lock discipline matches `identityForHost`: shared `queue` is held
+    /// only for the brief secret/migration step, never during the openssl
+    /// shell pipeline. Critical because this is called from NIO's
+    /// `channelRead` — blocking the queue would freeze the event loop.
     func pemForHost(_ hostname: String) throws -> PEMBundle {
-        try queue.sync {
-            guard isCAInstalled else { throw TLSError.noCA }
+        let host = try Self.validateHostname(hostname)
+        guard isCAInstalled else { throw TLSError.noCA }
 
-            let safeHostname = hostname.replacingOccurrences(of: "*", with: "_")
-                .replacingOccurrences(of: "/", with: "_")
-            let certFile = leafCacheDir.appendingPathComponent("\(safeHostname).pem")
-            let keyFile = leafCacheDir.appendingPathComponent("\(safeHostname).key")
+        let certFile = leafCacheDir.appendingPathComponent("\(host).pem")
+        let keyFile = leafCacheDir.appendingPathComponent("\(host).key")
 
-            // Check PEM cache
-            if let certPEM = try? String(contentsOf: certFile, encoding: .utf8),
-               let keyPEM = try? String(contentsOf: keyFile, encoding: .utf8),
-               let caPEM = try? String(contentsOf: URL(fileURLWithPath: caCertPath), encoding: .utf8) {
-                return PEMBundle(cert: certPEM, key: keyPEM, caCert: caPEM)
-            }
-
-            // Generate
-            try? FileManager.default.createDirectory(at: leafCacheDir, withIntermediateDirectories: true)
-
-            let tmpDir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("proxymate-pem-\(hostname.hashValue)", isDirectory: true)
-            try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: tmpDir) }
-
-            let tmpKey = tmpDir.appendingPathComponent("leaf.key").path
-            let tmpCSR = tmpDir.appendingPathComponent("leaf.csr").path
-            let tmpCert = tmpDir.appendingPathComponent("leaf.pem").path
-            let extPath = tmpDir.appendingPathComponent("ext.cnf").path
-
-            let extCnf = """
-            [v3_leaf]
-            subjectAltName = DNS:\(hostname)
-            basicConstraints = CA:FALSE
-            keyUsage = digitalSignature, keyEncipherment
-            extendedKeyUsage = serverAuth
-            """
-            try extCnf.write(toFile: extPath, atomically: true, encoding: .utf8)
-
-            guard shell("/usr/bin/openssl", args: ["genrsa", "-out", tmpKey, "2048"]) == 0 else {
-                throw TLSError.keyGenFailed("Leaf key failed")
-            }
-            guard shell("/usr/bin/openssl", args: [
-                "req", "-new", "-key", tmpKey, "-out", tmpCSR,
-                "-subj", "/CN=\(hostname)/O=Proxymate MITM"
-            ]) == 0 else { throw TLSError.certCreationFailed }
-
-            try ensureCAKeyEncrypted()
-            let caPass = try getOrCreatePassphrase(account: caPassphraseAccount)
-            guard shellWithEnv("/usr/bin/openssl", args: [
-                "x509", "-req", "-in", tmpCSR,
-                "-CA", caCertPath, "-CAkey", caKeyPath,
-                "-passin", "env:PROXYMATE_CA_PASS",
-                "-CAcreateserial", "-out", tmpCert, "-days", "365",
-                "-extensions", "v3_leaf", "-extfile", extPath
-            ], env: ["PROXYMATE_CA_PASS": caPass]) == 0 else { throw TLSError.certCreationFailed }
-
-            guard let certPEM = try? String(contentsOfFile: tmpCert, encoding: .utf8),
-                  let keyPEM = try? String(contentsOfFile: tmpKey, encoding: .utf8),
-                  let caPEM = try? String(contentsOfFile: caCertPath, encoding: .utf8) else {
-                throw TLSError.certCreationFailed
-            }
-
-            // Cache PEM files
-            try? certPEM.write(to: certFile, atomically: true, encoding: .utf8)
-            try? keyPEM.write(to: keyFile, atomically: true, encoding: .utf8)
-
+        if let certPEM = try? String(contentsOf: certFile, encoding: .utf8),
+           let keyPEM = try? String(contentsOf: keyFile, encoding: .utf8),
+           let caPEM = try? String(contentsOf: URL(fileURLWithPath: caCertPath), encoding: .utf8) {
             return PEMBundle(cert: certPEM, key: keyPEM, caCert: caPEM)
         }
+
+        let caPass = try queue.sync { () -> String in
+            try ensureCAKeyEncrypted()
+            return try getOrCreatePassphrase(account: caPassphraseAccount)
+        }
+
+        return try forgeLeafPEM(host: host, certFile: certFile, keyFile: keyFile, caPass: caPass)
+    }
+
+    /// Forge cert+key PEM for `host`, sign with CA, write disk cache.
+    /// `host` MUST already be validated by `validateHostname`. Holds no lock.
+    private func forgeLeafPEM(host: String, certFile: URL, keyFile: URL,
+                              caPass: String) throws -> PEMBundle {
+        try? FileManager.default.createDirectory(at: leafCacheDir, withIntermediateDirectories: true)
+
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("proxymate-pem-\(host.hashValue)-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let tmpKey = tmpDir.appendingPathComponent("leaf.key").path
+        let tmpCSR = tmpDir.appendingPathComponent("leaf.csr").path
+        let tmpCert = tmpDir.appendingPathComponent("leaf.pem").path
+        let extPath = tmpDir.appendingPathComponent("ext.cnf").path
+
+        let extCnf = """
+        [v3_leaf]
+        subjectAltName = DNS:\(host)
+        basicConstraints = CA:FALSE
+        keyUsage = digitalSignature, keyEncipherment
+        extendedKeyUsage = serverAuth
+        """
+        try extCnf.write(toFile: extPath, atomically: true, encoding: .utf8)
+
+        guard shell("/usr/bin/openssl", args: ["genrsa", "-out", tmpKey, "2048"]) == 0 else {
+            throw TLSError.keyGenFailed("Leaf key failed")
+        }
+        guard shell("/usr/bin/openssl", args: [
+            "req", "-new", "-key", tmpKey, "-out", tmpCSR,
+            "-subj", "/CN=\(host)/O=Proxymate MITM"
+        ]) == 0 else { throw TLSError.certCreationFailed }
+
+        guard shellWithEnv("/usr/bin/openssl", args: [
+            "x509", "-req", "-in", tmpCSR,
+            "-CA", caCertPath, "-CAkey", caKeyPath,
+            "-passin", "env:PROXYMATE_CA_PASS",
+            "-CAcreateserial", "-out", tmpCert, "-days", "365",
+            "-extensions", "v3_leaf", "-extfile", extPath
+        ], env: ["PROXYMATE_CA_PASS": caPass]) == 0 else { throw TLSError.certCreationFailed }
+
+        guard let certPEM = try? String(contentsOfFile: tmpCert, encoding: .utf8),
+              let keyPEM = try? String(contentsOfFile: tmpKey, encoding: .utf8),
+              let caPEM = try? String(contentsOfFile: caCertPath, encoding: .utf8) else {
+            throw TLSError.certCreationFailed
+        }
+
+        try? certPEM.write(to: certFile, atomically: true, encoding: .utf8)
+        try? keyPEM.write(to: keyFile, atomically: true, encoding: .utf8)
+
+        return PEMBundle(cert: certPEM, key: keyPEM, caCert: caPEM)
     }
 
     /// Import a PKCS12 blob using the Keychain-stored leaf passphrase.
+    /// Acquires `queue` to fetch the passphrase, so callers MUST NOT hold
+    /// it (DispatchQueue serial queues are not reentrant — would deadlock).
     private func importP12(_ data: Data) -> SecIdentity? {
-        guard let leafPass = try? getOrCreatePassphrase(account: leafPassphraseAccount) else {
-            return nil
-        }
+        guard let leafPass = try? queue.sync(execute: {
+            try getOrCreatePassphrase(account: leafPassphraseAccount)
+        }) else { return nil }
+        return importP12(data, passphrase: leafPass)
+    }
+
+    /// Variant for callers that already hold or have just released `queue`
+    /// and have the passphrase in hand — avoids re-entering the queue.
+    /// Uses a defensive type-id check before the bridged cast: returns nil
+    /// instead of trapping if the Keychain hands back something other than
+    /// a SecIdentity (corruption, low-memory, future API changes).
+    private func importP12(_ data: Data, passphrase: String) -> SecIdentity? {
         var items: CFArray?
-        let opts: [String: Any] = [kSecImportExportPassphrase as String: leafPass]
+        let opts: [String: Any] = [kSecImportExportPassphrase as String: passphrase]
         guard SecPKCS12Import(data as CFData, opts as CFDictionary, &items) == errSecSuccess,
               let arr = items as? [[String: Any]],
               let first = arr.first,
               let ref = first[kSecImportItemIdentity as String] else {
             return nil
         }
-        return (ref as! SecIdentity)
+        let cf = ref as CFTypeRef
+        guard CFGetTypeID(cf) == SecIdentityGetTypeID() else { return nil }
+        return (cf as! SecIdentity)
     }
 
     // MARK: - Interception Decision
@@ -921,6 +946,7 @@ nonisolated final class TLSManager: @unchecked Sendable {
         case keychainError(OSStatus)
         case noCA
         case identityNotFound
+        case invalidHostname(String)
 
         var errorDescription: String? {
             switch self {
@@ -929,7 +955,34 @@ nonisolated final class TLSManager: @unchecked Sendable {
             case .keychainError(let s): return "Keychain error (OSStatus \(s))"
             case .noCA: return "No root CA installed"
             case .identityNotFound: return "Identity not found"
+            case .invalidHostname(let h): return "Invalid hostname for cert forging: \(h)"
             }
         }
+    }
+
+    // MARK: - Hostname validation
+
+    /// Strict allowlist for hostnames that get interpolated into openssl
+    /// flags (-subj /CN=...) and config files (subjectAltName = DNS:...).
+    /// Rejecting anything outside this set defeats SAN/CN injection — a
+    /// malicious SNI containing `\n` could otherwise inject arbitrary SAN
+    /// entries into the leaf cert and forge identities for other hosts.
+    private static let hostnameAllowedChars: CharacterSet = CharacterSet(charactersIn:
+        "abcdefghijklmnopqrstuvwxyz0123456789.-")
+
+    /// Returns the canonical (lowercased) hostname if it is safe to
+    /// interpolate into openssl args/config. Throws otherwise.
+    /// Accepts: ASCII letters, digits, dot, hyphen. 1–253 chars. No
+    /// leading/trailing dot, no consecutive dots, no wildcards.
+    static func validateHostname(_ host: String) throws -> String {
+        let trimmed = host.lowercased()
+        guard !trimmed.isEmpty, trimmed.count <= 253,
+              trimmed.unicodeScalars.allSatisfy({ hostnameAllowedChars.contains($0) }),
+              !trimmed.hasPrefix("."), !trimmed.hasSuffix("."),
+              !trimmed.contains("..")
+        else {
+            throw TLSError.invalidHostname(host)
+        }
+        return trimmed
     }
 }
