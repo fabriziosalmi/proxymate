@@ -87,18 +87,26 @@ nonisolated struct AIModelPricing: Codable, Hashable, Sendable {
         (Double(completionTokens) / 1_000_000 * outputPer1M)
     }
 
+    // Order matters: `find()` returns the first entry whose model name
+    // is a substring of the queried name, so MORE-SPECIFIC entries must
+    // come BEFORE less-specific generic ones. `claude-opus-4-7` would
+    // otherwise match `claude-opus-4` first and skip its specific row.
     static let builtIn: [AIModelPricing] = [
-        // OpenAI
+        // OpenAI — specific releases first
+        .init(model: "gpt-4.1",      provider: "openai", inputPer1M: 2.00, outputPer1M: 8.00),
         .init(model: "gpt-4o",       provider: "openai", inputPer1M: 2.50, outputPer1M: 10.00),
         .init(model: "gpt-4o-mini",  provider: "openai", inputPer1M: 0.15, outputPer1M: 0.60),
         .init(model: "gpt-4-turbo",  provider: "openai", inputPer1M: 10.0, outputPer1M: 30.0),
-        .init(model: "o1",           provider: "openai", inputPer1M: 15.0, outputPer1M: 60.0),
-        .init(model: "o1-mini",      provider: "openai", inputPer1M: 3.00, outputPer1M: 12.0),
         .init(model: "o3-mini",      provider: "openai", inputPer1M: 1.10, outputPer1M: 4.40),
-        // Anthropic
-        .init(model: "claude-opus-4", provider: "anthropic", inputPer1M: 15.0, outputPer1M: 75.0),
-        .init(model: "claude-sonnet-4", provider: "anthropic", inputPer1M: 3.00, outputPer1M: 15.0),
-        .init(model: "claude-haiku-4", provider: "anthropic", inputPer1M: 0.80, outputPer1M: 4.00),
+        .init(model: "o1-mini",      provider: "openai", inputPer1M: 3.00, outputPer1M: 12.0),
+        .init(model: "o1",           provider: "openai", inputPer1M: 15.0, outputPer1M: 60.0),
+        // Anthropic — point releases first, generic-4 family last as fallback
+        .init(model: "claude-opus-4-7",   provider: "anthropic", inputPer1M: 15.0, outputPer1M: 75.0),
+        .init(model: "claude-sonnet-4-6", provider: "anthropic", inputPer1M: 3.00, outputPer1M: 15.0),
+        .init(model: "claude-haiku-4-5",  provider: "anthropic", inputPer1M: 0.80, outputPer1M: 4.00),
+        .init(model: "claude-opus-4",     provider: "anthropic", inputPer1M: 15.0, outputPer1M: 75.0),
+        .init(model: "claude-sonnet-4",   provider: "anthropic", inputPer1M: 3.00, outputPer1M: 15.0),
+        .init(model: "claude-haiku-4",    provider: "anthropic", inputPer1M: 0.80, outputPer1M: 4.00),
         // Google
         .init(model: "gemini-2.5-pro", provider: "google", inputPer1M: 1.25, outputPer1M: 10.0),
         .init(model: "gemini-2.5-flash", provider: "google", inputPer1M: 0.15, outputPer1M: 0.60),

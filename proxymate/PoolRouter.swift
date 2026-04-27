@@ -22,6 +22,13 @@ nonisolated final class PoolRouter: @unchecked Sendable {
     private var health: [UUID: MemberHealth] = [:]     // keyed by PoolMember.id
     private var roundRobinIndex: [UUID: Int] = [:]     // keyed by pool id
     private var healthCheckTimers: [UUID: DispatchSourceTimer] = [:]
+    /// In-flight `NWConnection` per member, keyed by PoolMember.id.
+    /// Stored so `restartHealthChecks` (pool removed/edited) and `stop()`
+    /// can cancel them immediately instead of letting them run their
+    /// natural ~5s connect timeout per member. Without this, removing a
+    /// pool kept its probes alive long enough to fire `healthChanged`
+    /// events for already-deleted members.
+    private var inflightChecks: [UUID: NWConnection] = [:]
 
     var onEvent: (@Sendable (Event) -> Void)?
 
@@ -175,6 +182,11 @@ nonisolated final class PoolRouter: @unchecked Sendable {
     private func restartHealthChecks() {
         for (_, timer) in healthCheckTimers { timer.cancel() }
         healthCheckTimers.removeAll()
+        // Cancel probes already in flight from the previous configuration —
+        // their `stateUpdateHandler` callbacks would otherwise write into
+        // `health[memberId]` for members that no longer exist.
+        for (_, conn) in inflightChecks { conn.cancel() }
+        inflightChecks.removeAll()
 
         for (_, pool) in pools where pool.healthCheck.enabled {
             for member in pool.members where member.enabled {
@@ -196,11 +208,15 @@ nonisolated final class PoolRouter: @unchecked Sendable {
 
     private func performHealthCheck(member: PoolMember, config: HealthCheckConfig) {
         guard let port = NWEndpoint.Port(rawValue: UInt16(member.port)) else { return }
+        // If a previous probe is still running for this member, replace it.
+        inflightChecks[member.id]?.cancel()
+
         let conn = NWConnection(
             host: NWEndpoint.Host(member.host),
             port: port,
             using: .tcp
         )
+        inflightChecks[member.id] = conn
         let start = DispatchTime.now()
         let timeout = DispatchTimeInterval.seconds(config.timeoutSeconds)
 
@@ -211,11 +227,17 @@ nonisolated final class PoolRouter: @unchecked Sendable {
                 let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
                 conn.cancel()
                 self.queue.async {
+                    if self.inflightChecks[member.id] === conn {
+                        self.inflightChecks.removeValue(forKey: member.id)
+                    }
                     self.recordHealthResult(memberId: member.id, memberHost: member.host,
                                            success: true, latencyMs: elapsed, config: config)
                 }
             case .failed, .cancelled:
                 self.queue.async {
+                    if self.inflightChecks[member.id] === conn {
+                        self.inflightChecks.removeValue(forKey: member.id)
+                    }
                     self.recordHealthResult(memberId: member.id, memberHost: member.host,
                                            success: false, latencyMs: nil, config: config)
                 }
@@ -264,8 +286,11 @@ nonisolated final class PoolRouter: @unchecked Sendable {
 
     func stop() {
         queue.async { [weak self] in
-            for (_, timer) in self?.healthCheckTimers ?? [:] { timer.cancel() }
-            self?.healthCheckTimers.removeAll()
+            guard let self else { return }
+            for (_, timer) in self.healthCheckTimers { timer.cancel() }
+            self.healthCheckTimers.removeAll()
+            for (_, conn) in self.inflightChecks { conn.cancel() }
+            self.inflightChecks.removeAll()
         }
     }
 }

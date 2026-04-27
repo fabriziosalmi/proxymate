@@ -1201,104 +1201,54 @@ final class AppState: ObservableObject {
         if let id = selectedProxyID { d.set(id.uuidString, forKey: selectedKey) }
     }
 
+    /// Decode a UserDefaults value, surfacing decode failures to NSLog
+    /// instead of the previous `try?` swallow. Without this, a corrupt
+    /// or version-incompatible UserDefaults plist silently resets each
+    /// affected setting to its `@Published` default — operators saw
+    /// "settings rolled back" with zero forensic trail. The error is
+    /// non-fatal (we still return nil so the in-memory default holds),
+    /// but at least the next launch's Console.app shows what failed.
+    private func decodeDefaults<T: Decodable>(_ type: T.Type, key: String) -> T? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            NSLog("[AppState] decode '\(key)' as \(T.self) failed: \(error.localizedDescription) — using default")
+            return nil
+        }
+    }
+
     private func load() {
         let d = UserDefaults.standard
-        if let data = d.data(forKey: proxiesKey),
-           let arr = try? JSONDecoder().decode([ProxyConfig].self, from: data) {
-            proxies = arr
-        }
-        if let data = d.data(forKey: poolsKey),
-           let arr = try? JSONDecoder().decode([UpstreamPool].self, from: data) {
-            pools = arr
-        }
-        if let data = d.data(forKey: overridesKey),
-           let arr = try? JSONDecoder().decode([PoolOverride].self, from: data) {
-            poolOverrides = arr
-        }
-        if let data = d.data(forKey: rulesKey),
-           let arr = try? JSONDecoder().decode([WAFRule].self, from: data) {
-            rules = arr
-        }
-        if let data = d.data(forKey: privacyKey),
-           let p = try? JSONDecoder().decode(PrivacySettings.self, from: data) {
-            privacy = p
-        }
-        if let data = d.data(forKey: cacheKey),
-           let c = try? JSONDecoder().decode(CacheSettings.self, from: data) {
-            cacheSettings = c
-        }
-        if let data = d.data(forKey: pacKey),
-           let s = try? JSONDecoder().decode(PACSettings.self, from: data) {
-            pacSettings = s
-        }
-        if let data = d.data(forKey: socks5Key),
-           let s = try? JSONDecoder().decode(SOCKS5Settings.self, from: data) {
-            socks5Settings = s
-        }
-        if let data = d.data(forKey: beaconingKey),
-           let s = try? JSONDecoder().decode(BeaconingSettings.self, from: data) {
-            beaconingSettings = s
-        }
-        if let data = d.data(forKey: c2Key),
-           let s = try? JSONDecoder().decode(C2Settings.self, from: data) {
-            c2Settings = s
-        }
-        if let data = d.data(forKey: processRulesKey),
-           let arr = try? JSONDecoder().decode([ProcessRule].self, from: data) {
-            processRules = arr
-        }
-        if let data = d.data(forKey: loopBreakerKey),
-           let s = try? JSONDecoder().decode(LoopBreakerSettings.self, from: data) {
-            loopBreakerSettings = s
-        }
-        if let data = d.data(forKey: cloudSyncKey),
-           let s = try? JSONDecoder().decode(CloudSyncSettings.self, from: data) {
-            cloudSyncSettings = s
-        }
-        if let data = d.data(forKey: diskCacheKey),
-           let s = try? JSONDecoder().decode(DiskCacheSettings.self, from: data) {
-            diskCacheSettings = s
-        }
-        if let data = d.data(forKey: metricsKey),
-           let s = try? JSONDecoder().decode(MetricsSettings.self, from: data) {
-            metricsSettings = s
-        }
-        if let data = d.data(forKey: webhookKey),
-           var s = try? JSONDecoder().decode(WebhookSettings.self, from: data) {
+        if let arr: [ProxyConfig] = decodeDefaults([ProxyConfig].self, key: proxiesKey) { proxies = arr }
+        if let arr: [UpstreamPool] = decodeDefaults([UpstreamPool].self, key: poolsKey) { pools = arr }
+        if let arr: [PoolOverride] = decodeDefaults([PoolOverride].self, key: overridesKey) { poolOverrides = arr }
+        if let arr: [WAFRule] = decodeDefaults([WAFRule].self, key: rulesKey) { rules = arr }
+        if let p = decodeDefaults(PrivacySettings.self, key: privacyKey) { privacy = p }
+        if let c = decodeDefaults(CacheSettings.self, key: cacheKey) { cacheSettings = c }
+        if let s = decodeDefaults(PACSettings.self, key: pacKey) { pacSettings = s }
+        if let s = decodeDefaults(SOCKS5Settings.self, key: socks5Key) { socks5Settings = s }
+        if let s = decodeDefaults(BeaconingSettings.self, key: beaconingKey) { beaconingSettings = s }
+        if let s = decodeDefaults(C2Settings.self, key: c2Key) { c2Settings = s }
+        if let arr: [ProcessRule] = decodeDefaults([ProcessRule].self, key: processRulesKey) { processRules = arr }
+        if let s = decodeDefaults(LoopBreakerSettings.self, key: loopBreakerKey) { loopBreakerSettings = s }
+        if let s = decodeDefaults(CloudSyncSettings.self, key: cloudSyncKey) { cloudSyncSettings = s }
+        if let s = decodeDefaults(DiskCacheSettings.self, key: diskCacheKey) { diskCacheSettings = s }
+        if let s = decodeDefaults(MetricsSettings.self, key: metricsKey) { metricsSettings = s }
+        if var s = decodeDefaults(WebhookSettings.self, key: webhookKey) {
             // Migration: strip URLs that embed user:pass credentials
             // (older builds did not validate at input time, so plain-text
             // secrets may sit in the previously-persisted defaults).
             s.urls = s.urls.filter { WebhookManager.isAcceptable($0) }
             webhookSettings = s
         }
-        if let data = d.data(forKey: allowlistKey),
-           let arr = try? JSONDecoder().decode([AllowEntry].self, from: data) {
-            allowlist = arr
-        }
-        if let data = d.data(forKey: dnsKey),
-           let s = try? JSONDecoder().decode(DNSSettings.self, from: data) {
-            dnsSettings = s
-        }
-        if let data = d.data(forKey: aiSettingsKey),
-           let a = try? JSONDecoder().decode(AISettings.self, from: data) {
-            aiSettings = a
-        }
-        if let data = d.data(forKey: mitmKey),
-           let m = try? JSONDecoder().decode(MITMSettings.self, from: data) {
-            mitmSettings = m
-        }
-        if let data = d.data(forKey: blacklistKey),
-           let arr = try? JSONDecoder().decode([BlacklistSource].self, from: data) {
-            blacklistSources = arr
-        }
-        if let data = d.data(forKey: exfilPacksKey),
-           let arr = try? JSONDecoder().decode([ExfiltrationPack].self, from: data) {
-            exfiltrationPacks = arr
-        }
-        if let data = d.data(forKey: aiAgentKey),
-           let s = try? JSONDecoder().decode(AIAgentSettings.self, from: data) {
-            aiAgentSettings = s
-        }
+        if let arr: [AllowEntry] = decodeDefaults([AllowEntry].self, key: allowlistKey) { allowlist = arr }
+        if let s = decodeDefaults(DNSSettings.self, key: dnsKey) { dnsSettings = s }
+        if let a = decodeDefaults(AISettings.self, key: aiSettingsKey) { aiSettings = a }
+        if let m = decodeDefaults(MITMSettings.self, key: mitmKey) { mitmSettings = m }
+        if let arr: [BlacklistSource] = decodeDefaults([BlacklistSource].self, key: blacklistKey) { blacklistSources = arr }
+        if let arr: [ExfiltrationPack] = decodeDefaults([ExfiltrationPack].self, key: exfilPacksKey) { exfiltrationPacks = arr }
+        if let s = decodeDefaults(AIAgentSettings.self, key: aiAgentKey) { aiAgentSettings = s }
         if let s = d.string(forKey: selectedKey), let uuid = UUID(uuidString: s) {
             selectedProxyID = uuid
         }

@@ -66,14 +66,21 @@ nonisolated final class HostMemory: @unchecked Sendable {
 
     func recordResponse(host: String, statusCode: Int, latency: Double, bytes: Int) {
         queue.async { [weak self] in
-            var p = self?.hosts[host.lowercased()] ?? HostProfile()
+            // Single early-exit on `self` so the read of `hosts[h]` and
+            // the write `hosts[h] = p` can't straddle a deallocation.
+            // Without this, an interleave where self dies between the
+            // two would silently lose the update; the recordRequest
+            // path above already uses this pattern.
+            guard let self else { return }
+            let h = host.lowercased()
+            var p = self.hosts[h] ?? HostProfile()
             p.statusCodes.append(statusCode)
             if p.statusCodes.count > 20 { p.statusCodes.removeFirst() }
             p.latencies.append(latency)
             if p.latencies.count > 20 { p.latencies.removeFirst() }
             if statusCode >= 400 { p.errorCount += 1 }
             p.totalBytes += bytes
-            self?.hosts[host.lowercased()] = p
+            self.hosts[h] = p
         }
     }
 

@@ -172,3 +172,17 @@ echo ""
 echo "==> Done!"
 echo "    DMG: ${DMG_PATH}"
 echo "    Size: $(du -h "${DMG_PATH}" | cut -f1)"
+
+# Emit + persist SHA-256 alongside the DMG. Without this, every release
+# required a manual `shasum -a 256` then a manual paste into
+# docs/release-notes.md — every fill-SHA commit in `git log` is a
+# round-trip drift opportunity. The .sha256 sidecar is also what GitHub
+# Releases consumers expect.
+SHA256="$(shasum -a 256 "${DMG_PATH}" | awk '{print $1}')"
+SHA_PATH="${DMG_PATH}.sha256"
+printf '%s  %s\n' "${SHA256}" "$(basename "${DMG_PATH}")" > "${SHA_PATH}"
+echo "    SHA-256: ${SHA256}"
+echo "    Sidecar: ${SHA_PATH}"
+echo ""
+echo "    Paste into docs/release-notes.md:"
+echo "    SHA-256: ${SHA256}"

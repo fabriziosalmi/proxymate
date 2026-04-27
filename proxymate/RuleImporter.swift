@@ -39,6 +39,12 @@ nonisolated enum RuleImporter {
         let detected = format == .autoDetect ? detectFormat(text) : format
         var rules: [WAFRule] = []
         var skipped = 0
+        // Dedup against existing rules AND against earlier lines within
+        // the same import. Without `seen`, duplicate entries inside a
+        // single hosts/adblock file produce duplicate WAFRule objects
+        // (distinct UUIDs, same pattern) — every re-import bloats the
+        // ruleset by the count of dup'd lines in the source file.
+        var seen = existingPatterns
 
         let lines = text.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline)
 
@@ -66,10 +72,12 @@ nonisolated enum RuleImporter {
                 skipped += 1
                 continue
             }
-            if existingPatterns.contains(pattern.lowercased()) {
+            let key = pattern.lowercased()
+            if seen.contains(key) {
                 skipped += 1
                 continue
             }
+            seen.insert(key)
             rules.append(WAFRule(
                 name: "",
                 kind: kind,

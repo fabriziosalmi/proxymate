@@ -30,16 +30,22 @@ mkdir -p "$DEST/lib"
 # We embed the whole mitmproxy.app tree; findMitmdump() uses the
 # binary inside it.
 echo "==> Bundling mitmproxy.app..."
+# Search both Apple Silicon (/opt/homebrew) and Intel (/usr/local) brew
+# prefixes. Without the /usr/local pattern, this script aborted on Intel
+# Macs even though `brew install --cask mitmproxy` installs the cask in
+# the same layout there.
 MITMPROXY_APP_SRC=""
-for candidate in /opt/homebrew/Caskroom/mitmproxy/*/mitmproxy.app; do
-    if [[ -d "$candidate" && -x "$candidate/Contents/MacOS/mitmdump" ]]; then
-        MITMPROXY_APP_SRC="$candidate"
-        break
-    fi
+for prefix in /opt/homebrew /usr/local; do
+    for candidate in "$prefix"/Caskroom/mitmproxy/*/mitmproxy.app; do
+        if [[ -d "$candidate" && -x "$candidate/Contents/MacOS/mitmdump" ]]; then
+            MITMPROXY_APP_SRC="$candidate"
+            break 2
+        fi
+    done
 done
 
 if [[ -z "$MITMPROXY_APP_SRC" ]]; then
-    echo "ERROR: mitmproxy.app not found. Install: brew install --cask mitmproxy"
+    echo "ERROR: mitmproxy.app not found in /opt/homebrew or /usr/local. Install: brew install --cask mitmproxy"
     exit 1
 fi
 rm -rf "$DEST/mitmproxy.app"

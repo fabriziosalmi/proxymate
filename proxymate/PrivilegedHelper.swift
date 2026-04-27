@@ -142,10 +142,20 @@ nonisolated final class PrivilegedHelper: @unchecked Sendable {
         return hasAuthorizedOnce
     }
 
-    // Escape a string for embedding inside an AppleScript double-quoted literal.
+    // Escape a string for embedding inside an AppleScript double-quoted
+    // literal. Backslashes first (so the per-quote/per-newline escapes
+    // we emit are not themselves doubled), then quotes, then literal
+    // newlines / carriage returns. macOS file paths can theoretically
+    // contain LF/CR — without escaping, an embedded newline terminates
+    // the string literal and lets the rest of the path be interpreted
+    // as additional AppleScript. Defense-in-depth: this caller passes
+    // a tempdir path the helper itself created, so an exploit requires
+    // the user's home or TMPDIR to contain a newline — extremely rare,
+    // but cheap to close.
     private static func escapeForAppleScriptDouble(_ s: String) -> String {
-        // Backslashes first, then double-quotes.
         s.replacingOccurrences(of: "\\", with: "\\\\")
          .replacingOccurrences(of: "\"", with: "\\\"")
+         .replacingOccurrences(of: "\n", with: "\\n")
+         .replacingOccurrences(of: "\r", with: "\\r")
     }
 }

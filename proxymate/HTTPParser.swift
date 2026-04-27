@@ -103,7 +103,15 @@ nonisolated enum HTTPParser {
     // MARK: - Chunked encoding
 
     /// Decode chunked transfer encoding. Returns the reassembled body.
+    /// The chunk size is parsed as hex and is therefore attacker-controlled
+    /// up to `Int.max` — without a cap, a chunked request advertising
+    /// `FFFFFFFFFFFFFFFF` traps the process at `chunkStart + chunkSize`
+    /// (Swift `Int` arithmetic is checked). The 64 MB ceiling is far
+    /// larger than any realistic single chunk on a proxy that fronts
+    /// browser traffic, but small enough to keep arithmetic well clear
+    /// of overflow even when summed with a multi-MB buffer offset.
     static func decodeChunked(_ data: Data) -> Data? {
+        let maxChunkSize = 64 * 1024 * 1024
         var result = Data()
         var offset = 0
 
@@ -113,17 +121,21 @@ nonisolated enum HTTPParser {
                                             in: offset..<data.count) else { break }
             let sizeLine = data.subdata(in: offset..<lineEnd.lowerBound)
             guard let sizeStr = String(data: sizeLine, encoding: .utf8),
-                  let chunkSize = Int(sizeStr.trimmingCharacters(in: .whitespaces), radix: 16)
+                  let chunkSize = Int(sizeStr.trimmingCharacters(in: .whitespaces), radix: 16),
+                  chunkSize >= 0, chunkSize <= maxChunkSize
             else { break }
 
             if chunkSize == 0 { break }  // final chunk
 
             let chunkStart = lineEnd.upperBound
-            let chunkEnd = chunkStart + chunkSize
+            let (chunkEnd, overflow) = chunkStart.addingReportingOverflow(chunkSize)
+            if overflow { break }
             guard chunkEnd <= data.count else { break }
 
             result.append(data.subdata(in: chunkStart..<chunkEnd))
-            offset = chunkEnd + 2  // skip trailing \r\n
+            let (next, nextOverflow) = chunkEnd.addingReportingOverflow(2)
+            if nextOverflow { break }
+            offset = next  // skip trailing \r\n
         }
 
         return result.isEmpty ? nil : result
