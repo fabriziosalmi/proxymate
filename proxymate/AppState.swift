@@ -355,13 +355,25 @@ final class AppState: ObservableObject {
             localProxy.stop(); localPort = nil; return
         }
 
-        // Now that the password prompt is dismissed, surface any squid
-        // boot error that happened in parallel. Don't fail enable on it
-        // — the proxy still works for non-Squid upstreams or after the
-        // user re-launches squid; we just log so they know.
+        // The sidecar boot is intentionally NOT awaited here. If we
+        // awaited `sidecarTask.value`, an orphaned `squid -z` process
+        // from a previous crashed run (taking a file lock or holding
+        // port 3128) could keep `SquidSidecar.start` hung forever
+        // inside its `waitUntilExit` / `waitForLocalPort` poll, leaving
+        // `isEnabled` stuck on `false` even though the proxy chain is
+        // functionally working through whatever squid IS bound. The
+        // toggle MUST reflect the system proxy state (just applied),
+        // not the secondary cache layer. Surface squid errors via
+        // background log so the user notices, but don't gate the UI.
         if let task = sidecarTask {
-            do { _ = try await task.value }
-            catch { log(.warn, "Local Squid sidecar not started: \(error.localizedDescription) — upstream must be reachable by other means") }
+            Task { [weak self] in
+                do { _ = try await task.value }
+                catch {
+                    await MainActor.run {
+                        self?.log(.warn, "Local Squid sidecar not started: \(error.localizedDescription) — upstream must be reachable by other means")
+                    }
+                }
+            }
         }
 
         isEnabled = true

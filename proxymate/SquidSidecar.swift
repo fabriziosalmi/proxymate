@@ -35,6 +35,23 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
         try queue.sync {
             guard !isRunning else { return port }
 
+            // If something else is already serving on the requested port
+            // (the most common case: the user has `brew services start
+            // squid` running on 3128), don't try to launch our bundled
+            // copy on top of it. Without this short-circuit, the bundled
+            // squid's bind() fails, `squid -z` may end up wedged in
+            // uninterruptible kernel I/O on cache_dir init, and every
+            // subsequent enable() spawns another orphan. Reusing the
+            // listening squid is exactly what the upstream config
+            // (Local Squid → 127.0.0.1:3128) describes anyway, so this
+            // is a no-op for the proxy chain.
+            if MITMProxySidecar.waitForLocalPort(listenPort, timeout: 0.5) {
+                onEvent?("squid: external listener detected on :\(listenPort), reusing")
+                port = listenPort
+                isRunning = true
+                return listenPort
+            }
+
             guard let squidPath = findSquid() else {
                 throw SquidError.notInstalled
             }
