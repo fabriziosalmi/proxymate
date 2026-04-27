@@ -1132,34 +1132,44 @@ struct StatsView: View {
                     }
                 }
 
-                // Host profiling
-                let _ = state.statsTick  // 1Hz dependency — see AppState.statsTick
-                let topHosts = HostMemory.shared.topHosts(limit: 5)
-                if !topHosts.isEmpty {
-                    Divider()
-                    Text("TOP HOSTS").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-                    ForEach(topHosts, id: \.host) { item in
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(item.profile.isUnhealthy ? Color.red : .green)
-                                .frame(width: 6, height: 6)
-                            Text(item.host)
-                                .font(.system(.caption2, design: .monospaced))
-                                .lineLimit(1)
-                            Spacer()
-                            Text(verbatim: "\(item.profile.requestCount)")
-                                .font(.caption2.weight(.bold)).monospacedDigit()
-                            if item.profile.errorRate > 0 {
-                                Text(verbatim: "\(Int(item.profile.errorRate * 100))%err")
-                                    .font(.system(size: 8)).foregroundStyle(.red)
-                            }
-                        }
-                    }
-                    Text(verbatim: "\(HostMemory.shared.totalHosts) unique hosts")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                }
+                // Host profiling — confined to its own View so the
+                // 1 Hz statsTick read inside doesn't invalidate the rest
+                // of the Stats tab body each second.
+                TopHostsList()
             }
             .padding(12)
+        }
+    }
+}
+
+private struct TopHostsList: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        let _ = state.statsTick  // 1 Hz tick — confined here
+        let topHosts = HostMemory.shared.topHosts(limit: 5)
+        if !topHosts.isEmpty {
+            Divider()
+            Text("TOP HOSTS").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+            ForEach(topHosts, id: \.host) { item in
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(item.profile.isUnhealthy ? Color.red : .green)
+                        .frame(width: 6, height: 6)
+                    Text(item.host)
+                        .font(.system(.caption2, design: .monospaced))
+                        .lineLimit(1)
+                    Spacer()
+                    Text(verbatim: "\(item.profile.requestCount)")
+                        .font(.caption2.weight(.bold)).monospacedDigit()
+                    if item.profile.errorRate > 0 {
+                        Text(verbatim: "\(Int(item.profile.errorRate * 100))%err")
+                            .font(.system(size: 8)).foregroundStyle(.red)
+                    }
+                }
+            }
+            Text(verbatim: "\(HostMemory.shared.totalHosts) unique hosts")
+                .font(.caption2).foregroundStyle(.tertiary)
         }
     }
 }
@@ -2026,7 +2036,7 @@ struct AIView: View {
 
                 // Cost tracking — only show if MITM is on
                 if mitmEnabled {
-                    spendSummary
+                    AISpendSummary()
                     Divider()
 
                     let activeProviders = AIProvider.builtIn.filter { state.aiProviderStats[$0.id] != nil }
@@ -2083,39 +2093,6 @@ struct AIView: View {
         }
     }
 
-    private var spendSummary: some View {
-        let _ = state.statsTick  // 1Hz dependency — AITracker is not ObservableObject
-        let (daily, monthly) = AITracker.shared.getTotalSpend()
-        // Color is reserved for budget pressure — the prior blue/purple/green
-        // triplet was decorative and added cognitive load. We now use the
-        // primary foreground (theme-aware) for normal spend, orange when
-        // we're at ≥75 % of an active daily/monthly cap, and red when
-        // we're at 100 %. Three timeframes share one rule, so a glance
-        // tells the user where they sit relative to the cap they set.
-        let dailyCap = state.aiSettings.dailyBudgetUSD
-        let monthlyCap = state.aiSettings.monthlyBudgetUSD
-        return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Today").font(.caption2).foregroundStyle(.secondary)
-                Text(verbatim: "$\(String(format: "%.2f", daily))")
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(Self.budgetColor(spent: daily, cap: dailyCap))
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text("This Month").font(.caption2).foregroundStyle(.secondary)
-                Text(verbatim: "$\(String(format: "%.2f", monthly))")
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(Self.budgetColor(spent: monthly, cap: monthlyCap))
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                Text("Session").font(.caption2).foregroundStyle(.secondary)
-                Text(verbatim: "$\(String(format: "%.4f", state.stats.aiTotalCostUSD))")
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(.primary)
-            }
-        }
-    }
 
     private var budgetSection: some View {
         VStack(spacing: 8) {
@@ -2294,12 +2271,47 @@ struct AIView: View {
     /// is unset (`cap == 0`) or we're well under, orange at ≥75 %, red
     /// at ≥100 %. Centralized so the three timeframe values stay
     /// visually consistent.
-    private static func budgetColor(spent: Double, cap: Double) -> Color {
+    fileprivate static func budgetColor(spent: Double, cap: Double) -> Color {
         guard cap > 0 else { return .primary }
         let ratio = spent / cap
         if ratio >= 1.0 { return .red }
         if ratio >= 0.75 { return .orange }
         return .primary
+    }
+}
+
+/// Spend summary, in its own View so the 1 Hz `statsTick` dependency
+/// doesn't invalidate the rest of the AI tab body (which contains a
+/// LazyVStack ForEach over per-provider rows).
+private struct AISpendSummary: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        let _ = state.statsTick
+        let (daily, monthly) = AITracker.shared.getTotalSpend()
+        let dailyCap = state.aiSettings.dailyBudgetUSD
+        let monthlyCap = state.aiSettings.monthlyBudgetUSD
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Today").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "$\(String(format: "%.2f", daily))")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(AIView.budgetColor(spent: daily, cap: dailyCap))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("This Month").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "$\(String(format: "%.2f", monthly))")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(AIView.budgetColor(spent: monthly, cap: monthlyCap))
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("Session").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "$\(String(format: "%.4f", state.stats.aiTotalCostUSD))")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.primary)
+            }
+        }
     }
 }
 
@@ -2442,44 +2454,7 @@ struct CacheView: View {
                         }
                     }
 
-                    let _ = state.statsTick  // 1Hz dependency — see AppState.statsTick
-                    let cacheStats = CacheManager.shared.stats
-                    // Render `—` when a counter is exactly zero so an
-                    // empty cache reads as "nothing yet" instead of a
-                    // row of four "0"s that look like flat-line errors.
-                    // The cache feature can be off OR on-but-cold; the
-                    // displayed dash works for both.
-                    let dash = "—"
-                    privacySection("Statistics") {
-                        HStack(spacing: 16) {
-                            VStack(alignment: .leading) {
-                                Text("Hits").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: cacheStats.hits == 0 ? dash : "\(cacheStats.hits)")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(cacheStats.hits == 0 ? Color.secondary : Color.teal)
-                            }
-                            VStack(alignment: .leading) {
-                                Text("Misses").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: cacheStats.misses == 0 ? dash : "\(cacheStats.misses)")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(cacheStats.misses == 0 ? .secondary : .primary)
-                            }
-                            VStack(alignment: .leading) {
-                                Text("Size").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: cacheStats.currentSizeMB == 0
-                                     ? dash
-                                     : String(format: "%.1f MB", cacheStats.currentSizeMB))
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(cacheStats.currentSizeMB == 0 ? .secondary : .primary)
-                            }
-                            VStack(alignment: .leading) {
-                                Text("Entries").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: cacheStats.currentEntries == 0 ? dash : "\(cacheStats.currentEntries)")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(cacheStats.currentEntries == 0 ? .secondary : .primary)
-                            }
-                        }
-                    }
+                    privacySection("Statistics") { CacheL1StatsRow() }
 
                     Button("Purge L1", role: .destructive) { showPurgeConfirm = true }
                         .buttonStyle(.bordered).controlSize(.small)
@@ -2516,26 +2491,7 @@ struct CacheView: View {
                             }.pickerStyle(.menu).frame(width: 100)
                         }
 
-                        let _ = state.statsTick  // 1Hz dependency — see AppState.statsTick
-                        let diskStats = DiskCache.shared.stats
-                        HStack(spacing: 16) {
-                            VStack(alignment: .leading) {
-                                Text("L2 Hits").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(diskStats.hits)").font(.caption.weight(.bold)).foregroundStyle(.teal)
-                            }
-                            VStack(alignment: .leading) {
-                                Text("L2 Writes").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(diskStats.writes)").font(.caption.weight(.bold))
-                            }
-                            VStack(alignment: .leading) {
-                                Text("Size").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(diskStats.sizeBytes / 1024 / 1024) MB").font(.caption.weight(.bold))
-                            }
-                            VStack(alignment: .leading) {
-                                Text("Evictions").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(diskStats.evictions)").font(.caption.weight(.bold))
-                            }
-                        }
+                        CacheL2StatsRow()
                     }
                 }
             }
@@ -2563,6 +2519,108 @@ struct CacheView: View {
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
             content()
+        }
+    }
+}
+
+/// L1 RAM-cache statistics row, isolated so the 1 Hz tick doesn't
+/// invalidate the rest of the Cache tab body each second.
+private struct CacheL1StatsRow: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        let _ = state.statsTick
+        let s = CacheManager.shared.stats
+        // `—` for zero so an empty cache reads as "nothing yet" instead
+        // of a row of four "0"s that look like flat-line errors.
+        let dash = "—"
+        HStack(spacing: 16) {
+            VStack(alignment: .leading) {
+                Text("Hits").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: s.hits == 0 ? dash : "\(s.hits)")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(s.hits == 0 ? Color.secondary : Color.teal)
+            }
+            VStack(alignment: .leading) {
+                Text("Misses").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: s.misses == 0 ? dash : "\(s.misses)")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(s.misses == 0 ? .secondary : .primary)
+            }
+            VStack(alignment: .leading) {
+                Text("Size").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: s.currentSizeMB == 0
+                     ? dash
+                     : String(format: "%.1f MB", s.currentSizeMB))
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(s.currentSizeMB == 0 ? .secondary : .primary)
+            }
+            VStack(alignment: .leading) {
+                Text("Entries").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: s.currentEntries == 0 ? dash : "\(s.currentEntries)")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(s.currentEntries == 0 ? .secondary : .primary)
+            }
+        }
+    }
+}
+
+/// DNS-over-HTTPS statistics row, isolated for the same reason —
+/// 1 Hz tick should re-render only the four stat cells, not the
+/// whole Privacy tab body.
+private struct DNSStatsRow: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        let _ = state.statsTick
+        let s = DNSResolver.shared.stats
+        HStack(spacing: 12) {
+            VStack(alignment: .leading) {
+                Text("Queries").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "\(s.queries)").font(.caption.weight(.bold))
+            }
+            VStack(alignment: .leading) {
+                Text("Hits").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "\(s.cacheHits)").font(.caption.weight(.bold))
+            }
+            VStack(alignment: .leading) {
+                Text("Misses").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "\(s.cacheMisses)").font(.caption.weight(.bold))
+            }
+            VStack(alignment: .leading) {
+                Text("Errors").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "\(s.errors)")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(s.errors > 0 ? .red : .secondary)
+            }
+        }
+    }
+}
+
+/// L2 disk-cache statistics row, same isolation rationale as L1.
+private struct CacheL2StatsRow: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        let _ = state.statsTick
+        let s = DiskCache.shared.stats
+        HStack(spacing: 16) {
+            VStack(alignment: .leading) {
+                Text("L2 Hits").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "\(s.hits)").font(.caption.weight(.bold)).foregroundStyle(.teal)
+            }
+            VStack(alignment: .leading) {
+                Text("L2 Writes").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "\(s.writes)").font(.caption.weight(.bold))
+            }
+            VStack(alignment: .leading) {
+                Text("Size").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "\(s.sizeBytes / 1024 / 1024) MB").font(.caption.weight(.bold))
+            }
+            VStack(alignment: .leading) {
+                Text("Evictions").font(.caption2).foregroundStyle(.secondary)
+                Text(verbatim: "\(s.evictions)").font(.caption.weight(.bold))
+            }
         }
     }
 }
@@ -2765,26 +2823,7 @@ struct PrivacyView: View {
                     TextField("DoH URL", text: dnsBinding(\.customURL))
                         .textFieldStyle(.roundedBorder).font(.caption)
                 }
-                let _ = state.statsTick  // 1Hz dependency — see AppState.statsTick
-                let dnsStats = DNSResolver.shared.stats
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading) {
-                        Text("Queries").font(.caption2).foregroundStyle(.secondary)
-                        Text(verbatim: "\(dnsStats.queries)").font(.caption.weight(.bold))
-                    }
-                    VStack(alignment: .leading) {
-                        Text("Hits").font(.caption2).foregroundStyle(.secondary)
-                        Text(verbatim: "\(dnsStats.cacheHits)").font(.caption.weight(.bold))
-                    }
-                    VStack(alignment: .leading) {
-                        Text("Misses").font(.caption2).foregroundStyle(.secondary)
-                        Text(verbatim: "\(dnsStats.cacheMisses)").font(.caption.weight(.bold))
-                    }
-                    VStack(alignment: .leading) {
-                        Text("Errors").font(.caption2).foregroundStyle(.secondary)
-                        Text(verbatim: "\(dnsStats.errors)").font(.caption.weight(.bold)).foregroundStyle(dnsStats.errors > 0 ? .red : .secondary)
-                    }
-                }
+                DNSStatsRow()
             }
             Text("When enabled, Proxymate resolves domains via encrypted DNS to bypass ISP snooping and match resolved IPs against blacklists.")
                 .font(.caption2).foregroundStyle(.tertiary)
