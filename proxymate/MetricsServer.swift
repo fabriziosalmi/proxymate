@@ -60,8 +60,29 @@ nonisolated final class MetricsServer: @unchecked Sendable {
 
     private func handle(_ conn: NWConnection) {
         conn.start(queue: queue)
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] _, _, _, _ in
-            let body = self?.statsProvider?() ?? ""
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, _, _ in
+            guard let self else { conn.cancel(); return }
+            let request = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+
+            // Block browser-initiated fetches. The server binds to
+            // 127.0.0.1, but anything on the user's machine (including
+            // a tab loading <img src="http://127.0.0.1:9199/metrics">)
+            // can reach it. Prometheus scrapers never send Origin or
+            // Sec-Fetch-* headers — modern browsers always send at
+            // least one of them — so their presence is a reliable
+            // browser-vs-scraper signal. Without this gate, any visited
+            // page can probe the metrics surface (and side-channel its
+            // contents via load timing / error events even when CORS
+            // hides the body).
+            if Self.looksLikeBrowserRequest(request) {
+                let denied = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                conn.send(content: denied.data(using: .utf8), completion: .contentProcessed { _ in
+                    conn.cancel()
+                })
+                return
+            }
+
+            let body = self.statsProvider?() ?? ""
             let response = """
             HTTP/1.1 200 OK\r
             Content-Type: text/plain; version=0.0.4; charset=utf-8\r
@@ -74,6 +95,34 @@ nonisolated final class MetricsServer: @unchecked Sendable {
                 conn.cancel()
             })
         }
+    }
+
+    /// Header inspection — case-insensitive, line-ending tolerant.
+    /// Internal for unit testing. Returns true if any header that browsers
+    /// add automatically (and Prometheus / curl-without-flags do not) is
+    /// present in the raw request bytes.
+    ///
+    /// CRLF normalization happens before split because Swift treats
+    /// "\r\n" as a single grapheme `Character` — a `whereSeparator`
+    /// predicate comparing each `Character` to `"\n"` or `"\r"` would
+    /// match neither and the request would be seen as one giant line.
+    /// Names are matched against a fixed allowlist of browser-only
+    /// headers; whitespace around the colon is tolerated per RFC 7230 § 3.2.
+    static func looksLikeBrowserRequest(_ raw: String) -> Bool {
+        let normalized = raw.lowercased()
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let browserHeaderNames: Set<String> = [
+            "origin", "referer",
+            "sec-fetch-site", "sec-fetch-mode",
+            "sec-fetch-dest", "sec-fetch-user",
+        ]
+        for line in normalized.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let name = line[..<colon].trimmingCharacters(in: .whitespaces)
+            if browserHeaderNames.contains(name) { return true }
+        }
+        return false
     }
 }
 

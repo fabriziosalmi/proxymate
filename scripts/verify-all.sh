@@ -304,7 +304,6 @@ check_feature() {
 check_feature "HTTP proxy (Network.framework)"     "NWListener"                proxymate/LocalProxy.swift
 check_feature "SOCKS5 proxy (RFC 1928)"             "SOCKS5Listener"            proxymate/SOCKS5Listener.swift
 check_feature "PAC server"                          "PACServer"                 proxymate/PACServer.swift
-check_feature "HTTP/2 upstream"                     "HTTP2Upstream"             proxymate/HTTP2Upstream.swift
 check_feature "Multi-upstream pools"                "PoolRouter"                proxymate/PoolRouter.swift
 check_feature "6 pool strategies"                   "leastConns"                proxymate/PoolRouter.swift
 check_feature "Health checks"                       "performHealthCheck"        proxymate/PoolRouter.swift

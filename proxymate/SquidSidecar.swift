@@ -24,6 +24,9 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
         return tmp
     }()
 
+    private let pidFile: String = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".proxymate/squid.pid").path
+
     var onEvent: ((@Sendable (String) -> Void))?
 
     // MARK: - Lifecycle
@@ -35,6 +38,10 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
             guard let squidPath = findSquid() else {
                 throw SquidError.notInstalled
             }
+
+            // Reap any orphan squid from a hard-quit parent. Path-checked
+            // against `squidPath` so a recycled PID can't redirect the kill.
+            MITMProxySidecar.reapOrphan(pidFile: pidFile, expectedPath: squidPath)
 
             // Generate minimal config
             let configPath = workDir.appendingPathComponent("squid.conf").path
@@ -102,6 +109,7 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
             process = p
             port = listenPort
             isRunning = true
+            MITMProxySidecar.writePIDFile(pidFile, pid: p.processIdentifier)
             onEvent?("squid started on port \(listenPort) (PID \(p.processIdentifier))")
             return listenPort
         }
@@ -116,6 +124,7 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
             self.process = nil
             self.isRunning = false
             self.port = 0
+            MITMProxySidecar.clearPIDFile(self.pidFile)
         }
     }
 

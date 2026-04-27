@@ -44,6 +44,10 @@ final class StatsTimeSeries: ObservableObject {
         }
     }
 
+    deinit {
+        timer?.invalidate()
+    }
+
     func recordAllowed() { allowedThisSecond += 1 }
     func recordBlocked() { blockedThisSecond += 1 }
 

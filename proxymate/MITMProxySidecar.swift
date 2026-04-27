@@ -14,6 +14,7 @@
 import Foundation
 import Network
 import CommonCrypto
+import Darwin
 
 nonisolated final class MITMProxySidecar: @unchecked Sendable {
 
@@ -37,6 +38,9 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
         return dir.appendingPathComponent("mitm.sock").path
     }()
 
+    private let pidFile: String = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".proxymate/mitmdump.pid").path
+
     var onEvent: ((@Sendable (LocalProxy.Event) -> Void))?
 
     // MARK: - Lifecycle
@@ -58,6 +62,12 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
                 throw SidecarError.integrityFailed
             }
             trustedHash = currentHash
+
+            // Reap any orphan from a previous parent process that didn't
+            // get to call stop() (force-quit, crash). Path-checked so a
+            // recycled PID belonging to an unrelated process is never
+            // killed.
+            Self.reapOrphan(pidFile: pidFile, expectedPath: path)
 
             // Find addon script
             let addonPath = Bundle.main.path(forResource: "proxymate_addon",
@@ -142,11 +152,69 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             process = p
             _port = listenPort
             _isRunning = true
+            Self.writePIDFile(pidFile, pid: p.processIdentifier)
             startHeartbeat()
 
             onEvent?(.log(.info, "mitmproxy sidecar on port \(listenPort) (PID \(p.processIdentifier))"))
             return listenPort
         }
+    }
+
+    /// Reap any sidecar process left behind by the previous parent
+    /// (force-quit, crash, kernel panic). Without this, `Process()`-spawned
+    /// children get reparented to launchd on parent death and accumulate
+    /// across enable/quit cycles, holding onto their listen ports and
+    /// blocking the next launch's bind. macOS doesn't expose
+    /// `prctl(PR_SET_PDEATHSIG)` so we can't make the kernel kill them
+    /// for us — instead we leave a PID-file breadcrumb at start and
+    /// clean it up on the next launch's start path.
+    ///
+    /// PID-recycling safety: before sending SIGTERM, verify the live
+    /// process at that PID is still running our recorded executable
+    /// (`expectedPath`). If a recycled PID belongs to an unrelated
+    /// process, the path won't match and we leave it alone.
+    static func reapOrphan(pidFile: String, expectedPath: String) {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: pidFile)),
+              let str = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              let pid = Int32(str), pid > 1
+        else {
+            try? FileManager.default.removeItem(atPath: pidFile)
+            return
+        }
+        defer { try? FileManager.default.removeItem(atPath: pidFile) }
+
+        // kill(pid, 0) probes existence without sending a signal: 0 ⇒
+        // alive, -1 with errno = ESRCH ⇒ gone, EPERM ⇒ alive but not ours.
+        if Darwin.kill(pid, 0) != 0 { return }
+
+        let bufLen = Int(MAXPATHLEN)
+        let buf = UnsafeMutablePointer<CChar>.allocate(capacity: bufLen)
+        defer { buf.deallocate() }
+        let n = proc_pidpath(pid, buf, UInt32(bufLen))
+        guard n > 0 else { return }
+        let actual = String(cString: buf)
+        guard actual == expectedPath else { return }
+
+        _ = Darwin.kill(pid, SIGTERM)
+        // 1s grace before SIGKILL.
+        for _ in 0..<10 {
+            usleep(100_000)
+            if Darwin.kill(pid, 0) != 0 { return }
+        }
+        _ = Darwin.kill(pid, SIGKILL)
+    }
+
+    /// Persist `pid` to `pidFile` so the next launch's `reapOrphan` can
+    /// find it if we never get a chance to clean up.
+    static func writePIDFile(_ pidFile: String, pid: Int32) {
+        let dir = (pidFile as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try? "\(pid)".write(toFile: pidFile, atomically: true, encoding: .utf8)
+    }
+
+    static func clearPIDFile(_ pidFile: String) {
+        try? FileManager.default.removeItem(atPath: pidFile)
     }
 
     /// Poll 127.0.0.1:<port> with TCP connect() every 100 ms until either
@@ -188,6 +256,7 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             self._port = 0
             self.stopSocketListener()
             try? FileManager.default.removeItem(atPath: self.socketPath)
+            Self.clearPIDFile(self.pidFile)
         }
     }
 

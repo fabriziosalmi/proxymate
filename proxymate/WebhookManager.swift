@@ -24,6 +24,14 @@ nonisolated final class WebhookManager: @unchecked Sendable {
     private let queue = DispatchQueue(label: "proxymate.webhook", qos: .utility)
     private var settings = WebhookSettings()
     private var lastSent: [String: Date] = [:]  // event key → last sent time
+    /// Number of retry attempts currently scheduled. Bounded so a stuck
+    /// receiver can't grow the in-flight retry pile without limit.
+    private var pendingRetries = 0
+    private let maxAttempts = 3                 // initial + 2 retries
+    private let maxPendingRetries = 100
+    /// Backoff schedule indexed by attempt number (1-based for the *next*
+    /// attempt: attempt 2 waits 5s, attempt 3 waits 30s).
+    private let retryDelays: [TimeInterval] = [5, 30]
 
     /// Shared URLSession that bypasses system proxy.
     private let directSession: URLSession = {
@@ -33,8 +41,38 @@ nonisolated final class WebhookManager: @unchecked Sendable {
         return URLSession(configuration: config)
     }()
 
+    /// Reject webhook URLs that embed `user:pass@` in the userinfo
+    /// component. Without this, a string like
+    /// `https://api:secret@hooks.example.com/foo` ends up in
+    /// `WebhookSettings.urls`, JSON-encoded, and persisted to UserDefaults
+    /// in plaintext (anyone with read access to the user's defaults plist
+    /// reads the secret). Returns the URL unchanged when safe, nil
+    /// otherwise. Operators that need Basic Auth must use a header-based
+    /// scheme; secrets do not belong in URL strings.
+    static func isAcceptable(_ urlString: String) -> Bool {
+        guard let comps = URLComponents(string: urlString),
+              let scheme = comps.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              comps.host?.isEmpty == false,
+              comps.user == nil, comps.password == nil
+        else { return false }
+        return true
+    }
+
     func configure(_ s: WebhookSettings) {
-        queue.async { [weak self] in self?.settings = s }
+        // Defense-in-depth: even if a user:pass URL slipped through input
+        // validation (older settings file, hand-edited plist), drop it
+        // here before it gets a chance to be POSTed.
+        var cleaned = s
+        let original = cleaned.urls
+        cleaned.urls = original.filter { Self.isAcceptable($0) }
+        let dropped = original.count - cleaned.urls.count
+        queue.async { [weak self] in
+            self?.settings = cleaned
+            if dropped > 0 {
+                NSLog("[Webhook] dropped \(dropped) URL(s) failing validation (userinfo / non-http scheme / empty host)")
+            }
+        }
     }
 
     // MARK: - Event senders
@@ -89,27 +127,57 @@ nonisolated final class WebhookManager: @unchecked Sendable {
             guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
 
             for urlString in self.settings.urls {
-                guard let url = URL(string: urlString) else { continue }
-                var request = URLRequest(url: url, timeoutInterval: 10)
-                request.httpMethod = "POST"
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue("Proxymate/1.0", forHTTPHeaderField: "User-Agent")
-                request.httpBody = body
-                // Before: .dataTask(with: request).resume() with no
-                // completion handler — every delivery failure (network
-                // down, DNS fail, endpoint 500) was silently eaten.
-                // Operators could configure a webhook and never learn it
-                // wasn't arriving. Now we log delivery outcome so failures
-                // surface in Console.app (same NSLog channel as other
-                // singletons without an event bus).
-                self.directSession.dataTask(with: request) { _, response, error in
-                    if let error {
-                        NSLog("[Webhook] POST \(urlString) failed: \(error.localizedDescription)")
-                    } else if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                        NSLog("[Webhook] POST \(urlString) → HTTP \(http.statusCode)")
-                    }
-                }.resume()
+                self.deliver(urlString: urlString, body: body, attempt: 1)
             }
         }
+    }
+
+    /// Send one webhook POST. On transient failure (transport error or
+    /// 5xx) schedule a bounded retry on the same queue with exponential
+    /// backoff; 4xx is treated as terminal (the receiver rejected the
+    /// payload — retrying won't help). The total in-flight retry count
+    /// is capped at `maxPendingRetries` so a long outage on the receiver
+    /// can't grow the pile without limit.
+    private func deliver(urlString: String, body: Data, attempt: Int) {
+        guard let url = URL(string: urlString) else { return }
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Proxymate/1.0", forHTTPHeaderField: "User-Agent")
+        request.httpBody = body
+
+        directSession.dataTask(with: request) { [weak self] _, response, error in
+            guard let self else { return }
+            let transient: Bool
+            let label: String
+            if let error {
+                transient = true
+                label = "transport error: \(error.localizedDescription)"
+            } else if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                transient = (500...599).contains(http.statusCode)
+                label = "HTTP \(http.statusCode)"
+            } else {
+                return // 2xx — done.
+            }
+
+            self.queue.async {
+                if !transient || attempt >= self.maxAttempts {
+                    NSLog("[Webhook] POST \(urlString) failed after \(attempt) attempt(s) (\(label))")
+                    return
+                }
+                if self.pendingRetries >= self.maxPendingRetries {
+                    NSLog("[Webhook] retry queue full (\(self.maxPendingRetries)) — dropping \(urlString) after attempt \(attempt) (\(label))")
+                    return
+                }
+                let delay = self.retryDelays[min(attempt - 1, self.retryDelays.count - 1)]
+                self.pendingRetries += 1
+                NSLog("[Webhook] POST \(urlString) \(label); retry \(attempt + 1)/\(self.maxAttempts) in \(Int(delay))s")
+                self.queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self else { return }
+                    self.pendingRetries -= 1
+                    self.deliver(urlString: urlString, body: body, attempt: attempt + 1)
+                }
+            }
+        }.resume()
     }
 }

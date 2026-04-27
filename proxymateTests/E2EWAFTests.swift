@@ -122,20 +122,4 @@ final class E2EWAFTests: XCTestCase {
         XCTAssertFalse(HSTSPreload.isPreloaded("mysite.io"))
     }
 
-    // MARK: - Connection pool
-
-    func testConnectionPoolStats() {
-        let pool = ConnectionPool()
-        let stats = pool.stats
-        XCTAssertEqual(stats.hits, 0)
-        XCTAssertEqual(stats.misses, 0)
-        XCTAssertEqual(stats.activeConnections, 0)
-    }
-
-    func testConnectionPoolMiss() {
-        let pool = ConnectionPool()
-        let conn = pool.get(host: "nonexistent.com", port: 80)
-        XCTAssertNil(conn)
-        XCTAssertEqual(pool.stats.misses, 1)
-    }
 }

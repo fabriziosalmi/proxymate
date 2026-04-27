@@ -415,7 +415,6 @@ final class AppState: ObservableObject {
         localProxy.stop()
         socks5Listener.stop()
         PACServer.shared.stop()
-        ConnectionPool.shared.drain()
         // Tear down the auto-started Squid sidecar if it was ours. If a
         // user-managed Squid was reused, stop() is a no-op on the foreign
         // process — SquidSidecar only kills processes it spawned.
@@ -697,8 +696,13 @@ final class AppState: ObservableObject {
     }
 
     func updateWebhook(_ s: WebhookSettings) {
-        webhookSettings = s; save()
-        WebhookManager.shared.configure(s)
+        // Filter URLs at the persistence boundary so unsafe entries
+        // (user:pass@host, non-http schemes) never reach UserDefaults.
+        // WebhookManager.configure double-filters as defense-in-depth.
+        var safe = s
+        safe.urls = s.urls.filter { WebhookManager.isAcceptable($0) }
+        webhookSettings = safe; save()
+        WebhookManager.shared.configure(safe)
     }
 
     private nonisolated(unsafe) static let _latestStats = OSAllocatedUnfairLock(initialState: Stats())
@@ -1260,7 +1264,11 @@ final class AppState: ObservableObject {
             metricsSettings = s
         }
         if let data = d.data(forKey: webhookKey),
-           let s = try? JSONDecoder().decode(WebhookSettings.self, from: data) {
+           var s = try? JSONDecoder().decode(WebhookSettings.self, from: data) {
+            // Migration: strip URLs that embed user:pass credentials
+            // (older builds did not validate at input time, so plain-text
+            // secrets may sit in the previously-persisted defaults).
+            s.urls = s.urls.filter { WebhookManager.isAcceptable($0) }
             webhookSettings = s
         }
         if let data = d.data(forKey: allowlistKey),
