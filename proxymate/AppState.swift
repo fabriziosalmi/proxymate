@@ -300,12 +300,22 @@ final class AppState: ObservableObject {
         isBusy = true
         defer { isBusy = false }
 
-        // If the selected upstream is one of the bundled sidecars (Local Squid
-        // on 3128, Local mitmproxy on 8080), make sure the sidecar is running
-        // before we forward to it. Otherwise a fresh install with the default
-        // "Local Squid" selection would answer every request with 502
-        // because nothing is listening on 3128.
-        await ensureLocalSidecarForUpstream(host: proxy.host, port: upstreamPort)
+        // Kick off the local sidecar in parallel with the rest of enable.
+        // Squid cold-start (cache_dir init + listen) can take 5–15 s; if
+        // we awaited it inline, the user would stare at a spinner with
+        // no admin-password prompt for the whole duration. By starting
+        // the sidecar concurrently and proceeding to apply the system
+        // proxy + show the password prompt, the prompt fires right
+        // away and squid is usually up by the time the user has typed
+        // their password. First request may briefly hit "no upstream"
+        // if the user is unusually fast — that's the rare case, and
+        // localproxy's connect() retries swallow it cleanly.
+        let sidecarTask: Task<Void, Error>? = (
+            (proxy.host == "127.0.0.1" || proxy.host == "::1" || proxy.host == "localhost")
+            && upstreamPort == 3128
+        ) ? Task.detached(priority: .userInitiated) {
+            _ = try SquidSidecar.shared.start(listenPort: upstreamPort)
+        } : nil
 
         let port: UInt16
         do {
@@ -318,6 +328,7 @@ final class AppState: ObservableObject {
                 mitm: mitmSettings
             )
         } catch {
+            sidecarTask?.cancel()
             log(.error, "Local proxy start failed: \(error.localizedDescription)"); return
         }
         localPort = port
@@ -339,8 +350,18 @@ final class AppState: ObservableObject {
         do {
             try await ProxyManager.enable(proxy: synthetic, pacURL: pacURL)
         } catch {
+            sidecarTask?.cancel()
             log(.error, "System proxy apply failed: \(error.localizedDescription)")
             localProxy.stop(); localPort = nil; return
+        }
+
+        // Now that the password prompt is dismissed, surface any squid
+        // boot error that happened in parallel. Don't fail enable on it
+        // — the proxy still works for non-Squid upstreams or after the
+        // user re-launches squid; we just log so they know.
+        if let task = sidecarTask {
+            do { _ = try await task.value }
+            catch { log(.warn, "Local Squid sidecar not started: \(error.localizedDescription) — upstream must be reachable by other means") }
         }
 
         isEnabled = true
