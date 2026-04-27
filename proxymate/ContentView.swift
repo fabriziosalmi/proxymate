@@ -184,12 +184,17 @@ struct ContentView: View {
             if state.isBusy {
                 ProgressView().controlSize(.small)
             }
-            // Emergency killswitch: instantly stops everything (#38)
+            // Emergency killswitch: instantly stops everything (#38).
+            // Icon is `stop.fill`, deliberately different from the
+            // adjacent power toggle. Before, both controls used a
+            // power glyph and were distinguishable only by the red
+            // background and a tooltip — so a first-time user read
+            // them as duplicate on/off controls.
             if state.isEnabled {
                 Button {
                     Task { await state.disable() }
                 } label: {
-                    Image(systemName: "power")
+                    Image(systemName: "stop.fill")
                         .font(.caption.bold())
                         .foregroundStyle(.white)
                         .frame(width: 22, height: 22)
@@ -552,8 +557,12 @@ struct PACSection: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Toggle("Enable PAC Server", isOn: pacBinding(\.enabled))
-                    .font(.caption).toggleStyle(.switch).controlSize(.small)
+                HStack {
+                    Text("Enable PAC Server").font(.caption)
+                    Spacer()
+                    Toggle("", isOn: pacBinding(\.enabled))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                }
 
                 if state.pacSettings.enabled {
                     Text("PAC (Proxy Auto-Configuration) catches apps that ignore HTTP_PROXY env vars. Most Electron apps (Slack, VSCode), Python, and Node.js respect PAC.")
@@ -994,17 +1003,22 @@ struct CommunityBar: View {
     ]
 
     var body: some View {
+        // Single-row layout: each link is icon + label side-by-side
+        // instead of stacked. Drops the footer height from ~36 px to
+        // ~22 px in every tab. Discoverability is preserved (labels
+        // are still on screen) — we just stop spending two rows of
+        // popover real estate to deliver five tertiary actions.
         Divider()
         HStack(spacing: 0) {
             ForEach(links, id: \.label) { link in
                 Button {
                     if let u = URL(string: link.url) { openURL(u) }
                 } label: {
-                    VStack(spacing: 2) {
+                    HStack(spacing: 4) {
                         Image(systemName: link.icon)
                             .font(.system(size: 10, weight: .regular))
                         Text(link.label)
-                            .font(.system(size: 8, weight: .medium))
+                            .font(.system(size: 9, weight: .medium))
                     }
                     .frame(maxWidth: .infinity)
                     .foregroundStyle(.tertiary)
@@ -1012,9 +1026,10 @@ struct CommunityBar: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(link.label)
+                .help(link.url)
             }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 4)
         .padding(.horizontal, 6)
     }
 }
@@ -1613,8 +1628,12 @@ struct ThreatsSection: View {
             VStack(alignment: .leading, spacing: 14) {
                 // C2 Detection
                 sectionHeader("C2 FRAMEWORK DETECTION")
-                Toggle("Enable C2 detection", isOn: c2Binding(\.enabled))
-                    .font(.caption).toggleStyle(.switch).controlSize(.small)
+                HStack {
+                    Text("Enable C2 detection").font(.caption)
+                    Spacer()
+                    Toggle("", isOn: c2Binding(\.enabled))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                }
                 if state.c2Settings.enabled {
                     Picker("Action", selection: c2Binding(\.action)) {
                         ForEach(C2Settings.Action.allCases) { Text($0.rawValue).tag($0) }
@@ -1635,8 +1654,12 @@ struct ThreatsSection: View {
 
                 // Beaconing
                 sectionHeader("BEACONING DETECTION")
-                Toggle("Enable beaconing detection", isOn: beaconBinding(\.enabled))
-                    .font(.caption).toggleStyle(.switch).controlSize(.small)
+                HStack {
+                    Text("Enable beaconing detection").font(.caption)
+                    Spacer()
+                    Toggle("", isOn: beaconBinding(\.enabled))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                }
                 if state.beaconingSettings.enabled {
                     Picker("Action", selection: beaconBinding(\.action)) {
                         ForEach(BeaconingSettings.Action.allCases) { Text($0.rawValue).tag($0) }
@@ -1976,7 +1999,12 @@ struct AIView: View {
                 sectionHeader("AI AGENT DETECTION")
                 HStack(spacing: 8) {
                     StatCard(title: "AI Requests", value: "\(state.stats.aiRequests)", color: .blue)
-                    StatCard(title: "AI Blocked", value: "\(state.stats.aiBlocked)", color: .red)
+                    // Red is reserved for "something is wrong" — when nothing
+                    // has been blocked yet, the value is informational and
+                    // shouldn't trigger alarm-color recognition.
+                    StatCard(title: "AI Blocked",
+                             value: "\(state.stats.aiBlocked)",
+                             color: state.stats.aiBlocked > 0 ? .red : .secondary)
                 }
                 Text("Detected from CONNECT tunnel hostnames. Works without MITM.")
                     .font(.caption2).foregroundStyle(.tertiary)
@@ -2045,22 +2073,33 @@ struct AIView: View {
     private var spendSummary: some View {
         let _ = state.statsTick  // 1Hz dependency — AITracker is not ObservableObject
         let (daily, monthly) = AITracker.shared.getTotalSpend()
+        // Color is reserved for budget pressure — the prior blue/purple/green
+        // triplet was decorative and added cognitive load. We now use the
+        // primary foreground (theme-aware) for normal spend, orange when
+        // we're at ≥75 % of an active daily/monthly cap, and red when
+        // we're at 100 %. Three timeframes share one rule, so a glance
+        // tells the user where they sit relative to the cap they set.
+        let dailyCap = state.aiSettings.dailyBudgetUSD
+        let monthlyCap = state.aiSettings.monthlyBudgetUSD
         return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Today").font(.caption2).foregroundStyle(.secondary)
                 Text(verbatim: "$\(String(format: "%.2f", daily))")
-                    .font(.title3.weight(.bold)).foregroundStyle(.blue)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(Self.budgetColor(spent: daily, cap: dailyCap))
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text("This Month").font(.caption2).foregroundStyle(.secondary)
                 Text(verbatim: "$\(String(format: "%.2f", monthly))")
-                    .font(.title3.weight(.bold)).foregroundStyle(.purple)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(Self.budgetColor(spent: monthly, cap: monthlyCap))
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
                 Text("Session").font(.caption2).foregroundStyle(.secondary)
                 Text(verbatim: "$\(String(format: "%.4f", state.stats.aiTotalCostUSD))")
-                    .font(.title3.weight(.bold)).foregroundStyle(.green)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.primary)
             }
         }
     }
@@ -2148,8 +2187,12 @@ struct AIView: View {
 
     private var loopBreakerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Toggle("Enable Loop Breaker", isOn: lbBinding(\.enabled))
-                .font(.caption).toggleStyle(.switch).controlSize(.small)
+            HStack {
+                Text("Enable Loop Breaker").font(.caption)
+                Spacer()
+                Toggle("", isOn: lbBinding(\.enabled))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
+            }
 
             if state.loopBreakerSettings.enabled {
                 Text("Detects stuck AI agents and runaway loops. First detection warns (no block). Repeated violations block with 429.")
@@ -2233,6 +2276,18 @@ struct AIView: View {
     private func sectionHeader(_ title: String) -> some View {
         Text(title).font(.caption2.weight(.bold)).foregroundStyle(.secondary)
     }
+
+    /// Translate spend/cap into a foreground color: primary when the cap
+    /// is unset (`cap == 0`) or we're well under, orange at ≥75 %, red
+    /// at ≥100 %. Centralized so the three timeframe values stay
+    /// visually consistent.
+    private static func budgetColor(spent: Double, cap: Double) -> Color {
+        guard cap > 0 else { return .primary }
+        let ratio = spent / cap
+        if ratio >= 1.0 { return .red }
+        if ratio >= 0.75 { return .orange }
+        return .primary
+    }
 }
 
 struct FlowTags: View {
@@ -2310,8 +2365,12 @@ struct CacheView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 privacySection("HTTP Response Cache") {
-                    Toggle("Enable L1 RAM Cache", isOn: cacheBinding(\.enabled))
-                        .font(.caption).toggleStyle(.switch).controlSize(.small)
+                    HStack {
+                        Text("Enable L1 RAM Cache").font(.caption)
+                        Spacer()
+                        Toggle("", isOn: cacheBinding(\.enabled))
+                            .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                    }
                 }
 
                 if state.cacheSettings.enabled {
@@ -2354,34 +2413,57 @@ struct CacheView: View {
                     }
 
                     privacySection("Behavior") {
-                        Toggle("Honor Cache-Control: no-store", isOn: cacheBinding(\.honorNoStore))
-                            .font(.caption).toggleStyle(.switch).controlSize(.small)
-                            .help("When enabled, responses with no-store are never cached. Disable for aggressive caching.")
-                        Toggle("Strip tracking params from cache key (utm_*, fbclid)",
-                               isOn: cacheBinding(\.stripTrackingParams))
-                            .help("Removes utm_source, fbclid, gclid etc. from cache keys for better hit rate")
-                            .font(.caption).toggleStyle(.switch).controlSize(.small)
+                        HStack {
+                            Text("Honor Cache-Control: no-store").font(.caption)
+                            Spacer()
+                            Toggle("", isOn: cacheBinding(\.honorNoStore))
+                                .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                                .help("When enabled, responses with no-store are never cached. Disable for aggressive caching.")
+                        }
+                        HStack {
+                            Text("Strip tracking params from cache key (utm_*, fbclid)").font(.caption)
+                            Spacer()
+                            Toggle("", isOn: cacheBinding(\.stripTrackingParams))
+                                .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                                .help("Removes utm_source, fbclid, gclid etc. from cache keys for better hit rate")
+                        }
                     }
 
                     let _ = state.statsTick  // 1Hz dependency — see AppState.statsTick
                     let cacheStats = CacheManager.shared.stats
+                    // Render `—` when a counter is exactly zero so an
+                    // empty cache reads as "nothing yet" instead of a
+                    // row of four "0"s that look like flat-line errors.
+                    // The cache feature can be off OR on-but-cold; the
+                    // displayed dash works for both.
+                    let dash = "—"
                     privacySection("Statistics") {
                         HStack(spacing: 16) {
                             VStack(alignment: .leading) {
                                 Text("Hits").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(cacheStats.hits)").font(.caption.weight(.bold)).foregroundStyle(.teal)
+                                Text(verbatim: cacheStats.hits == 0 ? dash : "\(cacheStats.hits)")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(cacheStats.hits == 0 ? Color.secondary : Color.teal)
                             }
                             VStack(alignment: .leading) {
                                 Text("Misses").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(cacheStats.misses)").font(.caption.weight(.bold))
+                                Text(verbatim: cacheStats.misses == 0 ? dash : "\(cacheStats.misses)")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(cacheStats.misses == 0 ? .secondary : .primary)
                             }
                             VStack(alignment: .leading) {
                                 Text("Size").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: String(format: "%.1f MB", cacheStats.currentSizeMB)).font(.caption.weight(.bold))
+                                Text(verbatim: cacheStats.currentSizeMB == 0
+                                     ? dash
+                                     : String(format: "%.1f MB", cacheStats.currentSizeMB))
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(cacheStats.currentSizeMB == 0 ? .secondary : .primary)
                             }
                             VStack(alignment: .leading) {
                                 Text("Entries").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(cacheStats.currentEntries)").font(.caption.weight(.bold))
+                                Text(verbatim: cacheStats.currentEntries == 0 ? dash : "\(cacheStats.currentEntries)")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(cacheStats.currentEntries == 0 ? .secondary : .primary)
                             }
                         }
                     }
@@ -2401,9 +2483,13 @@ struct CacheView: View {
 
                 // L2 Disk Cache
                 privacySection("L2 DISK CACHE") {
-                    Toggle("Enable L2 disk cache", isOn: diskBinding(\.enabled))
-                        .font(.caption).toggleStyle(.switch).controlSize(.small)
-                        .help("Persists cached responses to disk. Survives app restart.")
+                    HStack {
+                        Text("Enable L2 disk cache").font(.caption)
+                        Spacer()
+                        Toggle("", isOn: diskBinding(\.enabled))
+                            .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                            .help("Persists cached responses to disk. Survives app restart.")
+                    }
 
                     if state.diskCacheSettings.enabled {
                         HStack {
@@ -2474,6 +2560,12 @@ struct PrivacyView: View {
     @EnvironmentObject var state: AppState
     @State private var showWizard = false
     @State private var confirmingRemoveCA = false
+    // Heavy "set up once" sections start expanded; users can collapse
+    // them after the initial setup so the daily-toggled signals/headers
+    // sections are reachable without scrolling. Session-only state —
+    // persistence here would be more code than it's worth.
+    @State private var tlsExpanded = true
+    @State private var dnsExpanded = true
 
     var body: some View {
         ScrollView {
@@ -2538,91 +2630,24 @@ struct PrivacyView: View {
                     }
                 }
 
-                // MITM section
-                privacySection("TLS Interception (MITM)") {
-                    if state.mitmSettings.caInstalled {
-                        HStack {
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundStyle(.green)
-                            Text("Root CA installed").font(.caption)
-                            Spacer()
-                            Button("Trust") { state.trustMITMCA() }
-                                .buttonStyle(.bordered).controlSize(.mini)
-                            Button("Export") { state.exportMITMCA() }
-                                .buttonStyle(.bordered).controlSize(.mini)
-                                .help("Save the CA to ~/Downloads for Firefox import")
-                            Button("Remove") { confirmingRemoveCA = true }
-                                .buttonStyle(.bordered).controlSize(.mini)
-                                .foregroundStyle(.red)
-                        }
-                        Toggle("Enable MITM Inspection", isOn: mitmBinding(\.enabled))
-                            .font(.caption).toggleStyle(.switch).controlSize(.small)
-
-                        if state.mitmSettings.enabled {
-                            Text("HTTPS inspection active. Banking, Apple, Google excluded by default. Cert-pinned apps auto-excluded after 3 failures.")
-                                .font(.caption2).foregroundStyle(.secondary)
-
-                            // Exclude host input
-                            MITMExcludeSection()
-                        }
-                    } else {
-                        Text("Generate a root CA to enable HTTPS body inspection. This allows WAF content rules and exfiltration scanning to work on encrypted traffic.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                        Button {
-                            state.generateMITMCA()
-                        } label: {
-                            if state.generatingMITMCA {
-                                HStack(spacing: 6) {
-                                    ProgressView().controlSize(.small)
-                                    Text("Generating…")
-                                }
-                            } else {
-                                Text("Generate Root CA")
-                            }
-                        }
-                        .buttonStyle(.bordered).controlSize(.small)
-                        .disabled(state.generatingMITMCA)
-                    }
+                // MITM section — heavy, set up once, collapsible.
+                DisclosureGroup(isExpanded: $tlsExpanded) {
+                    tlsContent
+                } label: {
+                    Text("TLS INTERCEPTION (MITM)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
                 }
 
-                // DNS section
-                privacySection("DNS-over-HTTPS") {
-                    Toggle("Enable DoH resolver", isOn: dnsBinding(\.enabled))
-                        .font(.caption).toggleStyle(.switch).controlSize(.small)
-                    if state.dnsSettings.enabled {
-                        Picker("Provider", selection: dnsBinding(\.provider)) {
-                            ForEach(DNSSettings.DoHProvider.allCases) {
-                                Text($0.rawValue).tag($0)
-                            }
-                        }.font(.caption)
-                        if state.dnsSettings.provider == .custom {
-                            TextField("DoH URL", text: dnsBinding(\.customURL))
-                                .textFieldStyle(.roundedBorder).font(.caption)
-                        }
-                        let _ = state.statsTick  // 1Hz dependency — see AppState.statsTick
-                        let dnsStats = DNSResolver.shared.stats
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading) {
-                                Text("Queries").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(dnsStats.queries)").font(.caption.weight(.bold))
-                            }
-                            VStack(alignment: .leading) {
-                                Text("Hits").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(dnsStats.cacheHits)").font(.caption.weight(.bold))
-                            }
-                            VStack(alignment: .leading) {
-                                Text("Misses").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(dnsStats.cacheMisses)").font(.caption.weight(.bold))
-                            }
-                            VStack(alignment: .leading) {
-                                Text("Errors").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(dnsStats.errors)").font(.caption.weight(.bold)).foregroundStyle(dnsStats.errors > 0 ? .red : .secondary)
-                            }
-                        }
-                    }
-                    Text("When enabled, Proxymate resolves domains via encrypted DNS to bypass ISP snooping and match resolved IPs against blacklists.")
-                        .font(.caption2).foregroundStyle(.tertiary)
+                // DNS section — collapsible, defaults to expanded.
+                DisclosureGroup(isExpanded: $dnsExpanded) {
+                    dnsContent
+                } label: {
+                    Text("DNS-OVER-HTTPS")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
                 }
+
                 // Setup wizard
                 Divider()
                 Button("Run Setup Wizard Again") {
@@ -2649,6 +2674,107 @@ struct PrivacyView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("HTTPS inspection will stop working until you install a new CA. Existing leaf cert caches are purged.")
+        }
+    }
+
+    // The two large privacy sub-views are factored out so the body stays
+    // scannable and so each can live inside a DisclosureGroup. The vertical
+    // spacing matches the privacySection helper used elsewhere.
+    @ViewBuilder
+    private var tlsContent: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if state.mitmSettings.caInstalled {
+                HStack {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                    Text("Root CA installed").font(.caption)
+                    Spacer()
+                    Button("Trust") { state.trustMITMCA() }
+                        .buttonStyle(.bordered).controlSize(.mini)
+                    Button("Export") { state.exportMITMCA() }
+                        .buttonStyle(.bordered).controlSize(.mini)
+                        .help("Save the CA to ~/Downloads for Firefox import")
+                    Button("Remove") { confirmingRemoveCA = true }
+                        .buttonStyle(.bordered).controlSize(.mini)
+                        .foregroundStyle(.red)
+                }
+                HStack {
+                    Text("Enable MITM Inspection").font(.caption)
+                    Spacer()
+                    Toggle("", isOn: mitmBinding(\.enabled))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                }
+
+                if state.mitmSettings.enabled {
+                    Text("HTTPS inspection active. Banking, Apple, Google excluded by default. Cert-pinned apps auto-excluded after 3 failures.")
+                        .font(.caption2).foregroundStyle(.secondary)
+
+                    // Exclude host input
+                    MITMExcludeSection()
+                }
+            } else {
+                Text("Generate a root CA to enable HTTPS body inspection. This allows WAF content rules and exfiltration scanning to work on encrypted traffic.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Button {
+                    state.generateMITMCA()
+                } label: {
+                    if state.generatingMITMCA {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Generating…")
+                        }
+                    } else {
+                        Text("Generate Root CA")
+                    }
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .disabled(state.generatingMITMCA)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var dnsContent: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Enable DoH resolver").font(.caption)
+                Spacer()
+                Toggle("", isOn: dnsBinding(\.enabled))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
+            }
+            if state.dnsSettings.enabled {
+                Picker("Provider", selection: dnsBinding(\.provider)) {
+                    ForEach(DNSSettings.DoHProvider.allCases) {
+                        Text($0.rawValue).tag($0)
+                    }
+                }.font(.caption)
+                if state.dnsSettings.provider == .custom {
+                    TextField("DoH URL", text: dnsBinding(\.customURL))
+                        .textFieldStyle(.roundedBorder).font(.caption)
+                }
+                let _ = state.statsTick  // 1Hz dependency — see AppState.statsTick
+                let dnsStats = DNSResolver.shared.stats
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading) {
+                        Text("Queries").font(.caption2).foregroundStyle(.secondary)
+                        Text(verbatim: "\(dnsStats.queries)").font(.caption.weight(.bold))
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Hits").font(.caption2).foregroundStyle(.secondary)
+                        Text(verbatim: "\(dnsStats.cacheHits)").font(.caption.weight(.bold))
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Misses").font(.caption2).foregroundStyle(.secondary)
+                        Text(verbatim: "\(dnsStats.cacheMisses)").font(.caption.weight(.bold))
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Errors").font(.caption2).foregroundStyle(.secondary)
+                        Text(verbatim: "\(dnsStats.errors)").font(.caption.weight(.bold)).foregroundStyle(dnsStats.errors > 0 ? .red : .secondary)
+                    }
+                }
+            }
+            Text("When enabled, Proxymate resolves domains via encrypted DNS to bypass ISP snooping and match resolved IPs against blacklists.")
+                .font(.caption2).foregroundStyle(.tertiary)
         }
     }
 
@@ -2696,11 +2822,20 @@ struct PrivacyView: View {
         }
     }
 
+    /// Single layout for every settings-style toggle in the popover:
+    /// label hugs the leading edge, switch sits in a consistent column
+    /// on the right. Without the explicit Spacer, `Toggle("Label", …)`
+    /// renders label-then-switch adjacently — labels of varying length
+    /// then form a ragged column of switches that's noisy to scan.
     private func privacyToggle(_ label: String, isOn: Binding<Bool>) -> some View {
-        Toggle(label, isOn: isOn)
-            .font(.caption)
-            .toggleStyle(.switch)
-            .controlSize(.small)
+        HStack(spacing: 8) {
+            Text(label).font(.caption)
+            Spacer(minLength: 8)
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
     }
 }
 
