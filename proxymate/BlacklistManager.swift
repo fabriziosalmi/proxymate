@@ -64,6 +64,16 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
     private var bloomFilter = BloomFilter(expectedCount: 1024)
     /// os_unfair_lock: fastest lock on Apple Silicon, no priority inversion.
     private var setsLock = os_unfair_lock()
+    /// Cached aggregate counts. Recomputed on every mutation
+    /// (refresh / load / clear) and read O(1) from the UI's 1 Hz
+    /// statsTick. Without these, `uniqueEntries` would re-allocate a
+    /// `Set<String>` and union every domain across every list every
+    /// second the user is on the Lists tab — with TOR exits + Steven
+    /// Black + URLhaus enabled that's 200–500k hash inserts/sec on the
+    /// main thread, all while holding `setsLock` (which also gates the
+    /// proxy's hot-path `lookup()`).
+    private var _cachedTotalEntries: Int = 0
+    private var _cachedUniqueEntries: Int = 0
 
     /// URLSession that bypasses system proxy (avoids circular dependency).
     private let directSession: URLSession = {
@@ -160,6 +170,7 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
                         self.ipSets[source.id] = entries.ips
                     }
                     self.rebuildBloomFilter()
+                    self.recomputeStatsLocked()
                     os_unfair_lock_unlock(&self.setsLock)
 
                     // Cache to disk
@@ -198,6 +209,8 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
             os_unfair_lock_lock(&self.setsLock)
             self.domainSets.removeValue(forKey: id)
             self.ipSets.removeValue(forKey: id)
+            self.rebuildBloomFilter()
+            self.recomputeStatsLocked()
             os_unfair_lock_unlock(&self.setsLock)
         }
     }
@@ -209,24 +222,44 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
         return n
     }
 
-    /// Total entries across all sources (may include duplicates across sources).
+    /// Total entries across all sources (may include duplicates across
+    /// sources). O(1) — served from the cache that is updated on every
+    /// mutation under `setsLock`.
     var totalEntries: Int {
         os_unfair_lock_lock(&setsLock)
-        let n = domainSets.values.reduce(0) { $0 + $1.count } +
-                ipSets.values.reduce(0) { $0 + $1.count }
+        let n = _cachedTotalEntries
         os_unfair_lock_unlock(&setsLock)
         return n
     }
 
-    /// Unique entries (deduplicated across all sources).
+    /// Unique entries (deduplicated across all sources). O(1) for the
+    /// same reason — see `_cachedUniqueEntries` doc above for why the
+    /// hot recompute was a real perf problem on the Lists tab.
     var uniqueEntries: Int {
         os_unfair_lock_lock(&setsLock)
-        var allDomains = Set<String>()
-        for set in domainSets.values { allDomains.formUnion(set) }
-        var allIPs = Set<String>()
-        for set in ipSets.values { allIPs.formUnion(set) }
+        let n = _cachedUniqueEntries
         os_unfair_lock_unlock(&setsLock)
-        return allDomains.count + allIPs.count
+        return n
+    }
+
+    /// Refresh the cached aggregate counts. Caller MUST hold `setsLock`.
+    /// Cheap-ish — one full union over all domain sets — but that's the
+    /// price of O(1) reads, paid once per mutation instead of once per
+    /// second per UI tick.
+    private func recomputeStatsLocked() {
+        let totalDomains = domainSets.values.reduce(0) { $0 + $1.count }
+        let totalIPs = ipSets.values.reduce(0) { $0 + $1.count }
+        _cachedTotalEntries = totalDomains + totalIPs
+
+        if domainSets.isEmpty && ipSets.isEmpty {
+            _cachedUniqueEntries = 0
+        } else {
+            var allDomains = Set<String>()
+            for set in domainSets.values { allDomains.formUnion(set) }
+            var allIPs = Set<String>()
+            for set in ipSets.values { allIPs.formUnion(set) }
+            _cachedUniqueEntries = allDomains.count + allIPs.count
+        }
     }
 
     /// Number of active sources.
@@ -321,6 +354,7 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
         if !entries.domains.isEmpty { domainSets[source.id] = entries.domains }
         if !ipEntries.ips.isEmpty { ipSets[source.id] = ipEntries.ips }
         rebuildBloomFilter()
+        recomputeStatsLocked()
         os_unfair_lock_unlock(&setsLock)
         return entries.domains.count + ipEntries.ips.count
     }
