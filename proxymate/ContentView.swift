@@ -1796,29 +1796,15 @@ struct BlacklistsSection: View {
             }
             .padding(8)
 
-            // Aggregate stats
+            // Aggregate stats — pulled into its own View so the 1 Hz
+            // `statsTick` observation invalidates ONLY this 30 px footer
+            // strip, not the parent VStack (which contains a LazyVStack
+            // + ForEach over up to ~20 source rows). With statsTick read
+            // inline above, the whole tab body re-evaluated every second
+            // and scrolling 1 M+ entry lists stuttered visibly.
             if !state.blacklistSources.isEmpty {
                 Divider()
-                let _ = state.statsTick  // 1Hz dependency — BlacklistManager is not ObservableObject
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading) {
-                        Text("Total").font(.system(size: 7)).foregroundStyle(.tertiary)
-                        Text(verbatim: "\(BlacklistManager.shared.totalEntries)")
-                            .font(.caption2.weight(.bold)).monospacedDigit()
-                    }
-                    VStack(alignment: .leading) {
-                        Text("Unique").font(.system(size: 7)).foregroundStyle(.tertiary)
-                        Text(verbatim: "\(BlacklistManager.shared.uniqueEntries)")
-                            .font(.caption2.weight(.bold)).monospacedDigit()
-                    }
-                    VStack(alignment: .leading) {
-                        Text("Sources").font(.system(size: 7)).foregroundStyle(.tertiary)
-                        Text(verbatim: "\(state.blacklistSources.filter(\.enabled).count)")
-                            .font(.caption2.weight(.bold)).monospacedDigit()
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 12).padding(.bottom, 4)
+                BlacklistsAggregateFooter()
             }
         }
         .sheet(isPresented: $showingAddCustom) {
@@ -1827,6 +1813,33 @@ struct BlacklistsSection: View {
                 state.refreshBlacklist(source.id)
             }
         }
+    }
+}
+
+private struct BlacklistsAggregateFooter: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        let _ = state.statsTick  // 1 Hz tick — confined to this view
+        HStack(spacing: 12) {
+            VStack(alignment: .leading) {
+                Text("Total").font(.system(size: 7)).foregroundStyle(.tertiary)
+                Text(verbatim: "\(BlacklistManager.shared.totalEntries)")
+                    .font(.caption2.weight(.bold)).monospacedDigit()
+            }
+            VStack(alignment: .leading) {
+                Text("Unique").font(.system(size: 7)).foregroundStyle(.tertiary)
+                Text(verbatim: "\(BlacklistManager.shared.uniqueEntries)")
+                    .font(.caption2.weight(.bold)).monospacedDigit()
+            }
+            VStack(alignment: .leading) {
+                Text("Sources").font(.system(size: 7)).foregroundStyle(.tertiary)
+                Text(verbatim: "\(state.blacklistSources.filter(\.enabled).count)")
+                    .font(.caption2.weight(.bold)).monospacedDigit()
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12).padding(.bottom, 4)
     }
 }
 
