@@ -321,14 +321,37 @@ struct OnboardingView: View {
     @State private var certTrusted = false
     @State private var certError: String?
 
+    /// Phase-driven copy for the HTTPS-inspection step. The previous
+    /// implementation kept one static "we're about to ask for your admin
+    /// password" sentence above the spinner — even when we were already
+    /// past the password prompt and waiting on SecTrust. The displayed
+    /// description now follows the same state machine as the inline
+    /// status row, so the user reads what's happening *now*, not what
+    /// was about to happen one phase ago.
+    private var certHeaderCopy: String {
+        if certTrusted {
+            return "Done — the local CA is trusted system-wide. You can manage it later from Privacy → TLS Interception."
+        }
+        if certInstalled {
+            return "Enter your admin password in the system dialog to add the CA to the System Keychain. We'll detect it automatically."
+        }
+        if certInstalling {
+            return "Creating a fresh root CA. The private key is stored encrypted in your login Keychain."
+        }
+        return "To inspect encrypted HTTPS traffic, Proxymate needs to install a local root CA. Your admin password will be requested once to add it to the system keychain."
+    }
+
     private var stepCertificate: some View {
         VStack(spacing: 14) {
             Image(systemName: "lock.shield.fill")
                 .font(.title2).foregroundStyle(.orange)
             Text("HTTPS Inspection").font(.headline)
-            Text("To inspect encrypted HTTPS traffic, Proxymate needs to install a local root CA. Your admin password will be requested once to add it to the system keychain.")
+            Text(certHeaderCopy)
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .padding(.horizontal)
+                .animation(.easeInOut(duration: 0.15), value: certTrusted)
+                .animation(.easeInOut(duration: 0.15), value: certInstalled)
+                .animation(.easeInOut(duration: 0.15), value: certInstalling)
 
             Group {
                 if certTrusted {
@@ -358,9 +381,14 @@ struct OnboardingView: View {
                     .multilineTextAlignment(.center)
             }
 
-            Text("Optional — HTTP-only monitoring works without it. You can always set this up later in Settings.")
-                .font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center)
-                .padding(.horizontal)
+            // The "optional, set up later" hint is only relevant before
+            // trust completes. Once the user is done, surfacing it again
+            // is noise.
+            if !certTrusted {
+                Text("Optional — HTTP-only monitoring works without it. You can always set this up later in Settings.")
+                    .font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
             Spacer()
         }
         .padding(.horizontal, 20).padding(.top, 16)

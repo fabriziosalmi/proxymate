@@ -1233,7 +1233,7 @@ struct WAFRulesSection: View {
                     Text("No rules yet").font(.caption).foregroundStyle(.secondary)
                     Text("Rules control what gets blocked, allowed, or inspected")
                         .font(.caption2).foregroundStyle(.tertiary)
-                    Button("Load Examples") { state.loadExampleRules() }
+                    Button("Load examples") { state.loadExampleRules() }
                         .buttonStyle(.bordered).controlSize(.small)
                     Spacer()
                 }
@@ -1273,19 +1273,30 @@ struct WAFRulesSection: View {
                 Button { showingAdd = true } label: {
                     Label("Add", systemImage: "plus")
                 }.buttonStyle(.borderless)
-                Button("Examples") { state.loadExampleRules() }
+                Button("Load examples") { state.loadExampleRules() }
                     .buttonStyle(.borderless).foregroundStyle(.secondary)
                 Button("Import") { showingImport = true }
                     .buttonStyle(.borderless).foregroundStyle(.secondary)
                 Spacer()
-                Toggle("Shadow", isOn: Binding(
+                Toggle(isOn: Binding(
                     get: { state.wafShadowMode },
                     set: { state.wafShadowMode = $0; state.syncShadowMode() }
-                ))
+                )) {
+                    HStack(spacing: 3) {
+                        Text("Shadow")
+                        // Inline `(?)` so the meaning is discoverable at
+                        // a glance — the prior `.help` tooltip was the
+                        // only explanation, and most users never hover.
+                        Image(systemName: "questionmark.circle")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
                 .toggleStyle(.switch).controlSize(.mini)
-                .help("Shadow mode: log blocks without enforcing (dry run)")
-                Text(verbatim: "\(state.rules.filter(\.enabled).count) / \(state.rules.count)")
+                .help("Shadow mode: log what would be blocked without actually blocking it (dry run for tuning new rules).")
+                Text(verbatim: "\(state.rules.filter(\.enabled).count) of \(state.rules.count) active")
                     .font(.caption).foregroundStyle(.secondary)
+                    .help("Enabled rules / total rules")
             }
             .padding(8)
         }
@@ -2059,9 +2070,14 @@ struct AIView: View {
             HStack {
                 Text("Daily limit").font(.caption)
                 Spacer()
+                // Locale pinned to en_US so the field renders "$0.00"
+                // regardless of the system locale. The rest of the UI is
+                // English-only; without this, `.currency(code: "USD")`
+                // produced "0,00 US$" on Italian/French/German systems —
+                // a localized island inside an otherwise English panel.
                 TextField("0 = no limit",
                           value: aiBinding(\.dailyBudgetUSD, nonNegative: true),
-                          format: .currency(code: "USD"))
+                          format: .currency(code: "USD").locale(Locale(identifier: "en_US")))
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 100)
                     .font(.caption)
@@ -2071,7 +2087,7 @@ struct AIView: View {
                 Spacer()
                 TextField("0 = no limit",
                           value: aiBinding(\.monthlyBudgetUSD, nonNegative: true),
-                          format: .currency(code: "USD"))
+                          format: .currency(code: "USD").locale(Locale(identifier: "en_US")))
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 100)
                     .font(.caption)
@@ -2507,7 +2523,7 @@ struct PrivacyView: View {
                 privacySection("Response Cleaning") {
                     privacyToggle("Strip Server / X-Powered-By from responses",
                                   isOn: binding(\.stripServerHeaders))
-                    Text("Response header stripping requires TLS MITM (coming soon).")
+                    Text("Only takes effect when TLS MITM Inspection is enabled below — header stripping needs decrypted responses.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -2591,8 +2607,12 @@ struct PrivacyView: View {
                                 Text(verbatim: "\(dnsStats.queries)").font(.caption.weight(.bold))
                             }
                             VStack(alignment: .leading) {
-                                Text("Cache").font(.caption2).foregroundStyle(.secondary)
-                                Text(verbatim: "\(dnsStats.cacheHits)H/\(dnsStats.cacheMisses)M").font(.caption.weight(.bold))
+                                Text("Hits").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(dnsStats.cacheHits)").font(.caption.weight(.bold))
+                            }
+                            VStack(alignment: .leading) {
+                                Text("Misses").font(.caption2).foregroundStyle(.secondary)
+                                Text(verbatim: "\(dnsStats.cacheMisses)").font(.caption.weight(.bold))
                             }
                             VStack(alignment: .leading) {
                                 Text("Errors").font(.caption2).foregroundStyle(.secondary)
