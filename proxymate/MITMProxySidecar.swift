@@ -481,7 +481,7 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
     private static func sha256OfFile(atPath path: String) -> String? {
         guard let data = FileManager.default.contents(atPath: path) else { return nil }
         var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        data.withUnsafeBytes { CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash) }
+        _ = data.withUnsafeBytes { CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash) }
         return hash.map { String(format: "%02x", $0) }.joined()
     }
 

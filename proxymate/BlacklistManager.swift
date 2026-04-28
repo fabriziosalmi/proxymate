@@ -12,7 +12,7 @@ import os
 
 /// Probabilistic set for O(1) domain pre-filtering. False positives OK (verified by Set),
 /// false negatives impossible. Uses ~1.2 MB for 1M entries at 1% FP rate.
-private struct BloomFilter: Sendable {
+nonisolated private struct BloomFilter: Sendable {
     private var bits: [UInt64]
     private let bitCount: Int
     private let hashCount: Int

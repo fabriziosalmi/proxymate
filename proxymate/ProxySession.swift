@@ -13,7 +13,7 @@
 import Foundation
 import Network
 
-final class ProxySession: @unchecked Sendable {
+nonisolated final class ProxySession: @unchecked Sendable {
 
     private let client: NWConnection
     private var upstream: NWConnection?

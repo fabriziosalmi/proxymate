@@ -34,7 +34,7 @@ enum ProxyManagerError: LocalizedError {
 enum ProxyManager {
 
     /// Domains/IPs that bypass the proxy (local networks, localhost, etc.)
-    private static let bypassDomains = [
+    nonisolated private static let bypassDomains = [
         "localhost", "127.0.0.1", "::1",
         "*.local",
         "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",

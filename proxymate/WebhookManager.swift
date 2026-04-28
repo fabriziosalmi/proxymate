@@ -109,11 +109,17 @@ nonisolated final class WebhookManager: @unchecked Sendable {
     // MARK: - Internal
 
     private func send(event: String, key: String, guard flag: KeyPath<WebhookSettings, Bool>? = nil, payload: [String: String]) {
+        // Resolve the flag KeyPath against a snapshot of settings BEFORE
+        // entering the `@Sendable` closure. Capturing the KeyPath itself
+        // would warn (KeyPath isn't Sendable). The snapshot read is safe
+        // because the canonical settings live on the queue and we re-check
+        // `settings.enabled` once we're on the queue.
+        let flagAllows = flag.map { settings[keyPath: $0] } ?? true
         queue.async { [weak self] in
             guard let self else { return }
             // Read settings on queue thread to avoid data race
             guard self.settings.enabled else { return }
-            if let flag, !self.settings[keyPath: flag] { return }
+            guard flagAllows else { return }
 
             // Debounce + prune stale entries to prevent unbounded growth
             let debounce = TimeInterval(self.settings.debounceSeconds)

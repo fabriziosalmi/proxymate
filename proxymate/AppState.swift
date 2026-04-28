@@ -754,7 +754,7 @@ final class AppState: ObservableObject {
         WebhookManager.shared.configure(safe)
     }
 
-    private nonisolated(unsafe) static let _latestStats = OSAllocatedUnfairLock(initialState: Stats())
+    nonisolated private static let _latestStats = OSAllocatedUnfairLock(initialState: Stats())
     nonisolated static var latestStats: Stats {
         get { _latestStats.withLock { $0 } }
         set { _latestStats.withLock { $0 = newValue } }
