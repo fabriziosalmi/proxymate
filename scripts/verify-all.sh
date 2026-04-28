@@ -202,10 +202,6 @@ grep -q "lookupCacheOnly" proxymate/LocalProxy.swift && \
 grep -q "logs.append(entry)" proxymate/AppState.swift && \
     pass "Log: O(1) append (not O(n) insert)" || fail "Log still using insert(at: 0)"
 
-# Connection pool return
-grep -q "ConnectionPool.shared.put" proxymate/LocalProxy.swift && \
-    pass "ConnectionPool: connections returned after use" || fail "ConnectionPool: put() not called"
-
 # ============================================================
 section "8. UI COMPLETENESS"
 # ============================================================
@@ -327,7 +323,6 @@ check_feature "TLS manager (CA + cert forging)"     "TLSManager"                
 check_feature "HSTS preload list"                   "HSTSPreload"               proxymate/HSTSPreload.swift
 check_feature "L1 RAM cache"                        "CacheManager"              proxymate/CacheManager.swift
 check_feature "L2 disk cache (SQLite)"              "DiskCache"                 proxymate/DiskCache.swift
-check_feature "Connection pool"                     "ConnectionPool"            proxymate/ConnectionPool.swift
 check_feature "IP allowlist + CIDR"                 "AllowlistMatcher"          proxymate/Allowlist.swift
 check_feature "IPv6 support"                        "IPv6Support"               proxymate/IPv6Support.swift
 check_feature "HTTP parser (chunked, keep-alive)"   "HTTPParser"                proxymate/HTTPParser.swift
@@ -342,7 +337,6 @@ check_feature "Privileged helper (cached auth)"     "PrivilegedHelper"          
 check_feature "Stats time series (charts)"          "StatsTimeSeries"           proxymate/StatsTimeSeries.swift
 check_feature "Onboarding wizard (5 steps)"         "stepWelcome"               proxymate/OnboardingView.swift
 check_feature "About screen"                        "AboutView"                 proxymate/AboutView.swift
-check_feature "Localization strings"                "Strings"                   proxymate/Localization.swift
 check_feature "Body decompressor (gzip/deflate)"   "BodyDecompressor"          proxymate/BodyDecompressor.swift
 check_feature "SOCKS5 settings persistence"        "socks5Key"                 proxymate/AppState.swift
 check_feature "AI agent settings persistence"      "aiAgentKey"                proxymate/AppState.swift

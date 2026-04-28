@@ -1,5 +1,224 @@
 # Release notes
 
+## 0.9.59 — security hardening + UX polish + Lists-tab performance
+
+*Released 2026-04-28*
+
+A wide batch driven by tester feedback and a fresh-eyes audit of the
+codebase. Three bands: security/correctness fixes that should have
+landed earlier, UI/UX polish that pulled stale copy and decorative
+colors out of the popover, and a stack of perceived-performance
+fixes that fixed actual lag visible during browsing.
+
+### Security
+
+- **SAN / CN injection in leaf-cert openssl pipeline.** `identityForHost`
+  and `pemForHost` interpolated the raw SNI into `-subj /CN=…` and
+  the openssl ext.cnf `subjectAltName`. A hostname containing `\n`
+  could inject arbitrary SAN entries — forging trust for any domain.
+  Added strict `validateHostname()` (a–z 0–9 . -, ≤253, no dot edges)
+  at every entry point; the openssl pipeline now refuses anything
+  it can't safely interpolate.
+- **Force-cast `SecIdentity`.** `importP12` force-cast the
+  `kSecImportItemIdentity` payload, trapping under Keychain
+  corruption / low-memory. Replaced with `SecIdentityGetTypeID()`
+  check + safe cast.
+- **Shared lock held across openssl shell-out.** `identityForHost`
+  ran the full `genrsa + req + x509 + pkcs12` pipeline (200–500 ms
+  per first-seen host) under `TLSManager.queue.sync`, which gates
+  every other TLS-manager caller. Refactored to hold the lock only
+  for cache lookup and Keychain passphrase fetch; openssl runs
+  unlocked.
+- **PAC URL → shell-as-root.** `ProxyManager.enable` interpolated
+  `pacURL` into a double-quoted `networksetup -setautoproxyurl`
+  argument under `osascript … with administrator privileges`. The
+  current call site builds the URL from an `Int` port so it isn't
+  exploitable today, but the API surface accepts arbitrary
+  `String`. Added strict `validate(pacURL:)` with
+  scheme/host/port/path/query allowlist.
+- **Webhook userinfo URLs.** URLs like
+  `https://api:secret@hooks.example.com/abc` ended up in
+  UserDefaults plaintext. `WebhookManager.isAcceptable(_:)` now
+  filters them at every boundary (input, persist, send) plus a
+  one-time migration on load.
+- **MetricsServer browser-fetch guard.** Any browser tab on the
+  user's machine could probe `127.0.0.1:9199/metrics` and
+  side-channel metric values via load-timing / resource events.
+  The server now rejects any request carrying `Origin`, `Referer`
+  or `Sec-Fetch-*` with HTTP 403. Detection is line-ending
+  tolerant — Swift treats `\r\n` as one Character, so the parser
+  normalizes to LF before splitting (regression caught by the new
+  `HardeningTests`).
+- **AppleScript escaper.** `escapeForAppleScriptDouble` closed
+  `\\` and `"` but not literal LF/CR. macOS file paths can
+  contain newlines; an embedded one would terminate the
+  AppleScript string literal. Defense-in-depth — the caller passes
+  a tempdir path the helper itself created, but cheap to close.
+
+### Reliability
+
+- **Chunked-encoding overflow.** `HTTPParser.decodeChunked` parsed
+  the chunk size from attacker-controlled hex into `Int` with no
+  upper bound — `FFFFFFFFFFFFFFFF` trapped the process at
+  `chunkStart + chunkSize` (Swift `Int` arithmetic is checked).
+  Capped at 64 MB per chunk and switched additions to
+  `addingReportingOverflow` as belt-and-suspenders.
+- **PoolRouter health-check cancellation.** `stop()` and
+  `restartHealthChecks` cancelled timers but not the in-flight
+  `NWConnection` probes. Removing a pool let probes run their
+  natural 5 s timeout and fire `healthChanged` events for
+  already-deleted members. Probes are now tracked per member and
+  cancelled alongside the timers.
+- **Sidecar reaper.** `Process()`-spawned mitmdump and squid get
+  reparented to launchd on parent crash/force-quit, holding their
+  listen ports across launches. Each sidecar now writes a PID file
+  at start; the next launch's start path verifies the recorded
+  PID's executable via `proc_pidpath` (PID-recycling safe),
+  SIGTERMs it with a 1 s grace before SIGKILL, then takes its own
+  port.
+- **`enable()` no longer freezes on squid cold-start.** Three
+  separate fixes converged here. (a) `SquidSidecar.start()` was
+  blocking the main actor inside `try queue.sync { … }` for up to
+  16 s (squid -z + waitForLocalPort) — moved to a detached Task.
+  (b) The admin-password prompt was awaiting that Task before
+  firing, so users saw a frozen toggle with no prompt — the boot
+  now runs in parallel with the system-proxy apply, prompt fires
+  immediately. (c) `isEnabled = true` was gated on the sidecar
+  Task — when an external squid (`brew services start squid`) was
+  already on :3128 the bundled boot wedged in `UE` kernel I/O and
+  the toggle stayed grey forever despite traffic flowing.
+  `SquidSidecar.start` now probes `127.0.0.1:<port>` first and
+  reuses any already-listening squid; `isEnabled` flips on
+  successful system-proxy apply, sidecar errors are surfaced in
+  background.
+- **HostMemory weak-self pattern.** `recordResponse` used `self?`
+  for read+write straddling a local mutation; if `self` died
+  between the two, the update vanished. Aligned with the safer
+  `guard let self else { return }` pattern that `recordRequest`
+  was already using.
+- **Webhook retry queue.** Deliveries used to be fire-and-forget on
+  transient failure. Transport errors and 5xx now schedule a
+  bounded retry (max 3 attempts, 5 s and 30 s backoff) on the
+  manager's own queue. 4xx is treated as terminal. Total in-flight
+  retries capped at 100 so a stuck receiver can't grow the pile.
+
+### Code health
+
+Net −485 lines from removing dead code: `NIOTLSProxy.swift` (428
+lines, zero callers), `ConnectionPool.swift` (157 lines, `put()`
+referenced by nothing), `Localization.swift` (zero callers),
+`pemForHost` machinery in `TLSManager`, and the verify-all.sh
+HTTP/2 stale check pointing at a deleted file. `RuleImporter` no
+longer creates duplicate `WAFRule`s when a single import file
+contains the same domain twice. `AppState.load`'s 20+
+`try? JSONDecoder().decode(...)` were replaced with a
+`decodeDefaults<T>` helper that NSLogs the underlying
+`DecodingError` instead of silently swallowing — corrupt
+UserDefaults plists now leave a trail in Console.
+
+### UI / UX
+
+- **Killswitch icon** distinct from the on/off toggle (`stop.fill`
+  vs `power`) — the two were visually indistinguishable before,
+  only colour and tooltip set them apart.
+- **AI "Blocked: 0"** no longer painted alarm-red. Today / Month /
+  Session colors moved from decorative blue/purple/green to
+  budget-pressure semantics: primary normally, orange ≥ 75 % of
+  the cap, red ≥ 100 %.
+- **Cache stats render `—` when zero** so an empty cache reads as
+  "nothing yet" instead of a row of four "0"s that look like
+  flat-line errors.
+- **Toggle column aligned** across all settings tabs (PAC, L1, L2,
+  C2, Beaconing, Loop Breaker, MITM, DoH, Honor no-store, Strip
+  tracking params). The previous mixed pattern produced a ragged
+  column of switches.
+- **Community footer** compacted to a single inline icon+label row
+  — drops ~14 px of permanent vertical real estate in every tab.
+- **Privacy tab** TLS Interception + DNS-over-HTTPS sections are
+  now `DisclosureGroup`-collapsible; the daily-toggled
+  Signals/Headers/Cookies sections become reachable without
+  scrolling once the heavy panes are folded.
+- **AI budget fields** pinned to `Locale(identifier: "en_US")` so
+  "$0.00" renders identically on Italian/French/German systems.
+- **Onboarding HTTPS step** copy now follows the same phase
+  machine as the inline status row — generating / waiting for
+  trust / trusted — instead of staying on the static "your admin
+  password will be requested once" line after we'd already
+  prompted.
+- **Rules counter** "5 / 14" → "5 of 14 active" with hover hint.
+- **DNS stats** split into Hits / Misses columns (was "31H/12M",
+  read by some users as "31 hours / 12 minutes").
+- **Shadow toggle** has an inline `?` glyph + expanded tooltip
+  text so the meaning isn't hidden inside `.help()`.
+- **Privacy → Response Cleaning** lost the stale "(coming soon)"
+  copy on header stripping — TLS MITM has been shipped since
+  earlier 0.9.x.
+- **Examples / Load examples** label aligned across the empty-state
+  placeholder and the bottom toolbar.
+- `build-dmg.sh` emits the DMG SHA-256 and writes a `.sha256`
+  sidecar file. `bundle-binaries.sh` accepts both Apple Silicon
+  (`/opt/homebrew`) and Intel (`/usr/local`) Homebrew prefixes for
+  mitmproxy.app.
+
+### Performance
+
+- **`BlacklistManager.totalEntries` / `uniqueEntries` cached.** The
+  Lists tab footer reads `uniqueEntries` inside a 1 Hz statsTick
+  block, so the value was recomputed every second the user was on
+  that tab. With TOR exits + Steven Black + URLhaus + NoCoin
+  enabled (~200 k–500 k strings) the recompute did a fresh
+  `Set<String>` allocation that hashed every domain across every
+  list every second on the main thread, while holding `setsLock`
+  (which also gates the proxy's hot-path `lookup()`). Browsing
+  degraded whenever the tab was open. Both totals are now updated
+  in a private `recomputeStatsLocked()` helper called from every
+  mutation site (refresh, loadFromDisk, clearSource); UI getters
+  are O(1) reads.
+- **1 Hz UI tick scoped to dedicated stat sub-views.** Six places
+  read `let _ = state.statsTick` inline in a parent View body, so
+  every tick invalidated whole tabs. Each is now a small private
+  View struct (`BlacklistsAggregateFooter`, `TopHostsList`,
+  `AISpendSummary`, `CacheL1StatsRow`, `CacheL2StatsRow`,
+  `DNSStatsRow`) so per-tick re-render scope is ~30 px of stat
+  cells instead of full tab bodies, including the Lists tab's
+  `LazyVStack` of source rows.
+
+### Build hygiene
+
+- 17 Swift 6 strict-concurrency warnings closed by adding
+  `nonisolated` to four type-level declarations that should have
+  always carried it: `BloomFilter` (private struct in
+  BlacklistManager), `ProxySession`, `ProxyManager.bypassDomains`,
+  `AppState._latestStats`. Three cosmetic warnings (unused
+  `error` binding, ignored `withUnsafeBytes` return,
+  non-Sendable `KeyPath` capture in a `@Sendable` closure) also
+  closed.
+- The two remaining `SSLContext` deprecations
+  (`serverSide` / `streamType`, deprecated since macOS 10.15) are
+  intentional — already documented in `ROADMAP.md` as the cost of
+  staying on Apple's `SecureTransport` API until/unless that path
+  is fully removed.
+
+### Tests
+
+`HardeningTests` and `InjectionGuardsTests` cover the new guards:
+6 webhook URL cases (userinfo, foreign schemes, missing host),
+5 MetricsServer-detection cases (curl-style allowed; `Origin`,
+`Referer`, `Sec-Fetch-*` blocked; case-insensitivity), 3
+chunked-overflow rejections, 1 dedup-import case, 2 AppleScript
+escaper cases, 9 hostname-validation cases, 11 PAC URL validation
+cases. **256 / 256 tests pass.**
+
+### Artifact
+
+```
+File:    Proxymate-0.9.59.dmg
+Size:    64 MB
+SHA-256: e102582b9232480ae071a27fd04c5813c39662f16adfbeb61cc8db8fd8343762
+Signed:  Developer ID Application: Fabrizio Salmi (7FC7ZTYMYU)
+Notary:  Accepted, stapled, spctl-verified
+```
+
 ## 0.9.58 — hardening the streaming bypass (magic-byte corroboration + threshold gate + LRU)
 
 *Released 2026-04-17*
