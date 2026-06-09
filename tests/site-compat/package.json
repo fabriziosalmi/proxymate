@@ -9,6 +9,6 @@
     "suite": "node suite.mjs"
   },
   "devDependencies": {
-    "playwright": "^1.49.0"
+    "playwright": "^1.55.1"
   }
 }
