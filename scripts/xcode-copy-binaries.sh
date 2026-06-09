@@ -9,6 +9,7 @@
 # runtime (MITM and local caching proxy are opt-in features).
 
 set -uo pipefail
+set -e
 
 SRC="${SRCROOT}/build/bundle-bin"
 DST="${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/bin"
