@@ -9,6 +9,18 @@ export default defineConfig({
   appearance: 'dark',
 
   head: [
+    // Tutto first-party. 'unsafe-inline' serve perche' VitePress emette
+    // uno script inline per il tema e stili inline.
+    [
+      'meta',
+      {
+        'http-equiv': 'Content-Security-Policy',
+        content:
+          "default-src 'self'; script-src 'self' 'unsafe-inline'; " +
+          "style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+          "font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'",
+      },
+    ],
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/proxymate/logo.svg' }],
     ['meta', { name: 'theme-color', content: '#0A84FF' }],
     ['meta', { property: 'og:title', content: 'Proxymate — Privacy-first macOS proxy' }],
@@ -66,7 +78,7 @@ export default defineConfig({
     ],
 
     footer: {
-      message: 'Zero telemetry. Apple-frameworks only. Audited.',
+      message: 'Zero telemetry. Apple-frameworks only. Audited.' + ' · <a href="https://fabriziosalmi.github.io/privacy">Privacy &amp; legal</a>',
       copyright: 'Built with care in Italy · MIT License',
     },
 
