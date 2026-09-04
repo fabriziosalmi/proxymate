@@ -4,6 +4,9 @@ export default defineConfig({
   title: 'Proxymate',
   description: 'A privacy-first macOS proxy with WAF, MITM, and AI agent controls.',
   base: '/proxymate/',
+  // The hostname carries the base path on purpose: VitePress joins it with each
+  // page's route, so without it every URL in the sitemap would point at a 404.
+  sitemap: { hostname: 'https://fabriziosalmi.github.io/proxymate/' },
   cleanUrls: true,
   lastUpdated: true,
   appearance: 'dark',
