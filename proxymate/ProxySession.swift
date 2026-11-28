@@ -397,6 +397,21 @@ nonisolated final class ProxySession: @unchecked Sendable {
                     }
                     // Upstream finished sending — process buffered response
                     self.processBufferedResponse()
+                    if error == nil {
+                        // Close only after every queued byte reached the
+                        // client: finish() cancels the connection, which
+                        // discards sends still in flight and truncated the
+                        // tail of a response the upstream closed right after.
+                        to.send(content: nil, contentContext: .finalMessage, isComplete: true,
+                                completion: .contentProcessed { [weak self] _ in self?.finish() })
+                        return
+                    }
+                } else if error == nil, self.streamOpen {
+                    // Client half-closed an open tunnel: pass the FIN on and
+                    // keep reading the upstream; its close ends the session.
+                    to.send(content: nil, contentContext: .finalMessage, isComplete: true,
+                            completion: .contentProcessed { _ in })
+                    return
                 }
                 self.finish()
                 return
