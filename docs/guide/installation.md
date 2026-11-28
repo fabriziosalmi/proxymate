@@ -19,26 +19,35 @@ That's it — `proxymate.app` appears in `/Applications` and is available from t
 
 ## DMG
 
-If you prefer to install manually, grab the signed, notarized DMG from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest).
+If you prefer to install manually, grab the notarized DMG from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest).
 
 ::: tip Integrity check
-Verify the SHA-256 before mounting, especially if you downloaded from a mirror:
+Verify the SHA-256 before mounting, especially if you downloaded from a mirror. Every release publishes a `Proxymate.dmg.sha256` asset next to the DMG, so compare against that file instead of a hash copied from a web page. Set `VERSION` to the release you downloaded:
 
 ```bash
-shasum -a 256 ~/Downloads/Proxymate-0.9.58.dmg
-# expected: 590e8ff98463ef9ada52e41bf8483dfb81e8900aaf8a2c5608a2a5c0701160e5
+VERSION=0.9.60   # the release tag without the leading "v"
+cd ~/Downloads
+curl -LO "https://github.com/fabriziosalmi/proxymate/releases/download/v${VERSION}/Proxymate.dmg.sha256"
+test "$(shasum -a 256 "Proxymate-${VERSION}.dmg" | cut -d' ' -f1)" = "$(cut -d' ' -f1 Proxymate.dmg.sha256)" \
+  && echo "checksum OK" || echo "checksum MISMATCH"
 ```
 
-The DMG is notarized and the ticket is stapled — `spctl` will accept it offline.
+The DMG carries a stapled notarization ticket, but the DMG itself is not code-signed, so `spctl` rejects the DMG file. Check the app instead, once the DMG is mounted:
+
+```bash
+spctl -a -vv /Volumes/Proxymate/proxymate.app
+# /Volumes/Proxymate/proxymate.app: accepted
+# source=Notarized Developer ID
+```
 :::
 
 ## Install
 
 1. Mount the DMG (double-click).
-2. Drag `Proxymate.app` into `Applications`.
+2. Drag `proxymate.app` into `Applications`.
 3. Eject the DMG, launch the app.
 
-On first launch macOS will silently load it — there is no "app from an unidentified developer" prompt because the notarization ticket is validated against Apple's chain of trust.
+The app is signed with a Developer ID and notarized, so macOS does not show the "unidentified developer" warning.
 
 ## Grant admin rights
 

@@ -45,7 +45,7 @@ The DMG is notarized and stapled — no "Cannot verify developer" dialog. Requir
 
 **Traffic routing** — local HTTP/HTTPS forward proxy on a loopback-bound port, SOCKS5 listener, transparent CONNECT tunnels with optional MITM interception.
 
-**Filtering** — Block Domain / Block IP (CIDR) / Block Content (Aho-Corasick) rules. Ships with 19 curated blacklist feeds (~90 K entries across ads, malware, phishing, TOR exits). Shadow-mode evaluation for rule authoring without breaking traffic.
+**Filtering**: Block Domain / Block IP (CIDR) / Block Content (Aho-Corasick) rules. Ships with 18 curated blacklist feeds (ads, malware, phishing, crypto miners, telemetry, adult content, TOR exits). Shadow-mode evaluation for rule authoring without breaking traffic.
 
 **Privacy rewriting** — strip `User-Agent`, `Referer`, `ETag`, tracking cookies; inject `DNT: 1` / `Sec-GPC: 1`. Per-host policy.
 
@@ -101,7 +101,7 @@ For a signed release build with notarization pipeline:
 App traffic → System proxy → LocalProxy (loopback, random port)
                                 ├─ Allowlist (CIDR + domain)
                                 ├─ WAF (domain / IP / content)
-                                ├─ Blacklist feeds (19 sources)
+                                ├─ Blacklist feeds (18 sources)
                                 ├─ DNS-resolved IP blocklist
                                 ├─ Exfiltration scanner
                                 ├─ C2 / beaconing detection

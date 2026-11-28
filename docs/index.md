@@ -25,7 +25,7 @@ features:
       src: /icons/shield.svg
       alt: Shield
     title: Web Application Firewall
-    details: Block domains, IPs, and content patterns with O(1) rule matching. Ships with curated lists (Steven Black, NoCoin, URLhaus, TOR exits) totalling ~90K entries.
+    details: Block domains, IPs, and content patterns with O(1) rule matching. Ships with curated lists (Steven Black, NoCoin, URLhaus, TOR exits) from 18 built-in feeds.
   - icon:
       src: /icons/lock.svg
       alt: Lock
@@ -45,7 +45,7 @@ features:
       src: /icons/bolt.svg
       alt: Fast
     title: Sub-millisecond Overhead
-    details: Aho-Corasick for content matching, connection pool with LRU keepalive, in-process L1 + SQLite L2 cache. Benchmarked at <1ms added latency.
+    details: Aho-Corasick for content matching, connection pool with LRU keepalive, in-process L1 + SQLite L2 cache.
   - icon:
       src: /icons/target.svg
       alt: Threat detection
@@ -55,7 +55,7 @@ features:
       src: /icons/compass.svg
       alt: Routing
     title: Multi-Upstream Pool
-    details: Round-robin, least-connections, weighted, geo, latency-based routing across multiple upstream proxies. Health checks with circuit breaker.
+    details: Round-robin, weighted, failover, lowest-latency, least-connections and random routing across multiple upstream proxies. Per-pool health checks with failure and recovery thresholds.
   - icon:
       src: /icons/waves.svg
       alt: Protocols

@@ -2,7 +2,7 @@
 
 ## Will this slow down my Mac?
 
-Not measurably. Proxy overhead is benchmarked at **<1ms added latency** on the hot path. For context: any round-trip over Wi-Fi to your local router is typically 2–5 ms; to the nearest public DNS resolver, 8–20 ms. Proxymate adds less than a rounding error.
+Proxymate runs locally on your Mac, so the extra hop does not cross your network. Content matching uses Aho-Corasick, and cache hits are served from RAM or local disk. The repository does not ship a latency benchmark, so no figure is claimed here: measure on your own traffic if the overhead matters to you.
 
 ## Does it break any apps?
 
@@ -63,7 +63,7 @@ System-proxy settings are cleared automatically when you quit Proxymate before u
 
 ## Can I contribute / review the code?
 
-The repo is currently private, but every release DMG is signed, notarized, and reproducibly built from a tagged commit. A SECURITY.md describes the responsible-disclosure path. Open-source status is on the roadmap for v1.0.
+Yes. The source is public on [GitHub](https://github.com/fabriziosalmi/proxymate) under the MIT License, and contributions follow CONTRIBUTING.md. Every release is built from a tagged commit and the app is signed and notarized. Report vulnerabilities privately as described in SECURITY.md.
 
 ## Why menu-bar only, no Dock icon?
 

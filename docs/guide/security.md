@@ -62,7 +62,7 @@ Everything your Mac sends, in the clear:
 - Call home for updates (yet — Sparkle integration deferred to v1.0)
 - Collect analytics, device identifiers, or user-agent fingerprints
 
-The only outbound calls Proxymate makes on its own are list-refresh fetches to the URLs in `BlacklistManager` (Steven Black, OISD, NoCoin, URLhaus, etc.), and those only when enabled and only on the hosts you see.
+The only outbound calls Proxymate makes on its own are list-refresh fetches to the URLs in `BlacklistManager` (Steven Black, NoCoin, URLhaus, etc.), and those only when enabled and only on the hosts you see.
 
 ## Privilege boundary
 
@@ -104,9 +104,9 @@ All releases ship:
 - Hardened runtime enabled
 - Trusted timestamp via Apple's TSA
 - Notarized by Apple (submission scanned for known malware + entitlements sanity)
-- Stapled — Gatekeeper verification works offline
+- Shipped in a DMG that carries the stapled notarization ticket (the DMG itself is not code-signed)
 
-`spctl --assess --type open` on the DMG returns `accepted` on a fresh Mac.
+`spctl -a -vv` on the app inside the mounted DMG returns `accepted` with `source=Notarized Developer ID`.
 
 ## What Proxymate cannot protect you from
 
