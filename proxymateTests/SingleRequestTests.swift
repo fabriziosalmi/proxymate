@@ -23,6 +23,11 @@ final class RecordingUpstream {
         case respond(String)
         /// Answer the first header block with this status line, then echo raw bytes.
         case tunnel(String)
+        /// Answer the first header block with a body of this many bytes, then
+        /// close at once (what Squid does after `Connection: close`).
+        case respondAndClose(Int)
+        /// Answer CONNECT with 200, send this many raw bytes, then close at once.
+        case tunnelSendAndClose(Int)
     }
 
     private var listener: NWListener?
@@ -57,6 +62,11 @@ final class RecordingUpstream {
 
     func stop() { listener?.cancel() }
 
+    /// Deterministic body so truncation and corruption are both detectable.
+    static func pattern(_ size: Int) -> Data {
+        Data((0..<size).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
+    }
+
     private func read(_ c: NWConnection, pending: Data, tunnelling: Bool) {
         c.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, done, err in
             guard let self else { return }
@@ -78,6 +88,18 @@ final class RecordingUpstream {
                     let body = "ok\n"
                     let resp = "\(status)\r\nContent-Length: \(body.utf8.count)\r\nConnection: keep-alive\r\n\r\n\(body)"
                     c.send(content: Data(resp.utf8), completion: .contentProcessed { _ in })
+                case .respondAndClose(let size):
+                    let head = "HTTP/1.1 200 OK\r\nContent-Length: \(size)\r\nConnection: close\r\n\r\n"
+                    c.send(content: Data(head.utf8) + RecordingUpstream.pattern(size), completion: .contentProcessed { _ in
+                        c.cancel()
+                    })
+                    return
+                case .tunnelSendAndClose(let size):
+                    let head = "HTTP/1.1 200 Connection Established\r\n\r\n"
+                    c.send(content: Data(head.utf8) + RecordingUpstream.pattern(size), completion: .contentProcessed { _ in
+                        c.cancel()
+                    })
+                    return
                 case .tunnel(let status):
                     c.send(content: Data("\(status)\r\n\r\n".utf8), completion: .contentProcessed { _ in })
                     tunnelling = true
@@ -240,6 +262,36 @@ final class SingleRequestTests: XCTestCase {
             _ = exchange(port: port, payload: Data((first + body + evil).utf8))
             XCTAssertTrue(upstream.text.hasSuffix(body), "upstream saw:\n\(upstream.text)")
             XCTAssertFalse(upstream.text.contains("evil.test"))
+        }
+    }
+
+    // MARK: - The whole response reaches the client when the upstream closes
+
+    func testFullBodyIsDeliveredWhenUpstreamClosesRightAfterIt() throws {
+        let size = 2 * 1024 * 1024
+        for attempt in 1...5 {
+            try withProxy(.respondAndClose(size)) { port, _ in
+                let r = exchange(port: port, payload: Data("GET http://good.example/big HTTP/1.1\r\nHost: good.example\r\n\r\n".utf8),
+                                 seconds: 2.5)
+                guard let sep = r.response.range(of: Data("\r\n\r\n".utf8)) else {
+                    return XCTFail("attempt \(attempt): no response head (\(r.response.count) bytes)")
+                }
+                let body = r.response[sep.upperBound...]
+                XCTAssertEqual(body.count, size, "attempt \(attempt): body truncated")
+                XCTAssertTrue(body.elementsEqual(RecordingUpstream.pattern(size)), "attempt \(attempt): body corrupted")
+            }
+        }
+    }
+
+    func testFullTunnelStreamIsDeliveredWhenUpstreamClosesRightAfterIt() throws {
+        let size = 2 * 1024 * 1024
+        for attempt in 1...5 {
+            try withProxy(.tunnelSendAndClose(size)) { port, _ in
+                let r = exchange(port: port, payload: Data("CONNECT good.example:443 HTTP/1.1\r\nHost: good.example:443\r\n\r\n".utf8),
+                                 seconds: 2.5)
+                let head = Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8)
+                XCTAssertEqual(r.response.count, head.count + size, "attempt \(attempt): stream truncated")
+            }
         }
     }
 
