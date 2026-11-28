@@ -93,21 +93,38 @@ for lib in libssl.3.dylib libcrypto.3.dylib; do
     fi
 done
 
-# Rewrite squid's dylib rpaths to use @executable_path/lib/
-echo "==> Rewriting squid rpaths..."
-install_name_tool -change \
-    "$OPENSSL_LIB/libssl.3.dylib" \
-    "@executable_path/lib/libssl.3.dylib" \
-    "$DEST/squid" 2>/dev/null || true
-install_name_tool -change \
-    "$OPENSSL_LIB/libcrypto.3.dylib" \
-    "@executable_path/lib/libcrypto.3.dylib" \
-    "$DEST/squid" 2>/dev/null || true
-# Also fix the cross-reference inside libssl -> libcrypto
-install_name_tool -change \
-    "$OPENSSL_LIB/libcrypto.3.dylib" \
-    "@loader_path/libcrypto.3.dylib" \
-    "$DEST/lib/libssl.3.dylib" 2>/dev/null || true
+# Point every non-system dependency of the bundled squid and OpenSSL at the
+# bundle. Homebrew records both opt/ and versioned Cellar/ paths (libssl
+# links libcrypto through Cellar/<version>/), and either path is wrong on a
+# user's Mac: it may not exist, and if it does, library validation rejects
+# it (different Team ID). Any other non-system dependency is a hard error.
+echo "==> Rewriting squid and OpenSSL load paths to the bundle..."
+relink() {  # <mach-o file> <new prefix for bundled libs>
+    local file="$1" prefix="$2" dep leaf
+    while read -r dep; do
+        leaf="$(basename "$dep")"
+        case "$leaf" in
+            libssl.3.dylib|libcrypto.3.dylib)
+                install_name_tool -change "$dep" "$prefix/$leaf" "$file" ;;
+            *)
+                echo "ERROR: $file depends on unbundled $dep"; exit 1 ;;
+        esac
+    done < <(otool -L "$file" | tail -n +2 | awk '{print $1}' | grep -E '^/(opt/homebrew|usr/local)/' || true)
+}
+for lib in libssl.3.dylib libcrypto.3.dylib; do
+    [[ -f "$DEST/lib/$lib" ]] || { echo "ERROR: $lib was not bundled"; exit 1; }
+    install_name_tool -id "@loader_path/$lib" "$DEST/lib/$lib"
+done
+relink "$DEST/squid" "@executable_path/lib"
+relink "$DEST/lib/libssl.3.dylib" "@loader_path"
+relink "$DEST/lib/libcrypto.3.dylib" "@loader_path"
+if otool -L "$DEST/squid" "$DEST"/lib/*.dylib | grep -E '^[[:space:]]+/(opt/homebrew|usr/local)/'; then
+    echo "ERROR: Homebrew load paths remain in the bundled sidecars (above)"
+    exit 1
+fi
+# install_name_tool invalidates the signatures: ad-hoc sign so the binaries
+# run for the check below. build-dmg.sh re-signs them with Developer ID.
+codesign --force --sign - "$DEST"/lib/*.dylib "$DEST/squid" 2>/dev/null
 
 # --- Verify ---
 echo ""
@@ -117,6 +134,12 @@ echo "mitmdump runs:"
 echo ""
 echo "squid deps:"
 otool -L "$DEST/squid" | grep -v "^$DEST" | head -8
+echo "squid runs:"
+if ! "$DEST/squid" -v 2>&1 | head -1 | grep -q '^Squid Cache'; then
+    echo "ERROR: bundled squid does not start:"; "$DEST/squid" -v 2>&1 | head -3
+    exit 1
+fi
+"$DEST/squid" -v 2>&1 | head -1
 echo ""
 
 TOTAL=$(du -sh "$DEST" | cut -f1)

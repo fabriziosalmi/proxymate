@@ -1,5 +1,25 @@
 # Release notes
 
+## 0.9.60: security fixes for the local listener, TLS interception and per-request policy
+
+*Unreleased*
+
+Three vulnerabilities in 0.9.59 and earlier are fixed. Upgrade is recommended for every user.
+
+### Security
+
+- **The proxy listener was reachable from the LAN** (GHSA-phj8-h2m3-4g5h). The main HTTP/HTTPS listener bound every interface instead of 127.0.0.1, so hosts on the same network could relay traffic through the Mac and its selected upstream proxy. With TLS interception on, mitmdump also listened on every interface. Both now bind 127.0.0.1, like the PAC, SOCKS5 and metrics listeners.
+- **TLS interception did not verify origin certificates** (GHSA-pwp6-2xj2-w2p4). mitmdump ran with `--ssl-insecure`; because the upstream hop is Squid over plain HTTP, this disabled verification of the website's certificate. For a client that trusts mitmdump's certificate authority (Proxymate does not install it; users who trusted it themselves), an attacker on the network path could impersonate any site while the browser showed a valid padlock. Origin certificates are now verified, and a failed verification returns 502. Sites whose certificate chains only to a CA that is not in mitmproxy's CA bundle (for example a corporate CA installed only in the Keychain) now fail instead of passing unverified.
+- **Policy applied only to the first request of a connection** (GHSA-36pj-2rhc-9375). WAF rules, blacklists, the exfiltration scanner, C2, beaconing and AI controls ran on the first request of a client connection; later keep-alive or pipelined requests reached the upstream unchecked. Each connection now carries exactly the checked request: `Connection: close` upstream and to the client, the request body bounded by its Content-Length or chunked framing, CONNECT and upgrade streams opened only after a 2xx or 101 answer. Request heads that an upstream could parse differently (bare LF, obs-fold, whitespace before the colon, non-token field names, Transfer-Encoding on HTTP/1.0) are rejected with 400.
+
+### Fixes
+
+- **The bundled Squid never started.** Two defects, both present in 0.9.59: the bundled OpenSSL still loaded Homebrew's libcrypto through its versioned Cellar path (absent on most Macs, rejected by library validation where present), and the cache initialisation (`squid -z`) ran in the background, so the launch right after it exited with "Squid is already running". With the default "Local Squid" upstream every request failed with 502. Squid now loads the bundled OpenSSL, initialises its cache in the foreground and listens on 127.0.0.1 only.
+
+### Release
+
+- `scripts/build-dmg.sh` refuses to package an app whose mitmdump, Squid or OpenSSL sidecars are missing, smoke-runs them once signed, and fails if any Homebrew load path remains. The Xcode build phase only warned, so a build machine without the Homebrew prerequisites could produce a release without TLS interception or the local cache.
+
 ## 0.9.59 — security hardening + UX polish + Lists-tab performance
 
 *Released 2026-04-28*

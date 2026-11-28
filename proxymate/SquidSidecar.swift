@@ -75,7 +75,10 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
             // Initialize cache dirs (squid -z)
             let initProc = Process()
             initProc.executableURL = URL(fileURLWithPath: squidPath)
-            initProc.arguments = ["-z", "-f", configPath]
+            // -N keeps -z in the foreground. Without it squid daemonizes while it
+            // creates the cache directories, and the launch below finds a fresh
+            // PID file and exits with "Squid is already running" on first run.
+            initProc.arguments = Self.initArguments(configPath: configPath)
             initProc.standardOutput = Pipe()
             initProc.standardError = Pipe()
             // Set DYLD_LIBRARY_PATH for bundled OpenSSL
@@ -145,6 +148,10 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
         }
     }
 
+    static func initArguments(configPath: String) -> [String] {
+        ["-z", "-N", "-f", configPath]
+    }
+
     // MARK: - Find squid
 
     private func findSquid() -> String? {
@@ -179,7 +186,7 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
 
         let config = """
         # Proxymate auto-generated squid.conf
-        http_port \(port)
+        http_port 127.0.0.1:\(port)
 
         # Only accept connections from localhost
         acl localnet src 127.0.0.0/8

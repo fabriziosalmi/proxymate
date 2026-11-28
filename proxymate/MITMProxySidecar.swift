@@ -84,32 +84,10 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
             // Launch mitmdump
             let p = Process()
             p.executableURL = URL(fileURLWithPath: path)
-            var args = [
-                "--mode", "upstream:http://\(upstreamHost):\(upstreamPort)",
-                "--listen-port", "\(listenPort)",
-                "--set", "confdir=\(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".proxymate/mitmproxy-conf").path)",
-                "--ssl-insecure",  // don't verify upstream (Squid) certs
-                "--set", "connection_strategy=lazy",
-                "--set", "flow_detail=0",
-                // Disable HTTP/2. With H/2 enabled downstream, browsers (Firefox
-                // in particular, per Bugzilla 1420777) coalesce connections
-                // across different hosts that share IPs / wildcard certs —
-                // e.g. github.com + github.githubassets.com on Fastly, or
-                // www.linkedin.com + static.licdn.com. The browser then sends
-                // subresource requests with an :authority that doesn't match
-                // the stream's origin, mitmproxy resets the stream, and the
-                // browser surfaces the failure as "CORS request failed,
-                // status=(null)" on <script type="module" crossorigin>.
-                // Forcing H/1.1 downstream means browsers open separate
-                // connections per host, which eliminates coalescing entirely.
-                // The upstream leg (mitmproxy → Squid) is already H/1.1, so
-                // there's no protocol downgrade on that side.
-                "--set", "http2=false",
-                "--quiet",
-            ]
-            if let addon = addonPath {
-                args += ["--script", addon]
-            }
+            let args = Self.launchArguments(
+                upstreamHost: upstreamHost, upstreamPort: upstreamPort, listenPort: listenPort,
+                confDir: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".proxymate/mitmproxy-conf").path,
+                addonPath: addonPath)
             p.arguments = args
             let stderrPipe = Pipe()
             p.standardOutput = Pipe()
@@ -215,6 +193,43 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
 
     static func clearPIDFile(_ pidFile: String) {
         try? FileManager.default.removeItem(atPath: pidFile)
+    }
+
+    /// mitmdump command line. Upstream TLS is verified (no --ssl-insecure): the
+    /// upstream hop is Squid over plain HTTP, so the only certificate mitmdump
+    /// sees is the origin's, and skipping its verification would let anyone on
+    /// the path impersonate the site to a client that trusts Proxymate's CA.
+    static func launchArguments(upstreamHost: String, upstreamPort: UInt16, listenPort: UInt16,
+                                confDir: String, addonPath: String?) -> [String] {
+        var args = [
+                "--mode", "upstream:http://\(upstreamHost):\(upstreamPort)",
+                // Loopback only: without --listen-host mitmdump binds every
+                // interface, and LAN peers reach Squid through it as a relay.
+                "--listen-host", "127.0.0.1",
+                "--listen-port", "\(listenPort)",
+                "--set", "confdir=\(confDir)",
+                "--set", "connection_strategy=lazy",
+                "--set", "flow_detail=0",
+                // Disable HTTP/2. With H/2 enabled downstream, browsers (Firefox
+                // in particular, per Bugzilla 1420777) coalesce connections
+                // across different hosts that share IPs / wildcard certs —
+                // e.g. github.com + github.githubassets.com on Fastly, or
+                // www.linkedin.com + static.licdn.com. The browser then sends
+                // subresource requests with an :authority that doesn't match
+                // the stream's origin, mitmproxy resets the stream, and the
+                // browser surfaces the failure as "CORS request failed,
+                // status=(null)" on <script type="module" crossorigin>.
+                // Forcing H/1.1 downstream means browsers open separate
+                // connections per host, which eliminates coalescing entirely.
+                // The upstream leg (mitmproxy → Squid) is already H/1.1, so
+                // there's no protocol downgrade on that side.
+                "--set", "http2=false",
+                "--quiet",
+        ]
+        if let addon = addonPath {
+            args += ["--script", addon]
+        }
+        return args
     }
 
     /// Poll 127.0.0.1:<port> with TCP connect() every 100 ms until either

@@ -100,6 +100,10 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             do {
                 let params = NWParameters.tcp
                 params.allowLocalEndpointReuse = true
+                // Loopback only, like the PAC, SOCKS5 and metrics listeners.
+                // Without this NWListener binds every interface and the proxy
+                // is reachable from the LAN as an open relay.
+                params.requiredLocalEndpoint = Self.loopbackEndpoint
                 let listener = try NWListener(using: params)
                 listener.stateUpdateHandler = { [weak self] state in
                     self?.handleListenerState(state, listener: listener)
@@ -247,6 +251,15 @@ nonisolated final class LocalProxy: @unchecked Sendable {
 
     private func routeRequest(client: NWConnection, headerData: Data, leftover: Data) {
         // Defensive: validate headers before parsing
+        // Strict RFC 9112 head syntax: anything an upstream parser might split
+        // differently (bare LF, lone CR, obs-fold, whitespace or non-token
+        // characters in a field name) could hide a second request or a body
+        // length from the policy checks, so it is refused.
+        guard Self.isStrictRequestHead(headerData) else {
+            onEvent?(.log(.warn, "Malformed request rejected (non-strict header syntax)"))
+            sendErrorResponse(client: client, status: "400 Bad Request", body: "Malformed HTTP request\n")
+            return
+        }
         guard HTTPParser.validateHeaders(headerData) else {
             onEvent?(.log(.warn, "Malformed request rejected (invalid headers)"))
             sendErrorResponse(client: client, status: "400 Bad Request", body: "Malformed HTTP request\n")
@@ -408,6 +421,13 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             onEvent?(.log(.info, "WebSocket upgrade: \(host)"))
         }
 
+        // Bound the session to this one checked request (see RequestFraming).
+        guard let framing = Self.requestFraming(method: method, headers: headerString) else {
+            onEvent?(.log(.warn, "Request rejected: ambiguous body length"))
+            sendErrorResponse(client: client, status: "400 Bad Request", body: "Ambiguous request body length\n")
+            return
+        }
+
         // Privacy header stripping (only for plain HTTP, not CONNECT tunnels)
         var finalHeaderData = headerData
         if method.uppercased() != "CONNECT" {
@@ -417,8 +437,13 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             )
             if !actions.isEmpty {
                 onEvent?(.privacyStripped(host: host, actions: actions))
-                finalHeaderData = Data(rewritten.utf8)
             }
+            // One request per upstream connection: policy is evaluated per
+            // connection, so the upstream must not keep it alive for another.
+            let upgrade: Bool
+            if case .streamAfterStatus = framing { upgrade = true } else { upgrade = false }
+            let closed = Self.forceSingleRequest(headerString: rewritten, keepUpgrade: upgrade)
+            finalHeaderData = Data(closed.utf8)
         }
 
         onEvent?(.allowed(host: host, method: method))
@@ -448,7 +473,8 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                 headerData: headerData,
                 leftover: leftover,
                 upstreamHost: "127.0.0.1",
-                upstreamPort: mitmPort
+                upstreamPort: mitmPort,
+                framing: framing
             )
             queue.asyncAfter(deadline: .now() + 300) { [weak self] in
                 if let s = self?.activeSessions.removeValue(forKey: sessionID) { s.finish() }
@@ -525,8 +551,138 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             : nil
         let aiCtx: AIContext? = aiProvider.map { AIContext(provider: $0) }
         forward(client: client, headerData: finalHeaderData, leftover: leftover,
-                upstream: resolvedUpstream, cacheContext: cacheCtx, aiContext: aiCtx,
+                upstream: resolvedUpstream, framing: framing,
+                cacheContext: cacheCtx, aiContext: aiCtx,
                 memberId: memberId)
+    }
+
+    // MARK: - One request per connection
+
+    /// Loopback endpoint for the main listener (ephemeral port).
+    static let loopbackEndpoint: NWEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
+
+    /// RFC 9110 tchar set for field names and methods.
+    private static let tchar: Set<UInt8> = {
+        var s = Set<UInt8>()
+        for c in UInt8(ascii: "0")...UInt8(ascii: "9") { s.insert(c) }
+        for c in UInt8(ascii: "A")...UInt8(ascii: "Z") { s.insert(c) }
+        for c in UInt8(ascii: "a")...UInt8(ascii: "z") { s.insert(c) }
+        for c in "!#$%&'*+-.^_`|~".utf8 { s.insert(c) }
+        return s
+    }()
+
+    /// True when `head` (request line + fields + terminating CRLFCRLF) uses
+    /// only strict HTTP/1.1 syntax: CRLF line endings, a `METHOD SP target SP
+    /// HTTP/1.x` request line, no obs-fold, token field names immediately
+    /// followed by ':', no control characters other than HTAB in values, and
+    /// no Transfer-Encoding on an HTTP/1.0 request.
+    static func isStrictRequestHead(_ head: Data) -> Bool {
+        let bytes = [UInt8](head)
+        guard bytes.count >= 4, bytes.suffix(4) == [13, 10, 13, 10] else { return false }
+        // Every CR must start CRLF and every LF must end one.
+        for (i, b) in bytes.enumerated() {
+            if b == 13 && (i + 1 >= bytes.count || bytes[i + 1] != 10) { return false }
+            if b == 10 && (i == 0 || bytes[i - 1] != 13) { return false }
+            if b == 0 { return false }
+        }
+        var lines: [ArraySlice<UInt8>] = []
+        var start = 0
+        var i = 0
+        while i + 1 < bytes.count {
+            if bytes[i] == 13 && bytes[i + 1] == 10 {
+                lines.append(bytes[start..<i]); start = i + 2; i += 2
+            } else { i += 1 }
+        }
+        // lines = request line, fields..., "" (end of head)
+        guard lines.count >= 2, lines.last?.isEmpty == true else { return false }
+        let fieldLines = lines.dropFirst().dropLast()
+        if fieldLines.contains(where: { $0.isEmpty }) { return false }
+
+        let requestLine = lines[0]
+        let parts = requestLine.split(separator: 32, omittingEmptySubsequences: false)
+        guard parts.count == 3, !parts[0].isEmpty, parts[0].allSatisfy({ tchar.contains($0) }),
+              !parts[1].isEmpty, !parts[1].contains(where: { $0 < 0x21 || $0 == 0x7F }) else { return false }
+        let version = String(decoding: parts[2], as: UTF8.self)
+        guard version == "HTTP/1.1" || version == "HTTP/1.0" else { return false }
+
+        var hasTE = false
+        for line in fieldLines {
+            guard let first = line.first, first != 32, first != 9 else { return false }  // obs-fold
+            guard let colon = line.firstIndex(of: UInt8(ascii: ":")), colon > line.startIndex else { return false }
+            guard line[line.startIndex..<colon].allSatisfy({ tchar.contains($0) }) else { return false }
+            let value = line[(colon + 1)...]
+            if value.contains(where: { ($0 < 0x20 && $0 != 9) || $0 == 0x7F }) { return false }
+            let name = String(decoding: line[line.startIndex..<colon], as: UTF8.self).lowercased()
+            if name == "transfer-encoding" { hasTE = true }
+        }
+        if version == "HTTP/1.0" && hasTE { return false }
+        return true
+    }
+
+    /// Splits a strict head into (lowercased name, OWS-trimmed value) pairs.
+    /// Callers rely on isStrictRequestHead having accepted the head.
+    static func fields(of headers: String) -> [(name: String, value: String)] {
+        headers.components(separatedBy: "\r\n").dropFirst().compactMap { line in
+            guard let colon = line.firstIndex(of: ":") else { return nil }
+            let ows = CharacterSet(charactersIn: " \t")
+            return (String(line[..<colon]).lowercased(),
+                    line[line.index(after: colon)...].trimmingCharacters(in: ows))
+        }
+    }
+
+    /// How many client bytes after the header block belong to this request.
+    /// Returns nil when the length is ambiguous (conflicting or invalid
+    /// Content-Length), which is rejected rather than guessed.
+    static func requestFraming(method: String, headers: String) -> ProxySession.RequestFraming? {
+        if method.uppercased() == "CONNECT" { return .streamAfterStatus(["2"]) }
+        var contentLengths: [String] = []
+        var transferEncoding: String?
+        var hasUpgrade = false
+        var connectionUpgrade = false
+        for (name, value) in fields(of: headers) {
+            switch name {
+            case "content-length": contentLengths.append(value)
+            case "transfer-encoding":
+                transferEncoding = (transferEncoding.map { $0 + "," } ?? "") + value.lowercased()
+            case "upgrade": hasUpgrade = !value.isEmpty
+            case "connection":
+                connectionUpgrade = connectionUpgrade || value.lowercased()
+                    .split(separator: ",").contains { $0.trimmingCharacters(in: .whitespaces) == "upgrade" }
+            default: break
+            }
+        }
+        if let te = transferEncoding {
+            // RFC 9112 6.1: chunked must be the final coding; with it present,
+            // Content-Length is ignored. Anything else is not framable.
+            let codings = te.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard codings.last == "chunked", contentLengths.isEmpty else { return nil }
+            return .chunked
+        }
+        if !contentLengths.isEmpty {
+            let values = Set(contentLengths.flatMap { $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } })
+            guard values.count == 1, let v = values.first, !v.isEmpty,
+                  v.allSatisfy(\.isASCII), v.allSatisfy(\.isNumber), v.count <= 15,
+                  let n = Int(v) else { return nil }
+            return n == 0 ? ProxySession.RequestFraming.none : .length(n)
+        }
+        if hasUpgrade && connectionUpgrade { return .streamAfterStatus(["101"]) }
+        return ProxySession.RequestFraming.none
+    }
+
+    /// Rewrites hop-by-hop connection headers so the upstream closes the
+    /// connection after this response (`Connection: close`), or keeps only the
+    /// upgrade token for a protocol upgrade.
+    static func forceSingleRequest(headerString: String, keepUpgrade: Bool) -> String {
+        var lines = headerString.split(separator: "\r\n", omittingEmptySubsequences: false).map(String.init)
+        guard lines.count > 1 else { return headerString }
+        lines = [lines[0]] + lines.dropFirst().filter { line in
+            guard let colon = line.firstIndex(of: ":") else { return true }
+            let name = line[..<colon].lowercased()
+            return !(name == "connection" || name == "proxy-connection" || name == "keep-alive")
+        }
+        let insertAt = lines.firstIndex(of: "") ?? lines.count
+        lines.insert(keepUpgrade ? "Connection: Upgrade" : "Connection: close", at: insertAt)
+        return lines.joined(separator: "\r\n")
     }
 
     private struct CacheContext {
@@ -648,6 +804,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
                          headerData: Data,
                          leftover: Data,
                          upstream: Upstream,
+                         framing: ProxySession.RequestFraming,
                          cacheContext: CacheContext? = nil,
                          aiContext: AIContext? = nil,
                          memberId: UUID? = nil) {
@@ -661,6 +818,7 @@ nonisolated final class LocalProxy: @unchecked Sendable {
             leftover: leftover,
             upstreamHost: upstream.host,
             upstreamPort: upstream.port,
+            framing: framing,
             cacheContext: cacheContext.map {
                 ProxySession.CacheContext(method: $0.method, url: $0.url, requestHeaders: $0.requestHeaders)
             },

@@ -37,6 +37,97 @@ nonisolated final class ProxySession: @unchecked Sendable {
         let provider: AIProvider
     }
 
+    /// How many client bytes belong to the one request this session was
+    /// checked for. Policy runs on the first request of a connection only, so
+    /// any client byte past that request (a pipelined or keep-alive request)
+    /// must never reach the upstream.
+    enum RequestFraming: Equatable {
+        /// No body: nothing after the header block is forwarded.
+        case none
+        /// Content-Length body of exactly this many bytes.
+        case length(Int)
+        /// Transfer-Encoding: chunked body, forwarded up to its last chunk and trailer.
+        case chunked
+        /// CONNECT or protocol upgrade: client bytes are held until the upstream
+        /// answers with a status starting with one of these prefixes ("2" for
+        /// CONNECT, "101" for an upgrade), then the connection becomes an opaque
+        /// stream. Any other answer keeps the client side closed.
+        case streamAfterStatus([String])
+    }
+
+    /// Incremental Transfer-Encoding: chunked scanner. It does not decode; it
+    /// only tells how many of the offered bytes still belong to the body.
+    struct ChunkedScanner {
+        private enum State { case size, data(Int), dataCRLF(Int), trailer, done }
+        private var state: State = .size
+        private var line = Data()
+        private static let maxLine = 4096
+        private(set) var malformed = false
+
+        var isDone: Bool { if case .done = state { return true }; return false }
+
+        /// Returns how many leading bytes of `bytes` belong to the chunked body.
+        mutating func consume(_ bytes: Data) -> Int {
+            var i = bytes.startIndex
+            while i < bytes.endIndex {
+                switch state {
+                case .done:
+                    return i - bytes.startIndex
+                case .size, .trailer:
+                    let b = bytes[i]
+                    i += 1
+                    line.append(b)
+                    if line.count > Self.maxLine { fail(); return i - bytes.startIndex }
+                    guard line.count >= 2, line[line.count - 2] == 0x0D, line[line.count - 1] == 0x0A else { continue }
+                    let text = String(data: line.dropLast(2), encoding: .ascii) ?? ""
+                    line.removeAll(keepingCapacity: true)
+                    if case .trailer = state {
+                        if text.isEmpty { state = .done }
+                        continue
+                    }
+                    // chunk-size is 1*HEXDIG, optionally followed by ";ext". No
+                    // sign, no whitespace, no empty size.
+                    let sizeField = text.split(separator: ";", maxSplits: 1,
+                                               omittingEmptySubsequences: false).first.map(String.init) ?? ""
+                    guard !sizeField.isEmpty, sizeField.count <= 15,
+                          sizeField.allSatisfy(\.isHexDigit),
+                          let size = Int(sizeField, radix: 16) else {
+                        fail(); return i - bytes.startIndex
+                    }
+                    state = size == 0 ? .trailer : .data(size)
+                case .data(let remaining):
+                    let take = min(remaining, bytes.endIndex - i)
+                    i += take
+                    state = remaining - take == 0 ? .dataCRLF(2) : .data(remaining - take)
+                case .dataCRLF(let need):
+                    let expected: UInt8 = need == 2 ? 0x0D : 0x0A
+                    guard bytes[i] == expected else { fail(); return i - bytes.startIndex }
+                    i += 1
+                    state = need == 2 ? .dataCRLF(1) : .size
+                }
+            }
+            return i - bytes.startIndex
+        }
+
+        private mutating func fail() { malformed = true; state = .done }
+    }
+
+    // Client → upstream request bounding (see RequestFraming).
+    private var framing: RequestFraming = .none
+    private var bodyRemaining = 0
+    private var chunked = ChunkedScanner()
+    private var requestComplete = false
+    private var streamOpen = false
+    private var heldClientBytes = Data()
+    private var statusChecked = false
+    private var statusPrefixBuffer = Data()
+    // Upstream → client: the response head is rewritten to Connection: close
+    // so the client never reuses this connection for a request we would not
+    // forward.
+    private var responseHeadDone = false
+    private var responseHeadBuffer = Data()
+    private static let maxResponseHead = 65_536
+
     init(client: NWConnection, sessionID: Int,
          onEvent: (@Sendable (LocalProxy.Event) -> Void)?) {
         self.client = client
@@ -51,11 +142,18 @@ nonisolated final class ProxySession: @unchecked Sendable {
         leftover: Data,
         upstreamHost: String,
         upstreamPort: UInt16,
+        framing: RequestFraming,
         cacheContext: CacheContext? = nil,
         aiContext: AIContext? = nil
     ) {
         self.cacheContext = cacheContext
         self.aiContext = aiContext
+        self.framing = framing
+        switch framing {
+        case .none: requestComplete = true
+        case .length(let n): bodyRemaining = n; requestComplete = n == 0
+        case .chunked, .streamAfterStatus: break
+        }
         if cacheContext != nil || aiContext != nil {
             responseBuffer = Data()
         }
@@ -129,20 +227,128 @@ nonisolated final class ProxySession: @unchecked Sendable {
 
             let startPipes = { [weak self] in
                 guard let self, let upstream = self.upstream, !self.isDone else { return }
-                // client → upstream (request body continuation)
-                self.startPipe(from: self.client, to: upstream)
+                // client → upstream: only the rest of the checked request;
+                // after that, client bytes are read only to notice a close.
+                if !self.isStreamFraming {
+                    self.boundedClientLoop(to: upstream)
+                }
                 // upstream → client (response)
                 self.startPipe(from: upstream, to: self.client)
             }
 
-            if leftover.isEmpty {
+            let allowed = self.admitClientBytes(leftover)
+            if allowed.isEmpty {
                 startPipes()
             } else {
-                upstream.send(content: leftover, completion: .contentProcessed { _ in
+                upstream.send(content: allowed, completion: .contentProcessed { _ in
                     startPipes()
                 })
             }
         })
+    }
+
+    private var isStreamFraming: Bool {
+        if case .streamAfterStatus = framing { return true }
+        return false
+    }
+
+    /// Returns the part of `data` that belongs to the checked request and may
+    /// go upstream now. Bytes past the end of the request are dropped; bytes of
+    /// a CONNECT/upgrade are held until the upstream status opens the stream.
+    private func admitClientBytes(_ data: Data) -> Data {
+        guard !data.isEmpty else { return data }
+        if streamOpen { return data }
+        if requestComplete { return Data() }
+        switch framing {
+        case .none:
+            return Data()
+        case .length:
+            let take = min(bodyRemaining, data.count)
+            bodyRemaining -= take
+            if bodyRemaining == 0 { requestComplete = true }
+            return data.prefix(take)
+        case .chunked:
+            let take = chunked.consume(data)
+            if chunked.isDone { requestComplete = true }
+            if chunked.malformed {
+                onEvent?(.log(.warn, "Malformed chunked request body: forwarding stopped"))
+            }
+            return data.prefix(take)
+        case .streamAfterStatus:
+            guard heldClientBytes.count + data.count <= 65_536 else {
+                // Dropping bytes would corrupt the stream: end the session.
+                onEvent?(.log(.warn, "Client sent >64 KB before the upstream answered CONNECT/upgrade"))
+                finish()
+                return Data()
+            }
+            heldClientBytes.append(data)
+            return Data()
+        }
+    }
+
+    /// Client → upstream loop. Bytes of the checked request are forwarded;
+    /// anything after it (a pipelined or keep-alive request) is discarded,
+    /// never forwarded without its own policy check. Reading continues only
+    /// so that a client close ends the session.
+    private func boundedClientLoop(to upstream: NWConnection) {
+        guard !isDone else { return }
+        client.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self] data, _, isComplete, error in
+            guard let self, !self.isDone else { return }
+            if let data, !data.isEmpty {
+                let allowed = self.admitClientBytes(data)
+                if !allowed.isEmpty {
+                    upstream.send(content: allowed, completion: .contentProcessed { [weak self] err in
+                        if err != nil { self?.finish() }
+                    })
+                }
+            }
+            if error != nil {
+                self.finish()
+                return
+            }
+            if isComplete {
+                // A client half-close after a complete request is legal HTTP:
+                // keep the session so the response can still be delivered;
+                // the upstream close ends it. A close in the middle of the
+                // request body aborts the request.
+                if !self.requestComplete { self.finish() }
+                return
+            }
+            self.boundedClientLoop(to: upstream)
+        }
+    }
+
+    /// Called with the first upstream bytes of a CONNECT/upgrade session. If the
+    /// status opens the stream, held client bytes are flushed and the client
+    /// side becomes a raw pipe; otherwise the client side stays closed.
+    private func checkStreamStatus(_ data: Data) {
+        guard case .streamAfterStatus(let prefixes) = framing, !statusChecked else { return }
+        statusPrefixBuffer.append(data.prefix(64))
+        let text = String(decoding: statusPrefixBuffer, as: UTF8.self)
+        guard text.contains("\r\n") || statusPrefixBuffer.count >= 64 else { return }
+        statusChecked = true
+        statusPrefixBuffer = Data()
+        // "HTTP/1.1 200 Connection Established" → second token is the code
+        let parts = text.split(separator: " ", maxSplits: 2)
+        let code = parts.count >= 2 ? String(parts[1]) : ""
+        guard text.hasPrefix("HTTP/"), prefixes.contains(where: { code.hasPrefix($0) }),
+              let upstream else {
+            // Not opened: the response goes back with Connection: close, and
+            // the client side is read only to notice its close.
+            heldClientBytes = Data()
+            requestComplete = true
+            if let upstream { boundedClientLoop(to: upstream) }
+            return
+        }
+        streamOpen = true
+        let held = heldClientBytes
+        heldClientBytes = Data()
+        if !held.isEmpty {
+            upstream.send(content: held, completion: .contentProcessed { [weak self] err in
+                if err != nil { self?.finish() }
+            })
+        }
+        startPipe(from: client, to: upstream)
     }
 
     // MARK: - Pipe (one direction, fire-and-forget sends)
@@ -158,6 +364,9 @@ nonisolated final class ProxySession: @unchecked Sendable {
             guard let self, !self.isDone else { return }
 
             if let data, !data.isEmpty {
+                if from === self.upstream, self.isStreamFraming, !self.statusChecked {
+                    self.checkStreamStatus(data)
+                }
                 // Buffer response if needed (upstream → client direction only)
                 if from === self.upstream, var buf = self.responseBuffer {
                     if buf.count + data.count <= self.maxBuffer {
@@ -169,15 +378,23 @@ nonisolated final class ProxySession: @unchecked Sendable {
                     }
                 }
 
-                // Fire-and-forget send
-                to.send(content: data, completion: .contentProcessed { [weak self] err in
-                    if err != nil { self?.finish() }
-                })
+                // Fire-and-forget send (response head rewritten first)
+                let out = from === self.upstream ? self.rewriteResponseHead(data) : data
+                if !out.isEmpty {
+                    to.send(content: out, completion: .contentProcessed { [weak self] err in
+                        if err != nil { self?.finish() }
+                    })
+                }
             }
 
             if isComplete || error != nil {
                 // This direction is done
                 if from === self.upstream {
+                    // Flush a head that never completed, unchanged.
+                    if !self.responseHeadDone, !self.responseHeadBuffer.isEmpty {
+                        to.send(content: self.responseHeadBuffer, completion: .contentProcessed { _ in })
+                        self.responseHeadBuffer = Data()
+                    }
                     // Upstream finished sending — process buffered response
                     self.processBufferedResponse()
                 }
@@ -188,6 +405,50 @@ nonisolated final class ProxySession: @unchecked Sendable {
             // Continue reading
             self.pipeLoop(from: from, to: to)
         }
+    }
+
+    /// Returns the upstream bytes to send to the client now. Until the final
+    /// (non-1xx) response head has been seen it is buffered and its
+    /// connection fields are replaced by `Connection: close`. Opened streams
+    /// (CONNECT 2xx, 101) pass through untouched.
+    private func rewriteResponseHead(_ data: Data) -> Data {
+        if responseHeadDone || streamOpen {
+            responseHeadDone = true
+            if responseHeadBuffer.isEmpty { return data }
+            let out = responseHeadBuffer + data
+            responseHeadBuffer = Data()
+            return out
+        }
+        responseHeadBuffer.append(data)
+        var out = Data()
+        let sep = Data("\r\n\r\n".utf8)
+        while !responseHeadDone, let r = responseHeadBuffer.range(of: sep) {
+            let head = responseHeadBuffer[..<r.upperBound]
+            let rest = responseHeadBuffer[r.upperBound...]
+            let text = String(decoding: head, as: UTF8.self)
+            let code = text.split(separator: " ", maxSplits: 2).dropFirst().first.map(String.init) ?? ""
+            if code.hasPrefix("1") && code != "101" {
+                // Interim response (100 Continue): pass through, keep looking.
+                out.append(head)
+                responseHeadBuffer = Data(rest)
+                continue
+            }
+            responseHeadDone = true
+            if streamOpen {
+                out.append(head)
+            } else {
+                out.append(Data(LocalProxy.forceSingleRequest(headerString: text, keepUpgrade: false).utf8))
+            }
+            out.append(rest)
+            responseHeadBuffer = Data()
+        }
+        if !responseHeadDone && responseHeadBuffer.count > Self.maxResponseHead {
+            // Not HTTP we can parse: pass through unchanged.
+            responseHeadDone = true
+            out.append(responseHeadBuffer)
+            responseHeadBuffer = Data()
+        }
+        return out
     }
 
     // MARK: - Response processing (cache + AI)

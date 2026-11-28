@@ -86,6 +86,23 @@ if [[ ! -d "${EXPORTED_APP}" ]]; then
     exit 1
 fi
 
+# The Xcode build phase only warns when the sidecars cannot be bundled, so a
+# release could silently ship without TLS interception and the local cache.
+# Refuse to package one.
+SIDECAR_BIN="${EXPORTED_APP}/Contents/Resources/bin"
+missing=()
+[[ -x "${SIDECAR_BIN}/mitmproxy.app/Contents/MacOS/mitmdump" ]] || missing+=("mitmproxy.app/Contents/MacOS/mitmdump")
+[[ -x "${SIDECAR_BIN}/squid" ]] || missing+=("squid")
+for lib in libssl.3.dylib libcrypto.3.dylib; do
+    [[ -f "${SIDECAR_BIN}/lib/${lib}" ]] || missing+=("lib/${lib}")
+done
+if (( ${#missing[@]} > 0 )); then
+    echo "ERROR: sidecars missing from ${SIDECAR_BIN}: ${missing[*]}"
+    echo "       Install them with: brew install --cask mitmproxy && brew install squid openssl@3"
+    echo "       then remove build/bundle-bin and rebuild."
+    exit 1
+fi
+
 echo "==> Re-signing nested sidecars with Developer ID..."
 # The app ships mitmproxy.app + squid + OpenSSL dylibs from homebrew.
 # Homebrew signed them with its own certificate chain, which breaks the
@@ -141,6 +158,24 @@ codesign --force --timestamp --options runtime \
 
 echo "==> Verifying code signature..."
 codesign --verify --verbose=2 --strict "${EXPORTED_APP}"
+
+# Smoke-run the signed sidecars as users will run them (Developer ID +
+# hardened runtime, library validation on). A sidecar that only loads with
+# Homebrew present must not ship.
+echo "==> Smoke-running signed sidecars..."
+if ! "${SIDECAR_BIN}/squid" -v 2>&1 | head -1 | grep -q '^Squid Cache'; then
+    echo "ERROR: bundled squid does not start:"
+    "${SIDECAR_BIN}/squid" -v 2>&1 | head -3
+    exit 1
+fi
+if ! "${SIDECAR_BIN}/mitmproxy.app/Contents/MacOS/mitmdump" --version 2>&1 | head -1 | grep -q '^Mitmproxy'; then
+    echo "ERROR: bundled mitmdump does not start"
+    exit 1
+fi
+if otool -L "${SIDECAR_BIN}/squid" "${SIDECAR_BIN}"/lib/*.dylib | grep -E '^[[:space:]]+/(opt/homebrew|usr/local)/'; then
+    echo "ERROR: bundled sidecars still reference Homebrew paths (above)"
+    exit 1
+fi
 echo "    Signature OK"
 
 if [[ "${SKIP_NOTARIZE}" == false ]]; then
