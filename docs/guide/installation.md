@@ -22,11 +22,14 @@ That's it — `proxymate.app` appears in `/Applications` and is available from t
 If you prefer to install manually, grab the signed, notarized DMG from the [latest release](https://github.com/fabriziosalmi/proxymate/releases/latest).
 
 ::: tip Integrity check
-Verify the SHA-256 before mounting, especially if you downloaded from a mirror:
+Verify the SHA-256 before mounting, especially if you downloaded from a mirror. Every release publishes a `Proxymate.dmg.sha256` asset next to the DMG, so compare against that file instead of a hash copied from a web page. Set `VERSION` to the release you downloaded:
 
 ```bash
-shasum -a 256 ~/Downloads/Proxymate-0.9.58.dmg
-# expected: 590e8ff98463ef9ada52e41bf8483dfb81e8900aaf8a2c5608a2a5c0701160e5
+VERSION=0.9.59   # the release tag without the leading "v"
+cd ~/Downloads
+curl -LO "https://github.com/fabriziosalmi/proxymate/releases/download/v${VERSION}/Proxymate.dmg.sha256"
+test "$(shasum -a 256 "Proxymate-${VERSION}.dmg" | cut -d' ' -f1)" = "$(cut -d' ' -f1 Proxymate.dmg.sha256)" \
+  && echo "checksum OK" || echo "checksum MISMATCH"
 ```
 
 The DMG is notarized and the ticket is stapled — `spctl` will accept it offline.

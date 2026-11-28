@@ -2,7 +2,7 @@
 
 ## Will this slow down my Mac?
 
-Not measurably. Proxy overhead is benchmarked at **<1ms added latency** on the hot path. For context: any round-trip over Wi-Fi to your local router is typically 2–5 ms; to the nearest public DNS resolver, 8–20 ms. Proxymate adds less than a rounding error.
+Proxymate runs locally on your Mac, so the extra hop does not cross your network. Content matching uses Aho-Corasick, and cache hits are served from RAM or local disk. The repository does not ship a latency benchmark, so no figure is claimed here: measure on your own traffic if the overhead matters to you.
 
 ## Does it break any apps?
 

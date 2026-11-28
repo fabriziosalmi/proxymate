@@ -62,7 +62,7 @@ Everything your Mac sends, in the clear:
 - Call home for updates (yet — Sparkle integration deferred to v1.0)
 - Collect analytics, device identifiers, or user-agent fingerprints
 
-The only outbound calls Proxymate makes on its own are list-refresh fetches to the URLs in `BlacklistManager` (Steven Black, OISD, NoCoin, URLhaus, etc.), and those only when enabled and only on the hosts you see.
+The only outbound calls Proxymate makes on its own are list-refresh fetches to the URLs in `BlacklistManager` (Steven Black, NoCoin, URLhaus, etc.), and those only when enabled and only on the hosts you see.
 
 ## Privilege boundary
 

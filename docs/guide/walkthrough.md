@@ -34,16 +34,19 @@ The tap lives at [github.com/fabriziosalmi/homebrew-proxymate](https://github.co
 ### Direct DMG
 
 ```bash
-curl -LO https://github.com/fabriziosalmi/proxymate/releases/latest/download/Proxymate-0.9.58.dmg
-shasum -a 256 Proxymate-0.9.58.dmg
-# expected: 590e8ff98463ef9ada52e41bf8483dfb81e8900aaf8a2c5608a2a5c0701160e5
+VERSION=0.9.59   # the release tag without the leading "v"
+BASE="https://github.com/fabriziosalmi/proxymate/releases/download/v${VERSION}"
+curl -LO "${BASE}/Proxymate-${VERSION}.dmg"
+curl -LO "${BASE}/Proxymate.dmg.sha256"
+test "$(shasum -a 256 "Proxymate-${VERSION}.dmg" | cut -d' ' -f1)" = "$(cut -d' ' -f1 Proxymate.dmg.sha256)" \
+  && echo "checksum OK" || echo "checksum MISMATCH"
 ```
 
-Verify the SHA before mounting. The release page publishes the same hash in `Proxymate-0.9.58.dmg.sha256`. Because the DMG is notarized and stapled, `spctl` accepts it without a network round-trip:
+Verify the SHA before mounting. Each release publishes the expected hash as the `Proxymate.dmg.sha256` asset, so there is no hash to copy by hand. Because the DMG is notarized and stapled, `spctl` accepts it without a network round-trip:
 
 ```bash
-spctl -a -t open --context context:primary-signature Proxymate-0.9.58.dmg
-# /path/to/Proxymate-0.9.58.dmg: accepted
+spctl -a -t open --context context:primary-signature "Proxymate-${VERSION}.dmg"
+# Proxymate-<version>.dmg: accepted
 ```
 
 Mount, drag `Proxymate.app` to `/Applications`, eject. The first launch is silent — no Gatekeeper dialog, no right-click-then-Open workaround.
@@ -179,7 +182,7 @@ The enable flow is a deterministic seven-stage chain. Knowing the order helps wh
 5. **Apply system proxy.** `networksetup -setwebproxy` + `-setsecurewebproxy` for every active network service, plus `-setproxybypassdomains` for the default bypass list (`localhost`, `127.0.0.1`, `::1`, `*.local`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`). Executed via `osascript do shell script with administrator privileges` — the admin prompt appears here.
 6. **Verify apply took effect.** `SCDynamicStore` is read back; if `host` or `port` don't match expectations, `ProxyManagerError.verificationFailed(expected: ..., actual: ...)` is thrown. This guard exists because the macOS 26 `AuthorizationExecuteWithPrivileges` API could return success while doing nothing — the first major bug that triggered the v0.9.48 audit.
 7. **Start optional listeners.** PAC server, SOCKS5 listener, and Prometheus metrics endpoint each try to bind if enabled. Bind failures are logged explicitly, never silent:
-   - `[PACServer] bind on :18095 failed: Address already in use`
+   - `[PACServer] bind on :9280 failed: Address already in use`
    - `[MetricsServer] bind on :9199 failed: ...`
    - `SOCKS5 bind on :1080 failed: ...`
 
@@ -213,7 +216,7 @@ A flat list of saved upstream proxies. The selected one (marked with a blue dot)
 
 Multi-member upstreams with a load-balancing strategy and health checks. Used by users running several upstream proxies (redundant corporate gateways, multi-region exits, etc.).
 
-**What it shows:** each row is `pool name · member count · strategy · default flag`. Strategies available: `roundRobin`, `leastConnections`, `weightedRandom`, `weightedRoundRobin`, `latency`, `sticky`.
+**What it shows:** each row is `pool name · member count · strategy · default flag`. Strategies available: Round Robin, Weighted, Failover, Lowest Latency, Least Connections, Random.
 
 **Controls:**
 
@@ -232,7 +235,7 @@ Multi-member upstreams with a load-balancing strategy and health checks. Used by
 
 The Proxy Auto-Configuration server. Generates a dynamic `proxy.pac` reflecting the current upstream + bypass list + direct domains. Applied to the system via `networksetup -setautoproxyurl`.
 
-**What it shows:** toggle, port input (default 18095), and the current PAC URL (`http://127.0.0.1:18095/proxy.pac`) that your browsers / applications would fetch.
+**What it shows:** toggle, port input (default 9280), and the current PAC URL (`http://127.0.0.1:9280/proxy.pac`) that your browsers / applications would fetch.
 
 **Controls:**
 
@@ -241,7 +244,7 @@ The Proxy Auto-Configuration server. Generates a dynamic `proxy.pac` reflecting 
 
 **Gotchas:**
 
-- Port bind failures now log to Console.app (`[PACServer] bind on :18095 failed: ...`) — before 0.9.49 the toggle stayed on with no server listening.
+- Port bind failures now log to Console.app (`[PACServer] bind on :9280 failed: ...`); before 0.9.49 the toggle stayed on with no server listening.
 - The app does not debounce port input, so typing `1809` then `5` issues one rebind per keystroke. Pre-plan the value before tweaking the field.
 
 ## 7. Tab: Logs
@@ -280,8 +283,8 @@ The Proxy Auto-Configuration server. Generates a dynamic `proxy.pac` reflecting 
 - **Active Since** — relative time since last enable (`"2 minutes ago"`)
 - **Allowed** — requests that passed every filter
 - **WAF Blocked** — requests rejected by domain/IP/content rules
-- **Blacklisted** — hits from one of the 19 feeds
-- **Exfiltration** — pattern matches in headers/URL (AWS keys, JWTs, …)
+- **Blacklisted**: hits from one of the blacklist feeds
+- **Exfiltration**: pattern matches in headers/URL (AWS keys, GitHub tokens, card numbers, …)
 - **Privacy** — header rewrites applied
 - **MITM** — TLS handshakes intercepted
 - **Cache Hit Rate** — L1+L2, percentage (`—` if no cache activity yet)
@@ -313,7 +316,7 @@ Hand-authored rules grouped by category. Supported kinds: `Block Domain`, `Block
 
 ### Blacklists
 
-Feed-backed denylists. Two sections: built-in (Steven Black, OISD, URLhaus, etc.) and custom URL sources the user adds.
+Feed-backed denylists. Two sections: built-in (Steven Black, URLhaus, EasyList, etc.) and custom URL sources the user adds.
 
 **Controls:**
 
@@ -324,7 +327,7 @@ Feed-backed denylists. Two sections: built-in (Steven Black, OISD, URLhaus, etc.
 
 ### Exfiltration
 
-Pre-built pattern packs that scan outbound request headers and URLs for AWS access keys, GitHub PATs, Stripe secrets, Slack tokens, JWTs, IBAN/credit-card/SSN shapes, and common PII patterns. Checkboxes to enable/disable each pack.
+Pre-built pattern packs that scan outbound request headers and URLs for AWS access keys, GitHub PATs, Stripe secrets, Slack tokens, GCP keys, generic secrets, IBAN/credit-card/SSN shapes, and common PII patterns. Checkboxes to enable/disable each pack.
 
 Matches fire either a 403 (default for HIGH/CRITICAL severity) or a tarpit response (holds the connection indefinitely so the client doesn't know they were blocked — useful against malicious apps that retry on error).
 
@@ -376,7 +379,7 @@ Matches fire either a 403 (default for HIGH/CRITICAL severity) or a tarpit respo
 
 **Controls:**
 
-- **Max size (MB)** — SQLite metadata + a sharded filesystem of body files under `~/Library/Caches/com.fabriziosalmi.proxymate/cache/bodies/`.
+- **Max size (MB)**: SQLite metadata + a sharded filesystem of body files under `~/Library/Caches/Proxymate/http/bodies/` (default location, configurable).
 - **Purge** — confirmation dialog before deleting. Clears both the SQLite rows and the body files; `currentSizeMB` resets to 0.
 
 **Expected behavior:** Full HTTP semantics — `Cache-Control: no-store` skips caching; `Vary` spawns per-header-set entries; conditional revalidation uses `ETag` / `Last-Modified`. Only GET responses are stored; POST/PUT/DELETE never cache.
@@ -422,33 +425,33 @@ Toggle + provider picker (`Cloudflare`, `Quad9`, `Google`, `Custom`). Queries go
 
 ### Webhooks
 
-List of URLs to POST event payloads to. Events: block, blacklist, exfiltration, budget-exceeded. Payload is `application/json`:
+List of URLs to POST event payloads to. Three event types, each with its own toggle: `block`, `exfiltration` and `budget_exceeded`. The payload is `application/json`; the fields depend on the event. A block event looks like:
 
 ```json
 {
-  "event": "blocked",
-  "timestamp": "2026-04-14T10:22:13Z",
+  "event": "block",
   "host": "tracker.example.com",
-  "rule_name": "Block Domain: tracker.example.com",
-  "method": "GET",
-  "url": "https://tracker.example.com/collect"
+  "rule": "Block Domain: tracker.example.com",
+  "timestamp": "2026-04-14T10:22:13Z"
 }
 ```
 
-Debounced at 5 seconds per `(event, host)` pair to prevent flooding. Delivery failures are logged to Console.app as `[Webhook] POST <url> failed: ...` — before 0.9.49 they were silent.
+An `exfiltration` event carries `host`, `pattern`, `severity`, `preview` and `timestamp`; a `budget_exceeded` event carries `provider`, `reason` and `timestamp`.
+
+Debounced at 5 seconds by default (configurable) per event key (rule name, pattern name or provider) to prevent flooding. Delivery failures are logged to Console.app as `[Webhook] POST <url> failed: ...`. Before 0.9.49 they were silent.
 
 ### Metrics
 
-Toggle + port (default 9199). Exposes Prometheus text-format metrics at `http://127.0.0.1:<port>/metrics`:
+Toggle + port (default 9199). Exposes Prometheus text-format metrics at `http://127.0.0.1:<port>/metrics` (abridged example, the full list is in the [configuration reference](/reference/configuration#prometheus-metrics)):
 
 ```
-proxymate_requests_total{outcome="allowed",upstream="Local Squid"} 1284
-proxymate_requests_total{outcome="blocked",upstream="Local Squid"} 47
-proxymate_latency_seconds_bucket{le="0.005"} 1125
-proxymate_active_connections 12
-proxymate_blacklist_hits_total{source="Steven Black Hosts (Ads)",category="Ads"} 38
-proxymate_ai_tokens_total{provider="anthropic",model="claude-opus-4-6",direction="output"} 4912
-proxymate_cost_usd_total{provider="anthropic"} 0.1204
+# HELP proxymate_requests_allowed_total Total allowed requests
+# TYPE proxymate_requests_allowed_total counter
+proxymate_requests_allowed_total 1284
+proxymate_requests_blocked_total 47
+proxymate_cache_l1_hits_total 310
+proxymate_cache_l2_hits_total 42
+proxymate_dns_queries_total 96
 ```
 
 ### SOCKS5 listener

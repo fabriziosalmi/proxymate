@@ -12,7 +12,7 @@ A one-page tour of every capability. Grouped by layer; each section links to dee
 
 ## Filtering layer
 
-- **Block Domain** rules with O(1) Set lookup — ~90 K built-in entries
+- **Block Domain** rules with O(1) Set lookup, populated from the built-in blacklist feeds
 - **Block IP** rules with CIDR range matching
 - **Block Content** rules using Aho-Corasick multi-pattern search (URL + headers + body)
 - **Mock action** — stealth 200 OK so trackers don't retry
@@ -21,18 +21,28 @@ A one-page tour of every capability. Grouped by layer; each section links to dee
 
 ## Blacklist feeds
 
-19 built-in feeds, 8 categories, refreshable in background:
+18 built-in feeds across 7 categories (an 8th category, Custom, holds the URL sources you add), refreshable in background:
 
 | Source | Category |
 |---|---|
-| Steven Black Hosts (Ads/Tracking) | Ads |
-| NoCoin Filter | Crypto mining |
-| URLhaus Malware Domains | Malware |
-| Malware Domain List | Malware |
-| Coinblocker | Crypto |
-| Phishing Army | Phishing |
-| OISD | Mixed (trackers, malware, phishing) |
-| TOR Exit Nodes | Network |
+| TOR Exit Nodes | TOR Exits |
+| URLhaus Malware | Malware & C2 |
+| ThreatFox C2/IOC | Malware & C2 |
+| DShield Suspicious | Malware & C2 |
+| HaGeZi Threat Intel | Malware & C2 |
+| Phishing Army Extended | Phishing |
+| OpenPhish Community | Phishing |
+| StopForumSpam Toxic | Phishing |
+| Steven Black Unified | Ads & Tracking |
+| AdGuard DNS Filter | Ads & Tracking |
+| EasyList | Ads & Tracking |
+| EasyPrivacy | Ads & Tracking |
+| HaGeZi Multi PRO | Ads & Tracking |
+| NoCoin Filter | Crypto Miners |
+| Apple Telemetry | Telemetry |
+| Microsoft Telemetry | Telemetry |
+| TikTok Telemetry | Telemetry |
+| Steven Black Adult | Adult Content |
 
 ## Privacy layer
 
@@ -81,8 +91,8 @@ See [security model](/guide/security.md) for the full CA lifecycle and [MITM & b
 
 - **Beaconing detector** — periodic callback patterns (interval + jitter)
 - **C2 framework fingerprints** — Cobalt Strike, Sliver, Mythic, Havoc, Empire
-- **Exfiltration scanner** — 7 pattern packs, 28 patterns (AWS keys, JWT, card numbers, PII)
-- **HSTS preload enforcement** — 65 high-value domains
+- **Exfiltration scanner**: 7 pattern packs, 22 patterns (AWS, GitHub, Stripe, Slack and GCP keys, generic secrets, card numbers, PII)
+- **HSTS preload enforcement**: 63 high-value domains
 
 ## Caching
 
@@ -94,20 +104,20 @@ See [security model](/guide/security.md) for the full CA lifecycle and [MITM & b
 
 Multi-upstream pools with 6 load-balancing strategies:
 
-- Round-robin
-- Least connections
-- Weighted random
-- Weighted round-robin
-- Latency-based (health-probe driven)
-- Sticky (session affinity by cookie or src-ip)
+- Round Robin
+- Weighted (weighted random choice)
+- Failover (first healthy member in order)
+- Lowest Latency (health-probe driven)
+- Least Connections
+- Random
 
-Per-pool health checks with circuit breaker — unhealthy members drop out, return after recovery.
+Per-pool health checks with configurable failure and recovery thresholds: a member is marked down after consecutive failures and returns after consecutive successes.
 
 ## Everything else
 
 - PAC server (dynamic `proxy.pac` with smart bypass for LAN + VPN endpoints)
 - DNS-over-HTTPS (RFC 8484 JSON API, configurable resolver)
-- HSTS preload list (65 domains)
+- HSTS preload list (63 domains)
 - iCloud sync of rule sets and allowlist (NSUbiquitousKeyValueStore)
 - Process resolver — maps active port → app name in logs
 - Request fingerprinting (SHA256 of header order) — detect suspicious clients
