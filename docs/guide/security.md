@@ -104,9 +104,9 @@ All releases ship:
 - Hardened runtime enabled
 - Trusted timestamp via Apple's TSA
 - Notarized by Apple (submission scanned for known malware + entitlements sanity)
-- Stapled — Gatekeeper verification works offline
+- Shipped in a DMG that carries the stapled notarization ticket (the DMG itself is not code-signed)
 
-`spctl --assess --type open` on the DMG returns `accepted` on a fresh Mac.
+`spctl -a -vv` on the app inside the mounted DMG returns `accepted` with `source=Notarized Developer ID`.
 
 ## What Proxymate cannot protect you from
 

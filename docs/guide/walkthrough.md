@@ -34,7 +34,7 @@ The tap lives at [github.com/fabriziosalmi/homebrew-proxymate](https://github.co
 ### Direct DMG
 
 ```bash
-VERSION=0.9.59   # the release tag without the leading "v"
+VERSION=0.9.60   # the release tag without the leading "v"
 BASE="https://github.com/fabriziosalmi/proxymate/releases/download/v${VERSION}"
 curl -LO "${BASE}/Proxymate-${VERSION}.dmg"
 curl -LO "${BASE}/Proxymate.dmg.sha256"
@@ -42,14 +42,16 @@ test "$(shasum -a 256 "Proxymate-${VERSION}.dmg" | cut -d' ' -f1)" = "$(cut -d' 
   && echo "checksum OK" || echo "checksum MISMATCH"
 ```
 
-Verify the SHA before mounting. Each release publishes the expected hash as the `Proxymate.dmg.sha256` asset, so there is no hash to copy by hand. Because the DMG is notarized and stapled, `spctl` accepts it without a network round-trip:
+Verify the SHA before mounting. Each release publishes the expected hash as the `Proxymate.dmg.sha256` asset, so there is no hash to copy by hand. The DMG carries a stapled notarization ticket but is not code-signed itself, so check the app once the DMG is mounted:
 
 ```bash
-spctl -a -t open --context context:primary-signature "Proxymate-${VERSION}.dmg"
-# Proxymate-<version>.dmg: accepted
+hdiutil attach -nobrowse -readonly "Proxymate-${VERSION}.dmg"
+spctl -a -vv /Volumes/Proxymate/proxymate.app
+# /Volumes/Proxymate/proxymate.app: accepted
+# source=Notarized Developer ID
 ```
 
-Mount, drag `Proxymate.app` to `/Applications`, eject. The first launch is silent — no Gatekeeper dialog, no right-click-then-Open workaround.
+Drag `proxymate.app` to `/Applications` and eject. The app is notarized, so there is no "unidentified developer" warning and no right-click-then-Open workaround.
 
 ## 3. The menu bar icon
 
