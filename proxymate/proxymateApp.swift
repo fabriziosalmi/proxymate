@@ -28,25 +28,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let state = AppState()
     private var activity: NSObjectProtocol?
     private var pathMonitor: NWPathMonitor?
+    private var sigtermSource: DispatchSourceSignal?
+
+    /// XCTest launches the app as its test host; one host must not quit the
+    /// user's running Proxymate or a parallel test host.
+    static var isTestHost: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+    /// Set when termination cleanup starts, so a SIGTERM during it (the
+    /// cleanup waits on child processes) does not start a second pass.
+    private static var isTerminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Single-instance
-        let me = ProcessInfo.processInfo.processIdentifier
-        let bid = Bundle.main.bundleIdentifier ?? ""
-        for app in NSRunningApplication.runningApplications(withBundleIdentifier: bid)
-        where app.processIdentifier != me {
-            app.forceTerminate()
+        // SIGTERM (kill, pkill, launchd) quits through applicationWillTerminate,
+        // so the sidecars stop and the system proxy is restored. Without this
+        // the default action ends the process with squid and mitmdump still
+        // running and the system proxy pointing at a closed port.
+        signal(SIGTERM, SIG_IGN)
+        let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        term.setEventHandler { if !AppDelegate.isTerminating { NSApp.terminate(nil) } }
+        term.resume()
+        sigtermSource = term
+
+        // Single-instance: ask an older instance to quit so it cleans up its
+        // sidecars and system proxy; force it only if it does not exit.
+        if !Self.isTestHost {
+            let me = ProcessInfo.processInfo.processIdentifier
+            let bid = Bundle.main.bundleIdentifier ?? ""
+            let others = NSRunningApplication.runningApplications(withBundleIdentifier: bid)
+                .filter { $0.processIdentifier != me }
+            others.forEach { $0.terminate() }
+            let deadline = Date().addingTimeInterval(15)
+            while others.contains(where: { !$0.isTerminated }), Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            }
+            others.filter { !$0.isTerminated }.forEach { $0.forceTerminate() }
         }
 
         // Multi-user conflict check (#48)
         checkForOtherInstances()
 
-        // Startup cleanup
-        if UserDefaults.standard.bool(forKey: "proxymate.wasEnabled") {
+        // Startup cleanup: a previous run that never cleaned up (crash,
+        // SIGKILL, an older build replaced above) leaves the system proxy on
+        // a dead loopback port. The flag alone misses the replaced build,
+        // which clears it before its own cleanup fails.
+        if !Self.isTestHost,
+           UserDefaults.standard.bool(forKey: "proxymate.wasEnabled") || ProxyManager.pointsAtDeadLoopback() {
             UserDefaults.standard.set(false, forKey: "proxymate.wasEnabled")
             Task {
                 try? await ProxyManager.disable()
-                try? await PACServer.clearSystemPAC()
             }
         }
 
@@ -139,6 +170,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        Self.isTerminating = true
+
+        // Restore the system proxy first: the sidecar stops below can wait
+        // for a start() in progress, and a SIGKILL in that window must not
+        // find the proxy still pointing at this process.
+        if !Self.isTestHost, UserDefaults.standard.bool(forKey: "proxymate.wasEnabled") {
+            // Synchronous on the main thread, with no Task and no timeout:
+            // a detached Task started here was measured never to run within
+            // the previous 8 s wait, and the app quit with the system proxy
+            // still pointing at its closed listener, which breaks the
+            // network until it is reset by hand. disableNow() clears web,
+            // HTTPS and PAC on every service and prompts only if
+            // networksetup as the user did not take effect.
+            do {
+                try ProxyManager.disableNow()
+                UserDefaults.standard.set(false, forKey: "proxymate.wasEnabled")
+            } catch {
+                NSLog("Proxymate quit: disabling the system proxy failed: %@", String(describing: error))
+            }
+        }
+
         // Clean up multi-user lock file
         try? FileManager.default.removeItem(atPath: "/tmp/proxymate-\(NSUserName()).lock")
 
@@ -148,37 +200,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Stop network listeners
         MetricsServer.shared.stop()
-        MITMProxySidecar.shared.stop()
-        SquidSidecar.shared.stop()
+        MITMProxySidecar.shared.stopAndWait()
+        SquidSidecar.shared.stopAndWait()
 
         // Flush any log entries still buffered (the 0.5s timer covers
         // normal operation, but a quit within that tick would drop the
         // last few lines — exactly the lines a tester would want when
         // the quit was itself suspect).
         PersistentLogger.shared.flushNow()
-
-        if UserDefaults.standard.bool(forKey: "proxymate.wasEnabled") {
-            UserDefaults.standard.set(false, forKey: "proxymate.wasEnabled")
-            // Run cleanup on a detached Task (NOT the main actor) so async
-            // hops inside ProxyManager.disable()/PACServer.clearSystemPAC()
-            // don't deadlock waiting for the main thread that's blocked on
-            // the semaphore below.
-            //
-            // Timeout was 3 s originally; bumped to 8 s because both calls
-            // shell out to networksetup via osascript under the admin
-            // privilege prompt pathway. On a cold run where
-            // SystemConfiguration sockets are slow to respond (wake-from-
-            // sleep quit, authenticated dialog stall), 3 s wasn't enough
-            // and the app exited with system proxy still pointing at a
-            // listener that was about to vanish — leaving the user with
-            // a stale config that breaks the network until manual reset.
-            let sem = DispatchSemaphore(value: 0)
-            Task.detached(priority: .userInitiated) {
-                try? await ProxyManager.disable()
-                try? await PACServer.clearSystemPAC()
-                sem.signal()
-            }
-            _ = sem.wait(timeout: .now() + 8)
-        }
     }
 }

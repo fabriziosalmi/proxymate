@@ -347,6 +347,9 @@ final class AppState: ObservableObject {
             pacURL = "http://127.0.0.1:\(pacSettings.port)/proxy.pac"
         }
 
+        // Set before the system proxy changes, so a quit or crash while
+        // enable() runs (admin prompt, networksetup) still cleans up.
+        UserDefaults.standard.set(true, forKey: "proxymate.wasEnabled")
         do {
             try await ProxyManager.enable(proxy: synthetic, pacURL: pacURL)
         } catch {

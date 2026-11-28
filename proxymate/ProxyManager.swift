@@ -98,33 +98,95 @@ enum ProxyManager {
     /// shell run, so a Disable click costs ONE admin prompt instead of two
     /// (the PAC-clear path was a separate osascript invocation).
     nonisolated static func disable() async throws {
-        // Probe both directions: if neither web proxy nor PAC is set,
-        // nothing to clear and we skip osascript entirely (no prompt).
-        let webOn = await currentProxy() != nil
-        let pacOn = await currentPACEnabled()
-        if !webOn && !pacOn { return }
-
-        let shell = """
-        networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
-          networksetup -setwebproxystate "$svc" off
-          networksetup -setsecurewebproxystate "$svc" off
-          networksetup -setautoproxystate "$svc" off
-          networksetup -setautoproxyurl "$svc" ""
-        done
-        """
-        try await runPrivileged(shell)
+        try await Task.detached(priority: .userInitiated) { try disableNow() }.value
     }
 
-    /// True if SCDynamicStore reports an active autoproxy URL configuration.
-    /// Used by disable() to decide whether the batched osascript needs to
-    /// run at all.
-    private nonisolated static func currentPACEnabled() async -> Bool {
-        await Task.detached(priority: .utility) { () -> Bool in
-            guard let store = SCDynamicStoreCreate(nil, "Proxymate" as CFString, nil, nil),
-                  let proxies = SCDynamicStoreCopyProxies(store) as? [String: Any] else { return false }
-            let enabled = proxies[kSCPropNetProxiesProxyAutoConfigEnable as String] as? Int ?? 0
-            return enabled == 1
+    /// Synchronous disable, for app termination: a Task started from
+    /// applicationWillTerminate was measured never to run within its 8 s
+    /// wait, so the app exited with the system proxy on.
+    nonisolated static func disableNow() throws {
+        try clearNow(shell: disableShell, pacOnly: false)
+    }
+
+    static let disableShell = """
+    networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
+      networksetup -setwebproxystate "$svc" off
+      networksetup -setsecurewebproxystate "$svc" off
+      networksetup -setautoproxystate "$svc" off
+      networksetup -setautoproxyurl "$svc" ""
+    done
+    """
+
+    /// Runs `shell` as the user first (an admin user may change proxy
+    /// settings with networksetup directly) and falls back to the admin
+    /// prompt only if a proxy is still on. State is read per network service
+    /// from networksetup, not from SystemConfiguration, which reflects only
+    /// the primary service.
+    private nonisolated static func clearNow(shell: String, pacOnly: Bool) throws {
+        if !anyServiceProxyOn(pacOnly: pacOnly) { return }
+        PrivilegedHelper.shared.runAsUser(shell)
+        if !anyServiceProxyOn(pacOnly: pacOnly) { return }
+        try PrivilegedHelper.shared.runAsRoot(shell)
+    }
+
+    /// True if any enabled network service has a web, HTTPS or PAC proxy on
+    /// (PAC only with `pacOnly`). Read-only, no prompt.
+    nonisolated static func anyServiceProxyOn(pacOnly: Bool = false) -> Bool {
+        let gets = pacOnly
+            ? #"networksetup -getautoproxyurl "$svc""#
+            : #"networksetup -getwebproxy "$svc"; networksetup -getsecurewebproxy "$svc"; networksetup -getautoproxyurl "$svc""#
+        let out = PrivilegedHelper.shared.runAsUser("""
+        networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
+          \(gets)
+        done
+        """)
+        return anyEnabled(inNetworksetupOutput: out)
+    }
+
+    /// networksetup prints "Enabled: Yes" for an active web/HTTPS proxy and
+    /// for an active auto-proxy URL.
+    static func anyEnabled(inNetworksetupOutput out: String) -> Bool {
+        out.split(whereSeparator: \.isNewline).contains { $0.trimmingCharacters(in: .whitespaces) == "Enabled: Yes" }
+    }
+
+    /// PAC-only variant, for PACServer.clearSystemPAC.
+    nonisolated static func clearPAC(shell: String) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try clearNow(shell: shell, pacOnly: true)
         }.value
+    }
+
+    /// Some network service's web or HTTPS proxy points at a loopback port
+    /// nothing listens on: what a Proxymate that exited without cleanup
+    /// leaves behind (crash, SIGKILL, or an older build replaced at launch).
+    /// Read per service: SystemConfiguration shows only the primary one.
+    nonisolated static func pointsAtDeadLoopback() -> Bool {
+        let out = PrivilegedHelper.shared.runAsUser("""
+        networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
+          networksetup -getwebproxy "$svc"; networksetup -getsecurewebproxy "$svc"
+        done
+        """)
+        return enabledLoopbackPorts(inNetworksetupOutput: out)
+            .contains { !MITMProxySidecar.waitForLocalPort($0, timeout: 0.2) }
+    }
+
+    /// Ports of enabled web/HTTPS proxies whose server is loopback, from
+    /// `networksetup -getwebproxy` style output (Enabled, Server, Port).
+    static func enabledLoopbackPorts(inNetworksetupOutput out: String) -> [UInt16] {
+        var ports: [UInt16] = []
+        var enabled = false, loopback = false
+        for raw in out.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("Enabled: ") {
+                enabled = line == "Enabled: Yes"; loopback = false
+            } else if line.hasPrefix("Server: ") {
+                loopback = ["127.0.0.1", "localhost", "::1"].contains(String(line.dropFirst(8)))
+            } else if line.hasPrefix("Port: "), enabled, loopback,
+                      let p = UInt16(line.dropFirst(6)), p > 0 {
+                ports.append(p)
+            }
+        }
+        return ports
     }
 
     /// Reads current HTTP proxy state via SystemConfiguration (no shell, instant).
@@ -231,3 +293,4 @@ enum ProxyManager {
             expected: "\(host):\(port)", actual: actual)
     }
 }
+

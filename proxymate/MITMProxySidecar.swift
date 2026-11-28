@@ -151,36 +151,39 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
     /// process at that PID is still running our recorded executable
     /// (`expectedPath`). If a recycled PID belongs to an unrelated
     /// process, the path won't match and we leave it alone.
-    static func reapOrphan(pidFile: String, expectedPath: String) {
+    /// Returns true when it signalled a live orphan.
+    @discardableResult
+    static func reapOrphan(pidFile: String, expectedPath: String) -> Bool {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: pidFile)),
               let str = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
               let pid = Int32(str), pid > 1
         else {
             try? FileManager.default.removeItem(atPath: pidFile)
-            return
+            return false
         }
         defer { try? FileManager.default.removeItem(atPath: pidFile) }
 
         // kill(pid, 0) probes existence without sending a signal: 0 ⇒
         // alive, -1 with errno = ESRCH ⇒ gone, EPERM ⇒ alive but not ours.
-        if Darwin.kill(pid, 0) != 0 { return }
+        if Darwin.kill(pid, 0) != 0 { return false }
 
         let bufLen = Int(MAXPATHLEN)
         let buf = UnsafeMutablePointer<CChar>.allocate(capacity: bufLen)
         defer { buf.deallocate() }
         let n = proc_pidpath(pid, buf, UInt32(bufLen))
-        guard n > 0 else { return }
+        guard n > 0 else { return false }
         let actual = String(cString: buf)
-        guard actual == expectedPath else { return }
+        guard actual == expectedPath else { return false }
 
         _ = Darwin.kill(pid, SIGTERM)
         // 1s grace before SIGKILL.
         for _ in 0..<10 {
             usleep(100_000)
-            if Darwin.kill(pid, 0) != 0 { return }
+            if Darwin.kill(pid, 0) != 0 { return true }
         }
         _ = Darwin.kill(pid, SIGKILL)
+        return true
     }
 
     /// Persist `pid` to `pidFile` so the next launch's `reapOrphan` can
@@ -263,16 +266,39 @@ nonisolated final class MITMProxySidecar: @unchecked Sendable {
 
     func stop() {
         queue.async { [weak self] in
-            guard let self else { return }
-            self.stopHeartbeat()
-            self.process?.terminate()
-            self.process = nil
-            self._isRunning = false
-            self._port = 0
-            self.stopSocketListener()
-            try? FileManager.default.removeItem(atPath: self.socketPath)
-            Self.clearPIDFile(self.pidFile)
+            self?.stopLocked(waitFor: nil)
         }
+    }
+
+    /// Synchronous stop for app termination. The async stop() may never run
+    /// before the app exits, which leaves mitmdump behind as an orphan.
+    func stopAndWait(timeout: TimeInterval = 3) {
+        queue.sync { stopLocked(waitFor: timeout) }
+    }
+
+    private func stopLocked(waitFor timeout: TimeInterval?) {
+        stopHeartbeat()
+        if let p = process, p.isRunning {
+            if let timeout {
+                Self.terminateAndWait(p, timeout: timeout)
+            } else {
+                p.terminate()
+            }
+        }
+        process = nil
+        _isRunning = false
+        _port = 0
+        stopSocketListener()
+        try? FileManager.default.removeItem(atPath: socketPath)
+        Self.clearPIDFile(pidFile)
+    }
+
+    /// SIGTERM, then SIGKILL if `p` is still running after `timeout`.
+    static func terminateAndWait(_ p: Process, timeout: TimeInterval) {
+        p.terminate()
+        let deadline = Date().addingTimeInterval(timeout)
+        while p.isRunning && Date() < deadline { usleep(50_000) }
+        if p.isRunning { _ = Darwin.kill(p.processIdentifier, SIGKILL) }
     }
 
     // MARK: - Heartbeat (process liveness check)

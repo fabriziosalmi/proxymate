@@ -206,8 +206,6 @@ extension PACServer {
           networksetup -setautoproxyurl "$svc" ""
         done
         """
-        try await Task.detached(priority: .userInitiated) {
-            try PrivilegedHelper.shared.runAsRoot(shell)
-        }.value
+        try await ProxyManager.clearPAC(shell: shell)
     }
 }
