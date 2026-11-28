@@ -2,7 +2,7 @@
 
 ## 0.9.60: security fixes for the local listener, TLS interception and per-request policy
 
-*Unreleased*
+*Released 2026-11-28*
 
 Three vulnerabilities in 0.9.59 and earlier are fixed. Upgrade is recommended for every user.
 
