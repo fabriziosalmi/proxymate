@@ -81,9 +81,11 @@ nonisolated enum AllowlistMatcher {
         return (ipNum & mask) == (targetNum & mask)
     }
 
+    /// Dotted-quad IPv4 literal to integer. Anything else, including names
+    /// that contain four numeric labels ("10.0.0.1.evil.com"), is nil: an
+    /// allow entry overrides every block, so only real addresses may match.
     static func ipToUInt32(_ ip: String) -> UInt32? {
-        let octets = ip.split(separator: ".").compactMap { UInt8($0) }
-        guard octets.count == 4 else { return nil }
+        guard let octets = RuleEngine.ipv4Octets(ip) else { return nil }
         return (UInt32(octets[0]) << 24) |
                (UInt32(octets[1]) << 16) |
                (UInt32(octets[2]) << 8)  |
@@ -91,7 +93,6 @@ nonisolated enum AllowlistMatcher {
     }
 
     private static func isIPv4(_ s: String) -> Bool {
-        let parts = s.split(separator: ".")
-        return parts.count == 4 && parts.allSatisfy { UInt8($0) != nil }
+        RuleEngine.ipv4Octets(s) != nil
     }
 }

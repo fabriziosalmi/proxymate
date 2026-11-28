@@ -106,8 +106,10 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
         let domains = domainSets
         let ips = ipSets
         os_unfair_lock_unlock(&setsLock)
-        // Fast path: bloom filter says "definitely not in any list"
-        if !bloom.mightContain(h) { return nil }
+        // Fast path: the bloom filter says none of the host or its parent
+        // domains is in any list. Parents must be probed too, or a listed
+        // domain never blocks its subdomains.
+        if !Self.lookupCandidates(h).contains(where: { bloom.mightContain($0) }) { return nil }
         for source in enabledSources where source.enabled {
             if let d = domains[source.id] {
                 if d.contains(h) || Self.matchesParentDomain(h, in: d) {
@@ -119,6 +121,19 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
             }
         }
         return nil
+    }
+
+    /// The host itself plus, for names, each parent down to two labels
+    /// (the same set matchesParentDomain checks).
+    static func lookupCandidates(_ host: String) -> [String] {
+        if RuleEngine.ipv4Octets(host) != nil { return [host] }
+        var out = [host]
+        var parts = host.split(separator: ".")
+        while parts.count > 2 {
+            parts.removeFirst()
+            out.append(parts.joined(separator: "."))
+        }
+        return out
     }
 
     private static func matchesParentDomain(_ host: String, in domains: Set<String>) -> Bool {
@@ -162,16 +177,7 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
                     let entries = Self.parse(text: text, format: source.format)
                     let count = entries.domains.count + entries.ips.count
 
-                    os_unfair_lock_lock(&self.setsLock)
-                    if !entries.domains.isEmpty {
-                        self.domainSets[source.id] = entries.domains
-                    }
-                    if !entries.ips.isEmpty {
-                        self.ipSets[source.id] = entries.ips
-                    }
-                    self.rebuildBloomFilter()
-                    self.recomputeStatsLocked()
-                    os_unfair_lock_unlock(&self.setsLock)
+                    self.install(sourceID: source.id, domains: entries.domains, ips: entries.ips)
 
                     // Cache to disk
                     self.saveToDisk(source: source, entries: entries)
@@ -193,12 +199,29 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
         }
     }
 
-    /// Rebuild bloom filter from all domain sets. Must be called with setsLock held.
+    /// Stores a source's parsed entries (an empty set keeps the previous one)
+    /// and rebuilds the lookup structures.
+    func install(sourceID: UUID, domains: Set<String>, ips: Set<String>) {
+        os_unfair_lock_lock(&setsLock)
+        if !domains.isEmpty { domainSets[sourceID] = domains }
+        if !ips.isEmpty { ipSets[sourceID] = ips }
+        rebuildBloomFilter()
+        recomputeStatsLocked()
+        os_unfair_lock_unlock(&setsLock)
+    }
+
+    /// Rebuild bloom filter from all domain and IP sets. Must be called with setsLock held.
     private func rebuildBloomFilter() {
         let totalCount = domainSets.values.reduce(0) { $0 + $1.count }
+            + ipSets.values.reduce(0) { $0 + $1.count }
         var bloom = BloomFilter(expectedCount: max(1024, totalCount))
         for set in domainSets.values {
             for domain in set { bloom.insert(domain) }
+        }
+        // IP lists (TOR exits, plain-IP feeds) go in too, or lookup's
+        // bloom fast path rejects every listed IP.
+        for set in ipSets.values {
+            for ip in set { bloom.insert(ip) }
         }
         bloomFilter = bloom
     }
@@ -350,12 +373,7 @@ nonisolated final class BlacklistManager: @unchecked Sendable {
         let entries = Self.parse(text: text, format: .plainDomains) // cached as plain list
         // Also try IPs
         let ipEntries = Self.parse(text: text, format: .plainIPs)
-        os_unfair_lock_lock(&setsLock)
-        if !entries.domains.isEmpty { domainSets[source.id] = entries.domains }
-        if !ipEntries.ips.isEmpty { ipSets[source.id] = ipEntries.ips }
-        rebuildBloomFilter()
-        recomputeStatsLocked()
-        os_unfair_lock_unlock(&setsLock)
+        install(sourceID: source.id, domains: entries.domains, ips: ipEntries.ips)
         return entries.domains.count + ipEntries.ips.count
     }
 

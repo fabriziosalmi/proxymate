@@ -172,12 +172,35 @@ nonisolated final class RuleEngine: @unchecked Sendable {
         return false
     }
 
+    /// localhost, *.local, or an IPv4 literal in 127/8, 10/8 or 192.168/16.
+    /// Names are never matched by prefix: "10.evil.com" is a public name
+    /// its owner chose, not a private address.
+    static func isLocalDevelopmentHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        if h == "localhost" || h.hasSuffix(".local") { return true }
+        guard let o = ipv4Octets(h) else { return false }
+        return o[0] == 127 || o[0] == 10 || (o[0] == 192 && o[1] == 168)
+    }
+
+    /// Dotted-quad IPv4 literal (four decimal octets, digits only), else nil.
+    static func ipv4Octets(_ s: String) -> [UInt8]? {
+        let parts = s.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        var out: [UInt8] = []
+        for p in parts {
+            guard (1...3).contains(p.count), p.allSatisfy({ $0.isASCII && $0.isNumber }),
+                  let v = UInt8(p) else { return nil }
+            out.append(v)
+        }
+        return out
+    }
+
     /// Contextual score multiplier: localhost/dev traffic gets low weight,
     /// sensitive destinations (banks, payment) get high weight (#18).
     private static func contextMultiplier(for host: String) -> Double {
         let h = host.lowercased()
         // Development / local — suppress false positives
-        if h == "localhost" || h.hasSuffix(".local") || h.hasPrefix("127.") || h.hasPrefix("192.168.") || h.hasPrefix("10.") {
+        if isLocalDevelopmentHost(h) {
             return 0.0
         }
         // High-value targets — amplify detections

@@ -122,21 +122,29 @@ nonisolated final class PACServer: @unchecked Sendable {
     // MARK: - PAC generation
 
     private func generatePAC() -> String {
+        Self.script(mode: settings.mode, proxyPort: proxyPort,
+                    socks5Port: socks5Port, directDomains: directDomains)
+    }
+
+    static func script(mode: PACSettings.PACMode, proxyPort: UInt16,
+                       socks5Port: UInt16, directDomains: [String]) -> String {
         let proxy = "PROXY 127.0.0.1:\(proxyPort)"
         let socks = socks5Port > 0 ? "; SOCKS5 127.0.0.1:\(socks5Port)" : ""
         let fallback = "\(proxy)\(socks); DIRECT"
 
-        switch settings.mode {
+        switch mode {
         case .allTraffic:
             return """
             function FindProxyForURL(url, host) {
-                // Localhost always direct
-                if (isPlainHostName(host) ||
-                    shExpMatch(host, "localhost") ||
-                    shExpMatch(host, "127.*") ||
-                    shExpMatch(host, "10.*") ||
-                    shExpMatch(host, "172.16.*") ||
-                    shExpMatch(host, "192.168.*")) {
+                // Local destinations direct: plain host names, localhost, and
+                // IPv4 literals in private ranges. Names that merely start
+                // with "10." or "127." go through the proxy.
+                if (isPlainHostName(host) || host == "localhost" ||
+                    (/^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$/.test(host) &&
+                     (isInNet(host, "127.0.0.0", "255.0.0.0") ||
+                      isInNet(host, "10.0.0.0", "255.0.0.0") ||
+                      isInNet(host, "172.16.0.0", "255.255.0.0") ||
+                      isInNet(host, "192.168.0.0", "255.255.0.0")))) {
                     return "DIRECT";
                 }
                 return "\(fallback)";
@@ -157,13 +165,15 @@ nonisolated final class PACServer: @unchecked Sendable {
 
             return """
             function FindProxyForURL(url, host) {
-                // Localhost always direct
-                if (isPlainHostName(host) ||
-                    shExpMatch(host, "localhost") ||
-                    shExpMatch(host, "127.*") ||
-                    shExpMatch(host, "10.*") ||
-                    shExpMatch(host, "172.16.*") ||
-                    shExpMatch(host, "192.168.*")) {
+                // Local destinations direct: plain host names, localhost, and
+                // IPv4 literals in private ranges. Names that merely start
+                // with "10." or "127." go through the proxy.
+                if (isPlainHostName(host) || host == "localhost" ||
+                    (/^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$/.test(host) &&
+                     (isInNet(host, "127.0.0.0", "255.0.0.0") ||
+                      isInNet(host, "10.0.0.0", "255.0.0.0") ||
+                      isInNet(host, "172.16.0.0", "255.255.0.0") ||
+                      isInNet(host, "192.168.0.0", "255.255.0.0")))) {
                     return "DIRECT";
                 }
                 // Allowlisted domains bypass proxy

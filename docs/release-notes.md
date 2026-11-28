@@ -1,8 +1,13 @@
 # Release notes
 
-## 0.9.61: quitting restores the network
+## 0.9.61: quitting restores the network, and host matching fixes in the WAF
 
 *Unreleased*
+
+### Security
+
+- **Host names that look like private IP addresses bypassed the allowlist, content rules and PAC mode** (GHSA-25pw-h3v7-mg9m). Host names were compared by prefix instead of being parsed as IP literals. `10.0.0.1.evil.com` matched an allowlist entry `10.0.0.0/8` (added by the setup wizard's "Corporate LAN" option), which skips every block. Block Content and regex rules skipped any host starting with `10.`, `127.` or `192.168.`. The PAC file sent such names `DIRECT`. Only `localhost`, `*.local` and real IPv4 literals are treated as local now.
+- **Blacklists did not block subdomains or listed IP addresses** (GHSA-932g-3h9p-j76f). The lookup's fast path held only exact domains, so subdomains of a listed domain and every IP list, including TOR exits, were never blocked.
 
 ### Fixes
 
