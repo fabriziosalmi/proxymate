@@ -52,6 +52,25 @@ nonisolated final class PrivilegedHelper: @unchecked Sendable {
     /// Kept for API compatibility with existing call sites.
     func ensureAuthorized() throws { /* noop */ }
 
+    /// Runs a shell script as the current user, without a prompt. An admin
+    /// user may change network proxy settings with `networksetup` this way;
+    /// callers check the result and fall back to `runAsRoot` when it did not
+    /// take (a standard user, or a policy that requires root).
+    /// Returns the script's standard output.
+    @discardableResult
+    func runAsUser(_ script: String) -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-c", script]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = FileHandle.nullDevice
+        guard (try? proc.run()) != nil else { return "" }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
     /// Runs a shell script as root via `osascript do shell script`.
     /// Blocks the calling thread until the script finishes.
     ///

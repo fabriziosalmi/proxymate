@@ -35,6 +35,16 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
         try queue.sync {
             guard !isRunning else { return port }
 
+            // Reap our own orphan first: a squid left behind by a killed or
+            // crashed parent still holds the port, and the check below would
+            // otherwise adopt it as an "external" squid, with the previous
+            // build's binary and config. Path-checked against the bundled
+            // squid so a recycled PID can't redirect the kill.
+            if let squidPath = findSquid(),
+               MITMProxySidecar.reapOrphan(pidFile: pidFile, expectedPath: squidPath) {
+                Self.waitForPortToClose(listenPort, timeout: 2)
+            }
+
             // If something else is already serving on the requested port
             // (the most common case: the user has `brew services start
             // squid` running on 3128), don't try to launch our bundled
@@ -55,10 +65,6 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
             guard let squidPath = findSquid() else {
                 throw SquidError.notInstalled
             }
-
-            // Reap any orphan squid from a hard-quit parent. Path-checked
-            // against `squidPath` so a recycled PID can't redirect the kill.
-            MITMProxySidecar.reapOrphan(pidFile: pidFile, expectedPath: squidPath)
 
             // Generate minimal config
             let configPath = workDir.appendingPathComponent("squid.conf").path
@@ -137,14 +143,37 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
 
     func stop() {
         queue.async { [weak self] in
-            guard let self else { return }
-            if let p = self.process, p.isRunning {
+            self?.stopLocked(waitFor: nil)
+        }
+    }
+
+    /// Synchronous stop for app termination. The async stop() may never run
+    /// before the app exits, which leaves squid holding the port.
+    func stopAndWait(timeout: TimeInterval = 3) {
+        queue.sync { stopLocked(waitFor: timeout) }
+    }
+
+    private func stopLocked(waitFor timeout: TimeInterval?) {
+        if let p = process, p.isRunning {
+            if let timeout {
+                MITMProxySidecar.terminateAndWait(p, timeout: timeout)
+            } else {
                 p.terminate()
             }
-            self.process = nil
-            self.isRunning = false
-            self.port = 0
-            MITMProxySidecar.clearPIDFile(self.pidFile)
+        }
+        process = nil
+        isRunning = false
+        port = 0
+        MITMProxySidecar.clearPIDFile(pidFile)
+    }
+
+    /// Polls until nothing accepts connections on 127.0.0.1:`port`, so a
+    /// reaped squid's socket is gone before the port is probed again.
+    static func waitForPortToClose(_ port: UInt16, timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !MITMProxySidecar.waitForLocalPort(port, timeout: 0.05) { return }
+            usleep(50_000)
         }
     }
 
@@ -180,11 +209,15 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
     // MARK: - Config generation
 
     private func generateConfig(port: UInt16, path: String) throws {
-        let cacheDir = workDir.appendingPathComponent("cache").path
-        let logDir = workDir.appendingPathComponent("logs").path
-        let runDir = workDir.appendingPathComponent("run").path
+        let config = Self.config(port: port,
+                                 cacheDir: workDir.appendingPathComponent("cache").path,
+                                 logDir: workDir.appendingPathComponent("logs").path,
+                                 runDir: workDir.appendingPathComponent("run").path)
+        try config.write(toFile: path, atomically: true, encoding: .utf8)
+    }
 
-        let config = """
+    static func config(port: UInt16, cacheDir: String, logDir: String, runDir: String) -> String {
+        """
         # Proxymate auto-generated squid.conf
         http_port 127.0.0.1:\(port)
 
@@ -205,6 +238,11 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
         cache_log \(logDir)/cache.log
         pid_filename \(runDir)/squid.pid
 
+        # Exit within a second of SIGTERM. The default 30 s keeps the port
+        # bound after Proxymate quits, and a relaunch in that window would
+        # adopt the dying squid as an external listener.
+        shutdown_lifetime 1 seconds
+
         # Performance
         dns_nameservers 1.1.1.1 8.8.8.8
         connect_timeout 10 seconds
@@ -220,7 +258,6 @@ nonisolated final class SquidSidecar: @unchecked Sendable {
         # Coredumps off
         coredump_dir none
         """
-        try config.write(toFile: path, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Errors

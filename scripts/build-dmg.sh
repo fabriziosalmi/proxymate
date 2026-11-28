@@ -185,6 +185,12 @@ if [[ "${SKIP_NOTARIZE}" == false ]]; then
         -ov -format UDBZ \
         "${DMG_PATH}"
 
+    # Sign the DMG itself. A notarized but unsigned DMG still carries the
+    # stapled ticket, but Gatekeeper's assessment of the file rejects it
+    # ("no usable signature").
+    echo "==> Signing DMG..."
+    codesign --force --timestamp --sign "${SIGN_ID}" "${DMG_PATH}"
+
     echo "==> Submitting for notarization..."
     xcrun notarytool submit "${DMG_PATH}" \
         --keychain-profile "${NOTARIZE_PROFILE}" \
@@ -194,7 +200,12 @@ if [[ "${SKIP_NOTARIZE}" == false ]]; then
     xcrun stapler staple "${DMG_PATH}"
 
     echo "==> Verifying notarization..."
-    spctl --assess --type open --context context:primary-signature "${DMG_PATH}" && echo "    Notarization OK"
+    # Fail the build on rejection: `spctl ... && echo` never trips set -e.
+    if ! spctl --assess --type open --context context:primary-signature -vv "${DMG_PATH}"; then
+        echo "ERROR: Gatekeeper rejects ${DMG_PATH}"
+        exit 1
+    fi
+    echo "    Notarization OK"
 else
     echo "==> Creating DMG (skipping notarization)..."
     hdiutil create -volname "Proxymate" \

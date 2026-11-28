@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.9.61: quitting restores the network
+
+*Unreleased*
+
+### Fixes
+
+- **Quitting Proxymate could leave the system proxy on.** The cleanup that turns the system proxy off ran in a task that was not scheduled before the app exited, so macOS kept sending traffic to a closed port and browsing stopped until the proxy was turned off by hand. Present in 0.9.59 and 0.9.60. Quit now turns the web, HTTPS and PAC settings off before the app exits, without an admin prompt for administrator accounts.
+- **Squid and mitmdump outlived the app.** A `kill` or `pkill` ended Proxymate without its cleanup, and a normal quit stopped the sidecars asynchronously, after the app had already exited. SIGTERM now quits through the normal cleanup, the sidecars are stopped before the app exits, and Squid exits within about a second instead of about 30.
+- **A left-over Squid was reused after a crash.** On the next start Proxymate found the old Squid on its port and adopted it as an external Squid, with the previous build's binary and configuration. It now stops its own left-over Squid first.
+- **Opening Proxymate force-killed the running instance**, skipping its cleanup. The older instance is now asked to quit and is forced only if it does not exit. The test host no longer quits a running Proxymate.
+
+### Release
+
+- `scripts/build-dmg.sh` signs the DMG and fails the build when Gatekeeper rejects it. Earlier releases shipped an unsigned DMG that `spctl` rejected while the script reported success.
+
 ## 0.9.60: security fixes for the local listener, TLS interception and per-request policy
 
 *Released 2026-11-28*
